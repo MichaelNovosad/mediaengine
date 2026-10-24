@@ -54,6 +54,15 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 - After every finished step: update `docs/PROGRESS.md` (board, evidence, "Right now", handoff notes) and tick criteria with evidence. Update it before ending a turn, even when the work is half done.
 - Cross-project: the engine lives in `~/Documents/Development/MediaEngine`, the app in `~/Documents/Development/PlayerApp`; each has its own `docs/PROGRESS.md`.
 
+## Project skills (in `.claude/skills/`, committed)
+
+- `engine-verify`: which check to run when, how to read the output, flake hunting, sanitizers.
+- `engine-add-fixture`: new tiny test video with ground truth and test wiring.
+- `engine-benchmark`: `BenchmarkTests`, synthetic long/high-bitrate files, baseline numbers, memory lessons.
+- `engine-finish-step`: the end-of-step ritual (PROGRESS, criteria, RESEARCH, commit rules, no Claude trailer).
+- `engine-rebuild-ffmpeg`: changing profiles, rebuilding frameworks, the sanitized variant, licensing guard rails.
+- `engine-playback-debug`: debugging the HLS fMP4 remux path and the lessons already paid for.
+
 ## Status
 
 Phase: building. **E0 and E1 are complete and committed; E2 (remux to AVPlayer) is done and verified except** (2026-10-24, `scripts/verify.sh`): AirPlay on devices, HDR10 over HLS, the `.resourceLoader` transport and byte-bounded segments for very high bitrates. Audio (AAC/AC-3/E-AC-3 as is; FLAC/PCM/Opus/Vorbis to ALAC), B-frames, damaged files, leaks and measurements are covered. Live status is in `docs/PROGRESS.md`.

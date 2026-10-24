@@ -3,14 +3,18 @@
 # then bundles the five slices into build/FFmpegLGPL.xcframework.
 # usage: scripts/package-xcframework.sh [profile]      (default: core)
 # Dynamic linking keeps the LGPL promise: a customer can swap the framework for their own build.
+# FFMPEG_SANITIZE=address packages the instrumented macOS slice (from build-ffmpeg.sh) as a separate
+# build/FFmpegLGPL-address.xcframework for the sanitizer pass; it never touches the normal outputs.
 source "$(dirname "$0")/lib/common.sh"
 
 profile="${1:-core}"
 version="$(lock_field ffmpeg 2)"
 FW="FFmpegLGPL"
 BUNDLE_ID="dev.mediaengine.FFmpegLGPL"   # placeholder until the product name is chosen (D-E6)
-out="$BUILD/frameworks"
-rm -rf "$out" "$BUILD/dsyms" "$BUILD/$FW.xcframework"; mkdir -p "$out" "$BUILD/dsyms"
+san="${FFMPEG_SANITIZE:-}"; san_flags=""; suffix=""
+if [ -n "$san" ]; then SLICES="macos"; san_flags="-fsanitize=$san"; suffix="-$san"; fi
+out="$BUILD/frameworks$suffix"
+rm -rf "$out" "$BUILD/dsyms$suffix" "$BUILD/$FW$suffix.xcframework"; mkdir -p "$out" "$BUILD/dsyms$suffix"
 
 plist() { # <slice> <min key/value lines> → Info.plist on stdout
   local platform minkey
@@ -54,8 +58,8 @@ EOF
 
 make_framework() {
   local slice="$1"
-  local inst="$BUILD/install/$slice-$profile"
-  [ -d "$inst" ] || die "missing $inst (run scripts/build-ffmpeg.sh $slice $profile)"
+  local inst="$BUILD/install/$slice-$profile$suffix"
+  [ -d "$inst" ] || die "missing $inst (run scripts/build-ffmpeg.sh $slice $profile${suffix:+ with FFMPEG_SANITIZE=$san})"
   local target sysroot sdk cc fwdir content res install_name
   target="$(slice_target "$slice")"; sysroot="$(slice_sysroot "$slice")"; sdk="$(slice_sdk "$slice")"
   cc="$(xcrun --sdk "$sdk" --find clang)"
@@ -72,7 +76,7 @@ make_framework() {
   mkdir -p "$BUILD/work"; printf '_av*\n_swr*\n_swresample*\n' > "$exports"
 
   log "link $FW for $slice"
-  "$cc" -dynamiclib -target "$target" -isysroot "$sysroot" \
+  "$cc" -dynamiclib $san_flags -target "$target" -isysroot "$sysroot" \
     -install_name "$install_name" -compatibility_version 1.0.0 -current_version "$version" \
     -Wl,-force_load,"$inst/lib/libavformat.a" -Wl,-force_load,"$inst/lib/libavcodec.a" \
     -Wl,-force_load,"$inst/lib/libavutil.a" -Wl,-force_load,"$inst/lib/libswresample.a" \
@@ -106,9 +110,9 @@ EOF
     for d in Headers Modules Resources; do ln -sfn "Versions/Current/$d" "$fwdir/$d"; done
   fi
 
-  mkdir -p "$BUILD/dsyms/$slice"
-  dsymutil "$content/$FW" -o "$BUILD/dsyms/$slice/$FW.framework.dSYM" 2>/dev/null || true
-  strip -x "$content/$FW"
+  mkdir -p "$BUILD/dsyms$suffix/$slice"
+  dsymutil "$content/$FW" -o "$BUILD/dsyms$suffix/$slice/$FW.framework.dSYM" 2>/dev/null || true
+  [ -n "$san" ] || strip -x "$content/$FW"
   codesign --force --sign - --timestamp=none "$fwdir" >/dev/null
 }
 
@@ -123,5 +127,5 @@ log "create xcframework"
 args=""
 for s in $SLICES; do args="$args -framework $out/$s/$FW.framework"; done
 # shellcheck disable=SC2086
-xcodebuild -create-xcframework $args -output "$BUILD/$FW.xcframework" | tail -2
-log "done: $BUILD/$FW.xcframework"
+xcodebuild -create-xcframework $args -output "$BUILD/$FW$suffix.xcframework" | tail -2
+log "done: $BUILD/$FW$suffix.xcframework"

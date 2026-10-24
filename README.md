@@ -11,6 +11,9 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 scripts/build-all.sh      # fetch + verify sources, build 5 slices, package build/FFmpegLGPL.xcframework (about 2.5 minutes)
 scripts/verify.sh         # license check + tests on macOS, iPhone, iPad, iPhone Duo, visionOS simulators
 scripts/verify.sh --quick # macOS only
+scripts/check-sanitized.sh # whole suite under AddressSanitizer with an instrumented FFmpeg (builds it once, about 2 minutes)
+MEDIAENGINE_BENCH_FILE=/path/movie.mkv swift test --filter BenchmarkTests   # open time, seeks, memory, A/V continuity on a real file
+MEDIAENGINE_EXCLUSIVE=1 swift test --filter ExclusiveTests                  # timing, leak and CPU checks that need the process to themselves
 ```
 
 Needs Xcode 27.1, Homebrew `meson`, `ninja`, `cmake`, `gpg`, and Rust (see `CLAUDE.md`). The framework is not committed; `Package.swift` points at `build/FFmpegLGPL.xcframework` during development.
@@ -42,7 +45,7 @@ let item = try await session.makePlayerItem()            // a plain AVPlayerItem
 player.replaceCurrentItem(with: item)                    // AVPlayerViewController, VideoPlayer, AVPlayerView
 ```
 
-The item keeps the session alive. MKV video (H.264, HEVC) and audio (AAC, AC-3, E-AC-3 as is; FLAC and PCM as lossless ALAC) play with the system controls, AirPlay button and Picture in Picture.
+The item keeps the session alive. MKV video (H.264, HEVC) and audio (AAC, AC-3, E-AC-3 as is; FLAC, PCM, Opus and Vorbis as lossless ALAC) play with the system controls, AirPlay button and Picture in Picture.
 
 ## Layout
 

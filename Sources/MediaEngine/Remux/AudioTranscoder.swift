@@ -14,6 +14,21 @@ final class AudioTranscoder: @unchecked Sendable {
         codecName == "flac" || codecName.hasPrefix("pcm_")
     }
 
+    /// Seconds of audio that must be decoded (and thrown away) before a segment so the decoder is in the right
+    /// state: 0 for stateless codecs, a fraction of a second for Opus and Vorbis (overlapping windows).
+    static func prerollSeconds(_ codecName: String) -> Double {
+        switch codecName {
+        case "opus": 0.5        // measured: 0.2 s still left differences of up to -82 dBFS for about 0.35 s
+        case "vorbis": 0.2      // one overlapping window; sample-exact after this (tested)
+        default: 0
+        }
+    }
+
+    /// Whether this codec can be transcoded segment by segment (with pre-roll where needed).
+    static func canTranscode(_ codecName: String) -> Bool {
+        canTranscodeStatelessly(codecName) || prerollSeconds(codecName) > 0
+    }
+
     let sampleRate: Int
     let channels: Int
     private let parameters: UnsafeMutablePointer<AVCodecParameters>      // our own copy
@@ -82,12 +97,15 @@ final class AudioTranscoder: @unchecked Sendable {
     // MARK: Transcoding
 
     /// Decodes `packets` (consecutive packets of one stream) and returns ALAC packets whose timestamps count
-    /// samples (`outputTimeBase`). The first output sample sits at the first packet's presentation time.
-    func transcode(_ packets: [MediaPacket], stream: Int) throws -> [MediaPacket] {
+    /// samples (`outputTimeBase`). The first output sample sits where the decoder says the first packet's audio
+    /// starts. `preroll` are the packets just before `packets`: they are decoded to bring a stateful decoder
+    /// (Opus, Vorbis) into the right state, and their audio is discarded.
+    func transcode(_ packets: [MediaPacket], preroll: [MediaPacket] = [], stream: Int) throws -> [MediaPacket] {
         guard let first = packets.first else { return [] }
         guard let codec = avcodec_find_decoder(parameters.pointee.codec_id),
               let decoder = avcodec_alloc_context3(codec) else { throw MediaError.engine(detail: "no decoder") }
         defer { var context: UnsafeMutablePointer<AVCodecContext>? = decoder; avcodec_free_context(&context) }
+        decoder.pointee.pkt_timebase = sourceTimeBase.ffmpeg
         guard avcodec_parameters_to_context(decoder, parameters) >= 0, avcodec_open2(decoder, codec, nil) >= 0 else {
             throw MediaError.engine(detail: "decoder failed to open")
         }
@@ -99,7 +117,10 @@ final class AudioTranscoder: @unchecked Sendable {
         let frameSize = max(Int(encoder.pointee.frame_size), 1)
         var pending = [Data](repeating: Data(), count: channels)     // planar PCM waiting to be encoded, one buffer per channel
         func pendingSamples() -> Int { pending[0].count / bytesPerSample }
-        var nextSample = sourceTimeBase.convert(first.pts, to: outputTimeBase)
+        // Where the first output sample sits: taken from the decoder's first frame (it knows about start-skip and
+        // decoder delay); until then the first packet's time plus its start-skip is the best guess.
+        var nextSample = sourceTimeBase.convert(first.pts, to: outputTimeBase) + Int64(first.skipStart)
+        var positioned = false
 
         var swr: OpaquePointer?
         defer { swr_free(&swr) }
@@ -155,6 +176,10 @@ final class AudioTranscoder: @unchecked Sendable {
         }
 
         func convert(_ decoded: UnsafeMutablePointer<AVFrame>) throws {
+            if !positioned {
+                positioned = true
+                if decoded.pointee.pts != Int64.min { nextSample = sourceTimeBase.convert(decoded.pointee.pts, to: outputTimeBase) }
+            }
             if swr == nil {
                 var inLayout = decoded.pointee.ch_layout
                 if inLayout.order == AV_CHANNEL_ORDER_UNSPEC { av_channel_layout_default(&inLayout, Int32(channels)) }
@@ -174,14 +199,27 @@ final class AudioTranscoder: @unchecked Sendable {
             for channel in 0..<channels { pending[channel].append(planes[channel], count: Int(produced) * bytesPerSample) }
         }
 
-        for packet in packets {
-            guard av_new_packet(input, Int32(packet.data.count)) >= 0 else { continue }
+        func send(_ packet: MediaPacket) throws {
+            guard av_new_packet(input, Int32(packet.data.count)) >= 0 else { return }
             packet.data.copyBytes(to: input.pointee.data, count: packet.data.count)
             input.pointee.pts = packet.pts
             input.pointee.dts = packet.dts
+            if packet.skipStart > 0 || packet.skipEnd > 0, let side = av_packet_new_side_data(input, AV_PKT_DATA_SKIP_SAMPLES, 10) {
+                UnsafeMutableRawPointer(side).storeBytes(of: UInt32(packet.skipStart).littleEndian, as: UInt32.self)
+                UnsafeMutableRawPointer(side).storeBytes(of: UInt32(packet.skipEnd).littleEndian, toByteOffset: 4, as: UInt32.self)
+            }
             let sent = avcodec_send_packet(decoder, input)
             av_packet_unref(input)
             if sent < 0, sent != AVError.again { throw MediaError.corrupt(detail: "audio decode failed: \(AVError.describe(sent))") }
+        }
+
+        // Pre-roll: run the decoder over the packets before the segment and throw their audio away.
+        for packet in preroll {
+            try send(packet)
+            while avcodec_receive_frame(decoder, frame) >= 0 { av_frame_unref(frame) }
+        }
+        for packet in packets {
+            try send(packet)
             while avcodec_receive_frame(decoder, frame) >= 0 {
                 try convert(frame)
                 av_frame_unref(frame)

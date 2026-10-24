@@ -29,6 +29,9 @@ struct MediaPacket: Sendable, Equatable {
     /// Duration in the stream's time base, `0` when unknown.
     var duration: Int64
     var isKeyframe: Bool
+    /// Samples the decoder must drop from the start / end of this packet (Opus codec delay, end padding).
+    var skipStart: Int = 0
+    var skipEnd: Int = 0
 }
 
 /// Reads compressed packets from an opened file. Not thread-safe: confine it to one serial queue.
@@ -59,7 +62,12 @@ final class PacketReader {
     func timeBase(_ index: Int) -> Rational { Rational(stream(index).pointee.time_base) }
 
     /// Timestamps of the keyframes listed in the file's index (Matroska Cues, MP4 sync table), in the stream's time base.
-    func keyframeTimestamps(stream index: Int) -> [Int64] {
+    ///
+    /// A freshly opened Matroska file has only loaded the index entries of the packets it probed; the Cues at the
+    /// end of the file load lazily, on the first seek. Seeking once to the end makes the demuxer read them. The
+    /// read position is undefined afterwards: seek or rewind before reading packets.
+    func keyframeTimestamps(stream index: Int, loadingIndexUpTo duration: Double? = nil) -> [Int64] {
+        if let duration { _ = try? seek(stream: index, to: timeBase(index).ticks(seconds: duration)) }
         let st = stream(index)
         let count = avformat_index_get_entries_count(st)
         var result: [Int64] = []
@@ -87,7 +95,11 @@ final class PacketReader {
     func next() throws -> MediaPacket? {
         while true {
             let result = av_read_frame(format, packet)
-            if result == AVError.eof { return nil }
+            if result == AVError.eof {
+                // Demuxers turn a failed read into a premature end of file; a failing source must not look like a short file.
+                if context.bridge.failure.withLock({ $0 != nil }) { throw FormatContext.openError(result, context.bridge) }
+                return nil
+            }
             if result < 0 { throw FormatContext.openError(result, context.bridge) }
             defer { av_packet_unref(packet) }
 
@@ -99,10 +111,17 @@ final class PacketReader {
 
             let size = Int(packet.pointee.size)
             let data = size > 0 ? Data(bytes: packet.pointee.data, count: size) : Data()
+            var skipStart = 0, skipEnd = 0
+            var sideSize = 0
+            if let side = av_packet_get_side_data(packet, AV_PKT_DATA_SKIP_SAMPLES, &sideSize), sideSize >= 8 {
+                let raw = UnsafeRawPointer(side)
+                skipStart = Int(UInt32(littleEndian: raw.loadUnaligned(as: UInt32.self)))
+                skipEnd = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 4, as: UInt32.self)))
+            }
             return MediaPacket(
                 stream: Int(packet.pointee.stream_index), data: data, pts: pts, dts: dts,
                 duration: max(packet.pointee.duration, 0),
-                isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0)
+                isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0, skipStart: skipStart, skipEnd: skipEnd)
         }
     }
 }

@@ -58,9 +58,9 @@ struct FragmentWriter: Sendable {
         }
 
         let moofSize = moof(dataOffset: 0).count
-        var output = ByteWriter()
-        output.append(moof(dataOffset: Int32(moofSize + 8)))             // samples start right after the mdat header
         let payload = packets.reduce(0) { $0 + $1.data.count }
+        var output = ByteWriter(capacity: moofSize + 8 + payload)
+        output.append(moof(dataOffset: Int32(moofSize + 8)))             // samples start right after the mdat header
         output.u32(UInt32(8 + payload))
         output.fourCC("mdat")
         for packet in packets { output.append(packet.data) }

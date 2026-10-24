@@ -8,11 +8,11 @@
     "muxers": ["matroska", "webm", "mp4", "mov", "avi", "mpegts", "flac", "wav", "srt", "ass", "webvtt", "image2", "hls", "null"],
     "parsers": ["h264", "hevc", "av1", "aac", "aac_latm", "ac3", "flac", "mpegaudio", "opus", "vorbis", "vp9", "mpeg4video", "mpegvideo"],
     "bsfs": ["aac_adtstoasc", "extract_extradata", "h264_mp4toannexb", "hevc_mp4toannexb", "hevc_metadata", "h264_metadata", "null"],
-    "decoders": ["wrapped_avframe", "rawvideo", "pcm_s16le", "flac", "subrip", "ass", "webvtt", "mov_text", "aac", "h264", "hevc"],
-    "encoders": ["h264_videotoolbox", "hevc_videotoolbox", "aac_at", "ac3", "eac3", "dca", "truehd", "mjpeg", "alac_at", "flac", "pcm_s16le", "mpeg4", "rawvideo", "subrip", "ass", "webvtt", "mov_text"],
+    "decoders": ["wrapped_avframe", "rawvideo", "pcm_s16le", "pcm_f64le", "pcm_f32le", "pcm_s32le", "flac", "subrip", "ass", "webvtt", "mov_text", "aac", "h264", "hevc"],
+    "encoders": ["h264_videotoolbox", "hevc_videotoolbox", "aac_at", "ac3", "eac3", "dca", "truehd", "mjpeg", "opus", "vorbis", "alac_at", "flac", "pcm_s16le", "mpeg4", "rawvideo", "subrip", "ass", "webvtt", "mov_text"],
     "protocols": ["file", "pipe"],
     "indevs": ["lavfi"],
-    "filters": ["testsrc2", "colorchannelmixer", "testsrc", "smptebars", "color", "sine", "anullsrc", "aresample", "aformat", "format", "scale", "null", "anull", "fps", "setsar", "setpts", "asetpts", "interlace", "tinterlace", "fieldorder", "pad"],
+    "filters": ["testsrc2", "colorchannelmixer", "anoisesrc", "testsrc", "smptebars", "color", "sine", "anullsrc", "aresample", "aformat", "format", "scale", "null", "anull", "fps", "setsar", "setpts", "asetpts", "interlace", "tinterlace", "fieldorder", "pad"],
     "extra": ["--enable-videotoolbox", "--enable-audiotoolbox", "--enable-zlib", "--enable-bzlib"]
   },
   "components": [

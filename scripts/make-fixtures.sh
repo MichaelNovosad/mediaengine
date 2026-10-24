@@ -78,6 +78,27 @@ log "fixture-flac24.mkv  (H.264 + FLAC 24-bit stereo 44.1 kHz)"
   -metadata:s:a:0 language=eng \
   -f matroska fixture-flac24.mkv
 
+log "fixture-opus-vorbis.mkv  (14 s: H.264 + Opus stereo 48 kHz + Vorbis stereo 44.1 kHz, spans three segments)"
+# Pink noise has unique content at every instant, so any misalignment or glitch at a segment boundary shows up.
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=14" \
+  -f lavfi -i "anoisesrc=color=pink:seed=7:sample_rate=48000:amplitude=0.25:duration=14" \
+  -f lavfi -i "anoisesrc=color=brown:seed=11:sample_rate=44100:amplitude=0.25:duration=14" \
+  -map 0:v -map 1:a -map 2:a \
+  -c:v h264_videotoolbox -b:v 250k -g 25 -pix_fmt yuv420p \
+  -c:a:0 opus -strict -2 -b:a:0 96k -ac:a:0 2 -c:a:1 vorbis -strict -2 -b:a:1 96k -ac:a:1 2 \
+  -metadata:s:a:0 language=eng -metadata:s:a:0 title="Opus" -metadata:s:a:1 language=jpn -metadata:s:a:1 title="Vorbis" \
+  -f matroska fixture-opus-vorbis.mkv
+
+log "fixture-bframes.mkv  (10 s: H.264 High with B-frames + AAC; Matroska has no decode timestamps for the first reordered frames)"
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=10" \
+  -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=10" \
+  -map 0:v -map 1:a \
+  -c:v h264_videotoolbox -b:v 300k -g 25 -profile:v high -bf 2 -pix_fmt yuv420p \
+  -c:a aac_at -b:a 96k -metadata:s:a:0 language=eng \
+  -f matroska fixture-bframes.mkv
+
 log "src/cover.jpg"
 "$FF" -v error -y -f lavfi -i "color=c=red:s=64x64:d=1" -frames:v 1 -pix_fmt yuvj420p -c:v mjpeg src/cover.jpg
 

@@ -7,7 +7,7 @@ source "$(dirname "$0")/lib/common.sh"
 cd "$ROOT"
 quick=0; [ "${1:-}" = "--quick" ] && quick=1
 logdir="$BUILD/verify-logs"; rm -rf "$logdir"; mkdir -p "$logdir"
-total=4; [ "$quick" -eq 0 ] && total=9
+total=5; [ "$quick" -eq 0 ] && total=10
 n=0; step() { n=$((n+1)); log "$n/$total $*"; }
 
 # Warnings that come from Xcode's own tooling, not from our code.
@@ -41,6 +41,12 @@ step "swift test (macOS)"
 swift test > "$logdir/macos.log" 2>&1 || { tail -30 "$logdir/macos.log"; die "macOS tests failed"; }
 grep -E 'Test run with .* passed' "$logdir/macos.log" || die "macOS: no passing test run found"
 check_warnings "$logdir/macos.log"
+
+# Timing, memory, descriptor and CPU measurements are process-wide, so they get a pass of their own (ExclusiveTests.swift).
+step "resource checks (macOS, isolated)"
+MEDIAENGINE_EXCLUSIVE=1 swift test --filter ExclusiveTests > "$logdir/resources.log" 2>&1 || { tail -30 "$logdir/resources.log"; die "resource checks failed"; }
+grep -E 'Test run with .* passed' "$logdir/resources.log" || die "resource checks: no passing test run found"
+check_warnings "$logdir/resources.log"
 
 if [ "$quick" -eq 0 ]; then
   step "package traits"; ./scripts/check-traits.sh >/dev/null

@@ -4,6 +4,11 @@ import Foundation
 struct ByteWriter {
     private(set) var data = Data()
 
+    init() {}
+    /// Reserves the final size up front: growing a large buffer by appending reallocates it again and again, and the
+    /// allocator keeps the abandoned blocks, which would multiply the memory a segment needs.
+    init(capacity: Int) { data.reserveCapacity(capacity) }
+
     mutating func u8(_ value: UInt8) { data.append(value) }
     mutating func u16(_ value: UInt16) { data.append(contentsOf: [UInt8(value >> 8), UInt8(value & 0xFF)]) }
     mutating func u32(_ value: UInt32) {

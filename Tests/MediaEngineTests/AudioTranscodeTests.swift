@@ -49,6 +49,10 @@ private func decodeToS32(_ parameters: UnsafePointer<AVCodecParameters>, packets
         item.data.copyBytes(to: packet.pointee.data, count: item.data.count)
         packet.pointee.pts = item.pts
         packet.pointee.dts = item.dts
+        if item.skipStart > 0 || item.skipEnd > 0, let side = av_packet_new_side_data(packet, AV_PKT_DATA_SKIP_SAMPLES, 10) {
+            UnsafeMutableRawPointer(side).storeBytes(of: UInt32(item.skipStart).littleEndian, as: UInt32.self)
+            UnsafeMutableRawPointer(side).storeBytes(of: UInt32(item.skipEnd).littleEndian, toByteOffset: 4, as: UInt32.self)
+        }
         avcodec_send_packet(created, packet)
         av_packet_unref(packet)
         try drain()
@@ -110,6 +114,56 @@ struct AudioTranscodeTests {
         defer { var pointer: UnsafeMutablePointer<AVCodecParameters>? = params; avcodec_parameters_free(&pointer) }
         let joined = try decodeToS32(params, packets: first).samples + decodeToS32(params, packets: second).samples
         #expect(joined == whole.samples)
+    }
+
+    @Test("Opus and Vorbis segments, decoded from a warm-up of earlier packets, match the whole-stream decode",
+          arguments: [(1, 48_000, true), (2, 44_100, false)])
+    func prerollSegments(stream: Int, rate: Int, tolerant: Bool) throws {
+        let (reader, packets) = try allPackets("fixture-opus-vorbis", stream: stream)
+        let base = reader.timeBase(stream)
+        let cut = try #require(packets.firstIndex { base.seconds($0.pts) >= 6.0 })
+        let end = try #require(packets.firstIndex { base.seconds($0.pts) >= 12.0 })
+        let warmUp = AudioTranscoder.prerollSeconds(stream == 1 ? "opus" : "vorbis")
+        let preroll = Array(packets[..<cut].filter { base.seconds($0.pts) >= 6.0 - warmUp })
+        let main = Array(packets[cut..<end])
+        #expect(!preroll.isEmpty)
+
+        let transcoder = try AudioTranscoder(parameters: reader.parameters(stream), sourceTimeBase: base)
+        let alac = try transcoder.makeEncodedParameters()
+        defer { var pointer: UnsafeMutablePointer<AVCodecParameters>? = alac; avcodec_parameters_free(&pointer) }
+
+        // The invariant: a segment transcoded on its own, with warm-up, equals the same stretch of a transcode of the
+        // whole file (both are quantized to 16 bits the same way, so lossy sources compare exactly).
+        let whole = try decodeToS32(alac, packets: try transcoder.transcode(packets, stream: stream)).samples
+        let samplesBefore = try decodeToS32(reader.parameters(stream), packets: Array(packets[..<cut])).samples.count
+
+        let warmed = try transcoder.transcode(main, preroll: preroll, stream: stream)
+        let decoded = try decodeToS32(alac, packets: warmed).samples
+        let expected = Array(whole[samplesBefore..<(samplesBefore + decoded.count)])
+        #expect(decoded.count > 5 * rate)                                  // about six seconds of stereo
+        #expect(warmed.first?.pts == base.convert(main[0].pts, to: transcoder.outputTimeBase), "segment starts where its first packet says")
+
+        var worst: Int64 = 0
+        var different = 0
+        var firstDifference: Int?
+        for (index, pair) in zip(decoded, expected).enumerated() where pair.0 != pair.1 {
+            different += 1
+            firstDifference = firstDifference ?? index
+            worst = max(worst, abs(Int64(pair.0) - Int64(pair.1)))
+        }
+        print("PREROLL \(stream): \(different) of \(decoded.count) samples differ, first at \(firstDifference ?? -1), worst \(worst)")
+        if tolerant {
+            #expect(Double(different) / Double(decoded.count) < 0.002, "Opus: \(different) samples differ")
+            #expect(worst < 1 << 16, "Opus: worst difference \(worst), more than one 16-bit step")
+        } else {
+            #expect(different == 0, "Vorbis must be sample-exact after warm-up; \(different) samples differ, first at \(firstDifference ?? -1)")
+        }
+
+        // Without the warm-up the start of the segment is wrong: that is why it exists.
+        let cold = try decodeToS32(alac, packets: try transcoder.transcode(main, stream: stream)).samples
+        let coldDiffers = zip(cold, expected).contains { $0 != $1 } || cold.count != decoded.count
+        print("COLD \(stream): differs from the whole-file transcode: \(coldDiffers)")
+        #expect(coldDiffers, "without warm-up the segment should not match; if it does, the warm-up is unnecessary for this codec")
     }
 
     @Test("a transcoded track is only processed when the player asks for it")

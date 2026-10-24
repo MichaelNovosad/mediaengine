@@ -125,20 +125,9 @@ struct ProbeTests {
         // 60 GB of reported size, real content only at the start: probing must not depend on size.
         let hugeSize: Int64 = 60 * 1_024 * 1_024 * 1_024
         let padded = PaddedByteSource(base: data, totalLength: hugeSize)
-        let started = ContinuousClock.now
         let fromPadded = try await MediaSource(byteSource: padded).probe()
-        #expect(ContinuousClock.now - started < .milliseconds(500))
         #expect(fromPadded.tracks == fromFile.tracks)
         #expect(fromPadded.fileSize == hugeSize)
-    }
-
-    @Test("probing every fixture takes well under 500 ms")
-    func probeIsFast() async throws {
-        for name in Fixture.names {
-            let started = ContinuousClock.now
-            _ = try await Fixture.probe(name)
-            #expect(ContinuousClock.now - started < .milliseconds(500), "slow probe: \(name)")
-        }
     }
 
     @Test("MediaInfo survives a JSON round trip")
@@ -182,15 +171,13 @@ struct ProbeTests {
         await #expect(throws: MediaError.cancelled) { try await task.value }
     }
 
-    @Test("cancelling during slow reads stops promptly")
+    @Test("cancelling during slow reads ends with .cancelled")
     func cancelledDuringReads() async throws {
         let slow = SlowByteSource(base: DataByteSource(try Fixture.data("fixture-basic")), delay: 0.1)
         let task = Task { try await MediaSource(byteSource: slow).probe() }
-        try await Task.sleep(for: .milliseconds(250))
-        let started = ContinuousClock.now
+        while slow.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }      // cancel while a read is in flight
         task.cancel()
-        await #expect(throws: MediaError.cancelled) { try await task.value }
-        #expect(ContinuousClock.now - started < .milliseconds(500))
+        await #expect(throws: MediaError.cancelled) { try await task.value }           // how fast: ExclusiveTests
     }
 
     @Test("ISO 639-2 language tags map to languages, including bibliographic codes")

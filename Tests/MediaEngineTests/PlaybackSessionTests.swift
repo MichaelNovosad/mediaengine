@@ -230,7 +230,60 @@ struct AVPlayerEndToEndTests {
         session.close()
     }
 
-    private func verifyPlayback(name: String, width: Int, height: Int) async throws {
+    @Test("playback crosses a segment boundary on the Opus and the Vorbis track", arguments: ["en", "ja"])
+    func crossesBoundary(language: String) async throws {
+        let session = try await PlaybackSession(url: Fixture.url("fixture-opus-vorbis"))
+        let item = try await session.makePlayerItem()
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        #expect(await waitUntil(10) { item.status == .readyToPlay })
+        #expect(abs(item.duration.seconds - 14.0) < 0.3)
+        let group = try #require(try await item.asset.loadMediaSelectionGroup(for: .audible))
+        let option = try #require(group.options.first { $0.locale?.language.languageCode?.identifier == language })
+        item.select(option, in: group)
+
+        await item.seek(to: CMTime(seconds: 4.8, preferredTimescale: 600))        // the boundary sits at about 6 s
+        player.play()
+        #expect(await waitUntil(10) { item.currentTime().seconds > 7.5 }, "stuck at \(item.currentTime().seconds) on \(language)")
+        #expect(item.error == nil && player.timeControlStatus == .playing)
+        player.pause()
+        session.close()
+    }
+
+    @Test("a truncated download plays what it has and then stops without an error")
+    func truncatedDownload() async throws {
+        let data = try Fixture.data("fixture-opus-vorbis")                          // 14 s; the index sits at the end
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("truncated-\(UUID().uuidString).mkv")
+        try data.prefix(data.count * 6 / 10).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let session = try await PlaybackSession(url: url)
+        let item = try await session.makePlayerItem()
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        #expect(await waitUntil(10) { item.status == .readyToPlay }, "\(String(describing: item.error))")
+        let duration = item.duration.seconds
+        // The duration is the header's: finding the true end of a damaged file would mean reading all of it.
+        #expect(abs(duration - 14.0) < 0.3, "duration \(duration) s")
+
+        player.play()
+        #expect(await waitUntil(10) { item.currentTime().seconds > 2.0 }, "stuck at \(item.currentTime().seconds)")
+        #expect(await waitUntil(15) { item.currentTime().seconds >= duration - 0.2 || player.timeControlStatus == .paused },
+                "did not come to a stop at the end of the readable part; at \(item.currentTime().seconds) of \(duration)")
+        let stoppedAt = item.currentTime().seconds                              // 60% of the bytes hold about 8.3 s
+        #expect(stoppedAt > 6.5 && stoppedAt < 9, "stopped at \(stoppedAt) s")
+        #expect(item.error == nil, "\(String(describing: item.error))")
+        player.pause()
+        session.close()
+    }
+
+    @Test("a file with B-frames plays, seeks and finishes")
+    func playsBFrames() async throws {
+        try await verifyPlayback(name: "fixture-bframes", width: 640, height: 360, duration: 10.0, seeks: [0.4, 6.5])
+    }
+
+    private func verifyPlayback(name: String, width: Int, height: Int, duration expected: Double = 3.05,
+                                seeks: [Double] = [0.2, 2.2]) async throws {
         let session = try await PlaybackSession(url: Fixture.url(name))
         let item = try await session.makePlayerItem()
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: CVPixelBufferAttributes())
@@ -242,7 +295,7 @@ struct AVPlayerEndToEndTests {
         #expect(ready && item.status == .readyToPlay, "\(name): \(String(describing: item.error))")
         guard item.status == .readyToPlay else { return }
 
-        #expect(abs(item.duration.seconds - 3.05) < 0.2, "duration \(item.duration.seconds)")
+        #expect(abs(item.duration.seconds - expected) < 0.2, "duration \(item.duration.seconds)")
         #expect(Int(item.presentationSize.width) == width && Int(item.presentationSize.height) == height)
         let kinds = Set(item.tracks.compactMap { $0.assetTrack?.mediaType })
         #expect(kinds.contains(.video) && kinds.contains(.audio), "\(name) tracks: \(kinds)")
@@ -253,13 +306,13 @@ struct AVPlayerEndToEndTests {
         #expect(frame != nil, "\(name) produced no frame")
 
         // Seek backwards and forwards: segments are requested out of order.
-        for target in [0.2, 2.2] {
+        for target in seeks {
             await item.seek(to: CMTime(seconds: target, preferredTimescale: 600))
             #expect(await waitUntil(6) { abs(item.currentTime().seconds - target) < 0.6 && player.timeControlStatus == .playing },
                     "\(name) after seeking to \(target): at \(item.currentTime().seconds), \(player.timeControlStatus.rawValue)")
         }
 
-        #expect(await waitUntil(8) { item.currentTime().seconds >= item.duration.seconds - 0.15 || player.timeControlStatus == .paused },
+        #expect(await waitUntil(expected + 5) { item.currentTime().seconds >= item.duration.seconds - 0.15 || player.timeControlStatus == .paused },
                 "\(name) did not reach the end; at \(item.currentTime().seconds)")
         #expect(item.error == nil, "\(String(describing: item.error))")
         player.pause()

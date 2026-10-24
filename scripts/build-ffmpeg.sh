@@ -2,6 +2,7 @@
 # Builds static FFmpeg libraries for one slice from the pinned source.
 # usage: scripts/build-ffmpeg.sh <slice> [profile...]     (default profile: core)
 #   slices: macos ios ios-simulator xros xros-simulator   (all arm64)
+# FFMPEG_SANITIZE=address builds an instrumented macOS slice for the sanitizer pass (scripts/check-sanitized.sh).
 # Out-of-tree: nothing is built inside the downloaded source directory.
 source "$(dirname "$0")/lib/common.sh"
 
@@ -12,7 +13,12 @@ version="$(lock_field ffmpeg 2)"
 src="$BUILD/src/ffmpeg-$version"
 [ -d "$src" ] || die "source missing; run scripts/fetch-sources.sh first"
 
-tag="$slice-$(echo "$*" | tr ' ' '+')"
+san="${FFMPEG_SANITIZE:-}"; san_flags=""; suffix=""
+if [ -n "$san" ]; then
+  [ "$slice" = "macos" ] || die "sanitized builds exist for the macos slice only"
+  san_flags="-fsanitize=$san -fno-omit-frame-pointer"; suffix="-$san"
+fi
+tag="$slice-$(echo "$*" | tr ' ' '+')$suffix"
 work="$BUILD/work/ffmpeg/$tag"
 prefix="$BUILD/install/$tag"
 rm -rf "$work" "$prefix"; mkdir -p "$work" "$prefix"
@@ -37,8 +43,8 @@ cd "$work"
   --host-cc="$(xcrun --sdk macosx --find clang)" \
   --host-cflags="-isysroot $(xcrun --sdk macosx --show-sdk-path)" \
   --host-ldflags="-isysroot $(xcrun --sdk macosx --show-sdk-path)" \
-  --extra-cflags="-target $target -isysroot $sysroot -O2 -g" \
-  --extra-ldflags="-target $target -isysroot $sysroot" \
+  --extra-cflags="-target $target -isysroot $sysroot -O2 -g $san_flags" \
+  --extra-ldflags="-target $target -isysroot $sysroot $san_flags" \
   --enable-static --disable-shared --enable-pic \
   --disable-doc --disable-autodetect --disable-network --disable-debug \
   --disable-gpl --disable-nonfree \

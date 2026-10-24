@@ -3,6 +3,10 @@ import PackageDescription
 
 // Local development manifest: the FFmpeg framework is the artifact built by scripts/package-xcframework.sh.
 // Release manifests point `FFmpegLGPL` at a versioned, checksummed download instead.
+// MEDIAENGINE_SANITIZED_FFMPEG=1 swaps in the AddressSanitizer-instrumented macOS framework (scripts/check-sanitized.sh).
+let ffmpegFramework = Context.environment["MEDIAENGINE_SANITIZED_FFMPEG"] == "1"
+    ? "build/FFmpegLGPL-address.xcframework" : "build/FFmpegLGPL.xcframework"
+
 let package = Package(
     name: "MediaEngine",
     platforms: [.iOS("27.0"), .macOS("27.0"), .visionOS("27.0")],
@@ -17,7 +21,7 @@ let package = Package(
         .trait(name: "DolbyVision", description: "Dolby Vision profile 7 conversion. Off until legally cleared."),
     ],
     targets: [
-        .binaryTarget(name: "FFmpegLGPL", path: "build/FFmpegLGPL.xcframework"),
+        .binaryTarget(name: "FFmpegLGPL", path: ffmpegFramework),
         .target(
             name: "MediaEngine",
             dependencies: ["FFmpegLGPL"],

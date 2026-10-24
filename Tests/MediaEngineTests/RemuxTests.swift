@@ -18,29 +18,6 @@ private func packetCounts(_ name: String) throws -> [Int: Int] {
     return counts
 }
 
-/// Sample count and decode-time span of a fragment, read from its `moof`.
-private struct FragmentFacts { var sampleCount: Int; var baseDecodeTime: UInt64; var totalDuration: UInt64; var sequence: UInt32 }
-
-private func facts(_ fragment: Data) throws -> FragmentFacts {
-    let moof = try #require(MP4Box.find(["moof"], in: fragment))
-    let mfhd = try #require(MP4Box.find(["mfhd"], in: fragment, within: moof.payload))
-    let traf = try #require(MP4Box.find(["traf"], in: fragment, within: moof.payload))
-    let tfdt = try #require(MP4Box.find(["tfdt"], in: fragment, within: traf.payload))
-    let trun = try #require(MP4Box.find(["trun"], in: fragment, within: traf.payload))
-    let flags = fragment.uint32(at: trun.payload.lowerBound) & 0x00FF_FFFF
-    let count = Int(fragment.uint32(at: trun.payload.lowerBound + 4))
-    var offset = trun.payload.lowerBound + 12                                 // after version/flags, count, data offset
-    var total: UInt64 = 0
-    for _ in 0..<count {
-        total += UInt64(fragment.uint32(at: offset)); offset += 4             // duration
-        offset += 4                                                          // size
-        if flags & 0x400 != 0 { offset += 4 }                                // flags
-        if flags & 0x800 != 0 { offset += 4 }                                // composition offset
-    }
-    return FragmentFacts(sampleCount: count, baseDecodeTime: fragment.uint64(at: tfdt.payload.lowerBound + 4),
-                         totalDuration: total, sequence: fragment.uint32(at: mfhd.payload.lowerBound + 4))
-}
-
 @Suite("Segment planning")
 struct SegmentPlanTests {
     @Test("cuts at keyframes once the target duration is reached")
@@ -121,7 +98,7 @@ struct RemuxTests {
         #expect(data.range(of: Data("hev1".utf8)) == nil)
     }
 
-    @Test("every packet lands in exactly one fragment, with continuous timestamps", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24"])
+    @Test("every packet lands in exactly one fragment, with continuous timestamps", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes"])
     func fragmentsAreComplete(name: String) async throws {
         let session = try await makeSession(name)
         let expected = try packetCounts(name)
@@ -149,9 +126,26 @@ struct RemuxTests {
             }
             if transcoded {
                 let seconds = Double(totalTicks) / Double(session.timescale(track.id))
-                #expect(abs(seconds - 3.0) < 0.12, "\(name) stream \(track.id): transcoded audio lasts \(seconds) s")
+                #expect(abs(seconds - (info.duration ?? 0)) < 0.15, "\(name) stream \(track.id): transcoded audio lasts \(seconds) s")
             } else {
                 #expect(samples == expected[track.id], "\(name) stream \(track.id): \(samples) samples vs \(expected[track.id] ?? -1) packets")
+            }
+        }
+    }
+
+    @Test("audio and video segments start together, so sync cannot drift from one segment to the next")
+    func startsAreAligned() async throws {
+        let session = try await makeSession("fixture-opus-vorbis")
+        let info = try await Fixture.probe("fixture-opus-vorbis")
+        #expect(session.plan.segments.count == 3)
+        let audio = info.audioTracks.map(\.id)
+        for index in session.plan.segments.indices {
+            let video = try facts(try #require(try session.resource(path: "video-\(index).m4s")).data)
+            let videoStart = Double(video.baseDecodeTime) / Double(session.timescale(0))
+            for id in audio {
+                let fragment = try facts(try #require(try session.resource(path: "audio-\(id)-\(index).m4s")).data)
+                let audioStart = Double(fragment.baseDecodeTime) / Double(session.timescale(id))
+                #expect(abs(audioStart - videoStart) < 0.12, "segment \(index) audio \(id) starts \(audioStart), video \(videoStart)")
             }
         }
     }
@@ -176,9 +170,22 @@ struct RemuxTests {
         }
     }
 
+    @Test("a file with B-frames gets sound decode timestamps from the first frame on")
+    func bFrames() async throws {
+        let session = try await makeSession("fixture-bframes")
+        let model = try #require(session.reorder)
+        #expect(model.delay >= 1, "the fixture is supposed to have reordered frames; delay \(model.delay)")
+        #expect(abs(model.frameTicks - 40) <= 1, "25 fps in a millisecond time base; got \(model.frameTicks)")
+        for index in session.plan.segments.indices {
+            let fragment = try #require(try session.resource(path: "video-\(index).m4s")).data
+            let fact = try facts(fragment)
+            #expect(fact.sampleCount > 0 && fact.totalDuration > 0)
+        }
+    }
+
     #if os(macOS)
     /// The strongest check available: AVFoundation itself reads the assembled stream.
-    @Test("AVFoundation decodes the assembled video and audio", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24"])
+    @Test("AVFoundation decodes the assembled video and audio", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes"])
     func avfoundationDecodes(name: String) async throws {
         let session = try await makeSession(name)
         let expected = try packetCounts(name)
@@ -200,7 +207,8 @@ struct RemuxTests {
             let mediaType: AVMediaType = track.kind == .video ? .video : .audio
             let avTrack = try #require(try await asset.loadTracks(withMediaType: mediaType).first)
             let duration = try await asset.load(.duration).seconds
-            #expect(abs(duration - 3.05) < 0.15, "\(name) \(prefix) duration \(duration)")
+            let expectedDuration = info.duration ?? 3.05
+            #expect(abs(duration - expectedDuration) < 0.2, "\(name) \(prefix) duration \(duration), expected \(expectedDuration)")
 
             let settings: [String: Any] = track.kind == .video
                 ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
@@ -224,10 +232,64 @@ struct RemuxTests {
             if track.kind == .video {
                 #expect(buffers == expected[track.id], "\(name) decoded \(buffers) frames, file has \(expected[track.id] ?? -1) packets")
             } else {
-                #expect(decodedSeconds > 2.8 && decodedSeconds < 3.4, "\(name) \(prefix) decoded \(decodedSeconds) s of audio")
+                #expect(abs(decodedSeconds - expectedDuration) < 0.4, "\(name) \(prefix) decoded \(decodedSeconds) s of audio")
             }
-            #expect(lastEnd > 2.8 && lastEnd < 3.4, "\(name) \(prefix) ends at \(lastEnd)")
+            #expect(abs(lastEnd - expectedDuration) < 0.5, "\(name) \(prefix) ends at \(lastEnd), expected \(expectedDuration)")
         }
     }
+
+    /// AVFoundation's view of the frame times must equal the file's presentation times, whatever decode times we wrote.
+    @Test("B-frame video keeps every presentation time")
+    func bFramePresentationTimes() async throws {
+        let session = try await makeSession("fixture-bframes")
+        let info = try await Fixture.probe("fixture-bframes")
+        let videoID = try #require(info.videoTracks.first?.id)
+        var bytes = try #require(try session.resource(path: "video-init.mp4")).data
+        for index in session.plan.segments.indices { bytes.append(try #require(try session.resource(path: "video-\(index).m4s")).data) }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("bframes-\(UUID().uuidString).mp4")
+        try bytes.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let asset = AVURLAsset(url: file)
+        let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        let provider = reader.outputProvider(for: output)
+        try reader.start()
+        var decoded: [Double] = []
+        while let buffer = try await provider.next() { decoded.append(buffer.presentationTimeStamp.seconds) }
+
+        let packetReader = try PacketReader(source: FileByteSource(url: Fixture.url("fixture-bframes")), cancellation: CancellationFlag())
+        let base = packetReader.timeBase(videoID)
+        var source: [Double] = []
+        while let packet = try packetReader.next() {
+            if packet.stream == videoID { source.append(base.seconds(packet.pts)) }
+        }
+        decoded.sort(); source.sort()
+        #expect(decoded.count == source.count, "\(decoded.count) decoded frames, \(source.count) packets")
+        let offset = (decoded.first ?? 0) - (source.first ?? 0)
+        let worst = zip(decoded, source).map { abs(($0 - $1) - offset) }.max() ?? 0
+        #expect(worst < 0.002, "frame times differ from the file's by up to \(worst * 1000) ms")
+    }
     #endif
+}
+
+@Suite("Keyframe index")
+struct KeyframeIndexTests {
+    @Test("a long file is cut at its real keyframes, not left as one segment")
+    func longFileHasSegments() async throws {
+        let session = try await makeSession("fixture-opus-vorbis")
+        #expect(session.plan.segments.count >= 2, "plan has \(session.plan.segments.count) segment(s)")
+        #expect(session.plan.segments.dropLast().allSatisfy { $0.duration >= 5.9 && $0.duration < 8 })
+        #expect(abs(session.plan.totalDuration - 14.0) < 0.1)
+    }
+
+    @Test("an index with big gaps or no early keyframe is not trusted")
+    func completeness() {
+        #expect(RemuxSession.looksComplete(keyframes: [0, 1, 2, 3], duration: 4))
+        #expect(!RemuxSession.looksComplete(keyframes: [0, 1], duration: 600))           // Cues not loaded
+        #expect(!RemuxSession.looksComplete(keyframes: [], duration: 10))
+        #expect(!RemuxSession.looksComplete(keyframes: [30, 31], duration: 40))         // nothing near the start
+        #expect(RemuxSession.looksComplete(keyframes: [0, 50, 100], duration: 140))
+    }
 }

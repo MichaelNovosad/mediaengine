@@ -22,6 +22,14 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var codecs: String
         /// Present for audio that is decoded and re-encoded to ALAC; packets then use the transcoder's time base.
         var transcoder: AudioTranscoder?
+        /// Seconds of audio before a segment that the transcoder's decoder needs as warm-up.
+        var prerollSeconds: Double = 0
+    }
+
+    /// Source packets of a transcoded track waiting for the player to ask for them.
+    private struct PendingTranscode {
+        var packets: [MediaPacket]
+        var preroll: [MediaPacket]
     }
 
     private struct CacheKey: Hashable { var stream: Int; var segment: Int }
@@ -39,7 +47,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var cacheOrder: [CacheKey] = []
     private var cacheBytes = 0
     /// Source packets of audio that still has to be transcoded; done only if the player asks for that track.
-    private var pendingTranscodes: [CacheKey: [MediaPacket]] = [:]
+    private var pendingTranscodes: [CacheKey: PendingTranscode] = [:]
+    /// Keyframe times (seconds) of the video stream, for seeking a little before a segment.
+    private var videoKeyframes: [Double] = []
+    /// Reordering depth of the video, to restore decode timestamps that Matroska does not store.
+    private(set) var reorder: ReorderModel?
     /// How many (track, segment) transcodes have run (diagnostics and tests).
     private(set) var transcodeCount = 0
     private let cacheBudget: Int
@@ -50,7 +62,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     // MARK: Opening
 
     /// Blocking: reads the start of the file, builds the segment plan and the initialization segments.
-    init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 128 * 1024 * 1024) throws {
+    init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024) throws {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
@@ -61,7 +73,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         audioIndices = info.audioTracks.filter { track in
             switch treatments[track.id] {
             case .passthrough: true
-            case .transcodeAudio(.alac): AudioTranscoder.canTranscodeStatelessly(track.codec.name)
+            case .transcodeAudio(.alac): AudioTranscoder.canTranscode(track.codec.name)
             default: false
             }
         }.map(\.id)
@@ -69,7 +81,14 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         guard !wanted.isEmpty else { throw MediaError.unsupported(detail: "no playable video or audio track") }
 
         // First packets of every wanted stream: used to describe AC-3 streams and to measure the timestamp shift.
-        let first = try Self.readStart(reader, streams: wanted, video: videoIndex)
+        var first = try Self.readStart(reader, streams: wanted, video: videoIndex)
+        if let videoIndex, let gop = first[videoIndex] {
+            let model = ReorderModel.measure(gop, declaredDelay: Int(reader.parameters(videoIndex).pointee.video_delay))
+            var repaired = gop
+            model.repair(&repaired)
+            first[videoIndex] = repaired
+            reorder = model
+        }
         var earliest = 0.0
         for (stream, packets) in first {
             if let packet = packets.first { earliest = min(earliest, reader.timeBase(stream).seconds(packet.dts)) }
@@ -81,14 +100,17 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var duration = info.duration
         if let videoIndex {
             let videoBase = reader.timeBase(videoIndex)
-            keyframes = reader.keyframeTimestamps(stream: videoIndex).map { videoBase.seconds($0) }
+            keyframes = reader.keyframeTimestamps(stream: videoIndex, loadingIndexUpTo: duration).map { videoBase.seconds($0) }
         }
-        if (videoIndex != nil && keyframes.isEmpty) || duration == nil {
+        // An index that is missing, or has gaps far longer than any real GOP, cannot be trusted: read the file once.
+        let indexComplete = Self.looksComplete(keyframes: keyframes, duration: duration)
+        if (videoIndex != nil && !indexComplete) || duration == nil {
             let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0])
-            if keyframes.isEmpty { keyframes = scan.keyframes }
+            if !indexComplete { keyframes = scan.keyframes }
             if duration == nil { duration = scan.duration }
         }
         guard let totalDuration = duration, totalDuration > 0 else { throw MediaError.unsupported(detail: "unknown duration") }
+        videoKeyframes = keyframes.sorted()
         plan = SegmentPlan.make(keyframes: keyframes, duration: totalDuration)
 
         for stream in wanted {
@@ -112,7 +134,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                     streamIndex: stream, kind: .audio, track: track, initSegment: initSegment,
                     writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: timeBase,
                                            hasCompositionOffsets: false, shift: shift),
-                    codecs: "alac", transcoder: transcoder)
+                    codecs: "alac", transcoder: transcoder, prerollSeconds: AudioTranscoder.prerollSeconds(track.codec.name))
                 continue
             }
 
@@ -121,7 +143,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             let initSegment = try InitSegmentBuilder.build(
                 parameters: reader.parameters(stream), timeBase: sourceBase,
                 sampleAspect: isVideo ? st.pointee.sample_aspect_ratio : AVRational(num: 0, den: 1),
-                samples: first[stream] ?? [], shift: shift)
+                samples: Array((first[stream] ?? []).prefix(8)), shift: shift)
             outputs[stream] = Output(
                 streamIndex: stream, kind: isVideo ? .video : .audio, track: track, initSegment: initSegment,
                 writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: sourceBase,
@@ -132,6 +154,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Whether the session serves this stream (used by tests and the player item builder).
     func hasOutput(_ stream: Int) -> Bool { outputs[stream] != nil }
+    /// Bytes of finished fragments held in the cache right now (diagnostics and tests).
+    var cachedBytes: Int { queue.sync { cacheBytes } }
     /// Media timescale of a served stream.
     func timescale(_ stream: Int) -> Int32 { outputs[stream]?.initSegment.timescale ?? 1 }
 
@@ -140,19 +164,36 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         queue.sync { cache.removeAll(); cacheOrder.removeAll(); cacheBytes = 0 }
     }
 
-    /// Reads packets from the start of the file until every stream has a handful (video starts at a keyframe).
+    /// Reads packets from the start of the file until every stream has a handful. Video yields its whole first run
+    /// (up to the second keyframe, at most 1,000 packets), which is what the reordering depth is measured on.
     private static func readStart(_ reader: PacketReader, streams: [Int], video: Int?) throws -> [Int: [MediaPacket]] {
         var result: [Int: [MediaPacket]] = [:]               // a freshly opened file is already at its first packet
         var inspected = 0
-        while inspected < 2_000, let packet = try reader.next() {
+        var keyframes = 0
+        var videoDone = false
+        while inspected < 8_000, let packet = try reader.next() {
             inspected += 1
             guard streams.contains(packet.stream) else { continue }
-            if packet.stream == video, result[packet.stream] == nil, !packet.isKeyframe { continue }
-            if (result[packet.stream]?.count ?? 0) < 8 { result[packet.stream, default: []].append(packet) }
-            if streams.allSatisfy({ (result[$0]?.count ?? 0) >= 8 }) { break }
+            if packet.stream == video {
+                if result[packet.stream] == nil, !packet.isKeyframe { continue }
+                if packet.isKeyframe { keyframes += 1 }
+                if keyframes > 1 || (result[packet.stream]?.count ?? 0) >= 1_000 { videoDone = true }
+                if !videoDone { result[packet.stream, default: []].append(packet) }
+            } else if (result[packet.stream]?.count ?? 0) < 8 {
+                result[packet.stream, default: []].append(packet)
+            }
+            if streams.allSatisfy({ $0 == video ? videoDone : (result[$0]?.count ?? 0) >= 8 }) { break }
         }
         guard streams.allSatisfy({ result[$0] != nil }) else { throw MediaError.corrupt(detail: "stream without packets near the start") }
         return result
+    }
+
+    /// Whether a keyframe list covers the file: some keyframe near the start and no gap longer than a minute.
+    static func looksComplete(keyframes: [Double], duration: Double?) -> Bool {
+        guard let first = keyframes.first, first < 10 else { return false }
+        guard let duration else { return true }
+        let edges = keyframes + [duration]
+        return zip(edges, edges.dropFirst()).allSatisfy { $1 - $0 <= 60 }
     }
 
     /// Reads the whole file once to find keyframes and the true duration.
@@ -234,13 +275,21 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let segment = plan.segments[number]
         let seekStream = videoIndex ?? audioIndices[0]
         let seekBase = reader.timeBase(seekStream)
+        let maxPreroll = outputs.values.map(\.prerollSeconds).max() ?? 0
         if number == 0 {
             try reader.rewind()
         } else {
-            try reader.seek(stream: seekStream, to: seekBase.ticks(seconds: segment.start))
+            // A stateful audio decoder needs to hear a little before the segment: start from the keyframe at or
+            // before (start - pre-roll). Video packets before the segment keyframe are skipped below.
+            var from = segment.start
+            if maxPreroll > 0 {
+                from = videoKeyframes.last { $0 <= segment.start - maxPreroll } ?? (segment.start - maxPreroll)
+            }
+            if from <= 0 { try reader.rewind() } else { try reader.seek(stream: seekStream, to: seekBase.ticks(seconds: from)) }
         }
 
         var packets: [Int: [MediaPacket]] = [:]
+        var prerollPackets: [Int: [MediaPacket]] = [:]
         var videoStarted = videoIndex == nil
         var videoDone = videoIndex == nil
         var audioDone = Set<Int>()
@@ -263,10 +312,20 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                 }
                 if !videoDone { packets[packet.stream, default: []].append(packet) }
             } else {
-                if seconds < segment.start && number > 0 { continue }
+                if seconds < segment.start && number > 0 {
+                    // Warm-up audio for a stateful decoder: the packets just before the segment, in order.
+                    let window = outputs[packet.stream]?.prerollSeconds ?? 0
+                    if window > 0, seconds >= segment.start - window { prerollPackets[packet.stream, default: []].append(packet) }
+                    continue
+                }
                 if seconds >= segment.end && !isLast { audioDone.insert(packet.stream); continue }
                 if !audioDone.contains(packet.stream) { packets[packet.stream, default: []].append(packet) }
             }
+        }
+
+        if let videoIndex, let reorder, var video = packets[videoIndex] {
+            reorder.repair(&video)
+            packets[videoIndex] = video
         }
 
         pendingTranscodes = pendingTranscodes.filter { abs($0.key.segment - number) <= 2 }      // keep only nearby windows
@@ -274,7 +333,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             let list = packets[stream] ?? []
             let key = CacheKey(stream: stream, segment: number)
             if output.transcoder != nil, !list.isEmpty {
-                pendingTranscodes[key] = list
+                pendingTranscodes[key] = PendingTranscode(packets: list, preroll: prerollPackets[stream] ?? [])
                 continue
             }
             let data = output.writer.fragment(sequence: UInt32(number + 1), packets: list)
@@ -286,9 +345,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// The finished fragment for a track and segment: from the cache, or transcoded now from the stored packets.
     private func fragment(for key: CacheKey) throws -> Data? {
         if let hit = touch(key) { return hit }
-        guard let list = pendingTranscodes.removeValue(forKey: key), let output = outputs[key.stream],
+        guard let pending = pendingTranscodes.removeValue(forKey: key), let output = outputs[key.stream],
               let transcoder = output.transcoder else { return nil }
-        let encoded = try transcoder.transcode(list, stream: key.stream)
+        let encoded = try transcoder.transcode(pending.packets, preroll: pending.preroll, stream: key.stream)
         transcodeCount += 1
         let data = output.writer.fragment(sequence: UInt32(key.segment + 1), packets: encoded)
             ?? output.writer.emptyFragment(sequence: UInt32(key.segment + 1), atSeconds: plan.segments[key.segment].start)

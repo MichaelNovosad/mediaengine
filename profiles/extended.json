@@ -1,0 +1,18 @@
+{
+  "name": "extended",
+  "description": "Adds software decoders for codecs Apple does not decode (legacy Pro formats, VP8/VP9). H.264 is never software-decoded: Hi10P is out of scope. VC-1 stays off until legal clearance (D-E8).",
+  "ffmpeg": {
+    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
+    "decoders": ["mpeg2video", "mpeg4", "msmpeg4v1", "msmpeg4v2", "msmpeg4v3", "wmv1", "wmv2", "vp8", "vp9", "theora", "wmav1", "wmav2", "mp2float"]
+  },
+  "codecStatus": {
+    "mpeg2video": {"status": "expired", "note": "last US patent expired 2018-02-13"},
+    "mpeg4": {"status": "expired", "note": "MPEG-4 Part 2 (Xvid/DivX); last patent reportedly expired 2026-07 (single source)"},
+    "msmpeg4": {"status": "needs-review", "note": "Microsoft-era codec; check before enabling"},
+    "wmv": {"status": "needs-review", "note": "WMV1/2; check before enabling"},
+    "vp8": {"status": "royalty-free", "note": "pool claims reported"},
+    "vp9": {"status": "royalty-free", "note": "pool claims reported"},
+    "theora": {"status": "royalty-free", "note": ""},
+    "wma": {"status": "needs-review", "note": "Microsoft audio codec; check before enabling"}
+  }
+}

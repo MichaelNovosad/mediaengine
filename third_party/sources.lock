@@ -1,0 +1,3 @@
+# Pinned third-party sources. Tab-separated; every line is verified by scripts/fetch-sources.sh.
+# name	version	url	sha256	signature_url	signing_key_fingerprint	key_url
+ffmpeg	9.0.2	https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz	8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e	https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz.asc	FCF986EA15E6E293A5644F10B4322F04D67658D8	https://ffmpeg.org/ffmpeg-devel.asc

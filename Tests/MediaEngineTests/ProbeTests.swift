@@ -1,0 +1,199 @@
+import Foundation
+import Testing
+@testable import MediaEngine
+
+@Suite("Probe")
+struct ProbeTests {
+    @Test("basic MKV: container, tracks, chapters, plan")
+    func basic() async throws {
+        let info = try await Fixture.probe("fixture-basic")
+        #expect(info.container.kind == .matroska)
+        #expect(info.container.isMatroskaFamily)
+        #expect(info.title == "MediaEngine fixture basic")
+        #expect(abs((info.duration ?? 0) - 3.052) < 0.01)
+        #expect(info.fileSize == Int64(try Fixture.data("fixture-basic").count))
+        #expect(info.tracks.count == 4)
+
+        let video = try #require(info.videoTracks.first)
+        #expect(video.codec.name == "h264")
+        #expect(video.codec.displayName == "H.264")
+        #expect(video.codec.profile == "High")
+        #expect(video.codec.profileIdentifier == 100)
+        #expect(video.codec.level == "3.0")
+        #expect(video.video?.width == 640 && video.video?.height == 360)
+        #expect(video.video?.frameRate == 25)
+        #expect(video.video?.hdr == .sdr)
+        #expect(video.video?.rotation == 0)
+
+        let audio = info.audioTracks
+        #expect(audio.map(\.codec.name) == ["aac", "flac"])
+        #expect(audio[0].language?.languageCode?.identifier == "en")
+        #expect(audio[0].isDefault && !audio[1].isDefault)
+        #expect(audio[1].language?.languageCode?.identifier == "ja")
+        #expect(audio[1].title == "Japanese FLAC")
+        #expect(audio[1].audio?.isLossless == true)
+        #expect(audio[1].audio?.sampleRate == 48_000)
+
+        let subtitle = try #require(info.subtitleTracks.first)
+        #expect(subtitle.codec.name == "subrip")
+        #expect(subtitle.subtitle?.format == .text)
+        #expect(subtitle.isDefault)
+
+        #expect(info.chapters.map(\.title) == ["Opening", "Main"])
+        #expect(abs(info.chapters[1].start - 1.5) < 0.001 && abs(info.chapters[1].end - 3.0) < 0.001)
+        #expect(info.attachments.isEmpty)
+
+        #expect(info.playbackPlan.path == .remux)
+        #expect(info.requiredProfile.isEmpty)
+        #expect(info.playbackPlan.tracks.map(\.treatment) ==
+                [.passthrough, .passthrough, .transcodeAudio(.alac), .convertToWebVTT])
+    }
+
+    @Test("HDR10 HEVC Main 10 with E-AC-3 5.1")
+    func hdr10() async throws {
+        let info = try await Fixture.probe("fixture-hdr10")
+        let video = try #require(info.videoTracks.first)
+        #expect(video.codec.name == "hevc")
+        #expect(video.codec.profile == "Main 10")
+        #expect(video.video?.bitDepth == 10)
+        #expect(video.video?.chroma == .yuv420)
+        #expect(video.video?.colorPrimaries == "bt2020")
+        #expect(video.video?.colorTransfer == "smpte2084")
+        #expect(video.video?.colorMatrix == "bt2020nc")
+        #expect(video.video?.hdr == .hdr10)
+        let audio = try #require(info.audioTracks.first)
+        #expect(audio.codec.name == "eac3")
+        #expect(audio.audio?.channels == 6)
+        #expect(audio.audio?.channelLayout == "5.1(side)")
+        #expect(info.playbackPlan.path == .remux)
+    }
+
+    @Test("plain HEVC with AC-3 is SDR and needs nothing extra")
+    func hevc() async throws {
+        let info = try await Fixture.probe("fixture-hevc")
+        let video = try #require(info.videoTracks.first)
+        #expect(video.codec.name == "hevc" && video.codec.profile == "Main")
+        #expect(video.video?.bitDepth == 8)
+        #expect(video.video?.hdr == .sdr)
+        #expect(info.audioTracks.first?.codec.name == "ac3")
+        #expect(info.requiredProfile.isEmpty)
+    }
+
+    @Test("DTS and TrueHD need the optional audio module and are reported unavailable here")
+    func licensedAudio() async throws {
+        let info = try await Fixture.probe("fixture-licensed-audio")
+        #expect(info.audioTracks.map(\.codec.name) == ["dts", "truehd"])
+        #expect(info.requiredProfile == .licensedAudio)
+        #expect(info.playbackPlan.path == .remux)                    // video still plays
+        for plan in info.playbackPlan.tracks where plan.kind == .audio {
+            guard case .unavailable(let reason) = plan.treatment else { Issue.record("expected unavailable"); continue }
+            #expect(reason.code == .needsCodecProfile)
+            #expect(reason.requires == .licensedAudio)
+        }
+        #expect(info.playbackPlan.notes.contains { $0.contains("silent") })
+    }
+
+    @Test("anime-style MKV: two audio languages, styled subtitles, forced signs track, font and cover attachments")
+    func anime() async throws {
+        let info = try await Fixture.probe("fixture-anime")
+        #expect(info.audioTracks.map(\.title) == ["Japanese", "English dub"])
+        #expect(info.audioTracks.map { $0.language?.languageCode?.identifier } == ["ja", "en"])
+        #expect(info.subtitleTracks.map(\.codec.name) == ["ass", "ass"])
+        #expect(info.subtitleTracks.map(\.isForced) == [false, true])
+        #expect(info.subtitleTracks.map(\.title) == ["Dialogue", "Signs and Songs"])
+        #expect(info.chapters.map(\.title) == ["Opening", "Part A", "Ending"])
+        #expect(info.attachments.map(\.kind).sorted { $0.rawValue < $1.rawValue } == [.coverArt, .font])
+        let font = try #require(info.attachments.first { $0.kind == .font })
+        #expect(font.filename == "FakeFont.ttf" && font.byteCount == 2_048)
+        #expect(info.tracks.count == 5)                              // attachments and cover art are not tracks
+    }
+
+    @Test("results are identical through file, memory and padded sources")
+    func sameResultEverywhere() async throws {
+        let data = try Fixture.data("fixture-basic")
+        let fromFile = try await Fixture.probe("fixture-basic")
+        let fromMemory = try await MediaSource(byteSource: DataByteSource(data)).probe()
+        #expect(fromFile == fromMemory)
+
+        // 60 GB of reported size, real content only at the start: probing must not depend on size.
+        let hugeSize: Int64 = 60 * 1_024 * 1_024 * 1_024
+        let padded = PaddedByteSource(base: data, totalLength: hugeSize)
+        let started = ContinuousClock.now
+        let fromPadded = try await MediaSource(byteSource: padded).probe()
+        #expect(ContinuousClock.now - started < .milliseconds(500))
+        #expect(fromPadded.tracks == fromFile.tracks)
+        #expect(fromPadded.fileSize == hugeSize)
+    }
+
+    @Test("probing every fixture takes well under 500 ms")
+    func probeIsFast() async throws {
+        for name in Fixture.names {
+            let started = ContinuousClock.now
+            _ = try await Fixture.probe(name)
+            #expect(ContinuousClock.now - started < .milliseconds(500), "slow probe: \(name)")
+        }
+    }
+
+    @Test("MediaInfo survives a JSON round trip")
+    func codable() async throws {
+        let info = try await Fixture.probe("fixture-anime")
+        let decoded = try JSONDecoder().decode(MediaInfo.self, from: JSONEncoder().encode(info))
+        #expect(decoded == info)
+    }
+
+    // MARK: Failure and cancellation
+
+    @Test("garbage and empty input are reported as not media, not as crashes")
+    func notMedia() async {
+        await #expect(throws: MediaError.notMedia) { try await MediaSource(byteSource: DataByteSource(Data(repeating: 0x42, count: 4_096))).probe() }
+        await #expect(throws: MediaError.notMedia) { try await MediaSource(byteSource: DataByteSource(Data())).probe() }
+    }
+
+    @Test("truncated files either describe what is there or fail cleanly")
+    func truncated() async throws {
+        let data = try Fixture.data("fixture-basic")
+        for cut in [64, 700, 2_000, 40_000, data.count - 10] {
+            do { _ = try await MediaSource(byteSource: DataByteSource(data.prefix(cut))).probe() }
+            catch let error as MediaError { #expect(error != .cancelled) }
+        }
+    }
+
+    @Test("a source that throws surfaces its own error")
+    func sourceFailure() async {
+        struct Broken: ByteSource {
+            var length: Int64? { 1_000 }
+            func read(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int { throw MediaError.network(detail: "gone") }
+        }
+        await #expect(throws: MediaError.network(detail: "gone")) { try await MediaSource(byteSource: Broken()).probe() }
+    }
+
+    @Test("a task cancelled before it starts finishes with .cancelled")
+    func cancelledBeforeStart() async throws {
+        let source = MediaSource(byteSource: DataByteSource(try Fixture.data("fixture-basic")))
+        let task = Task { try await source.probe() }
+        task.cancel()
+        await #expect(throws: MediaError.cancelled) { try await task.value }
+    }
+
+    @Test("cancelling during slow reads stops promptly")
+    func cancelledDuringReads() async throws {
+        let slow = SlowByteSource(base: DataByteSource(try Fixture.data("fixture-basic")), delay: 0.1)
+        let task = Task { try await MediaSource(byteSource: slow).probe() }
+        try await Task.sleep(for: .milliseconds(250))
+        let started = ContinuousClock.now
+        task.cancel()
+        await #expect(throws: MediaError.cancelled) { try await task.value }
+        #expect(ContinuousClock.now - started < .milliseconds(500))
+    }
+
+    @Test("ISO 639-2 language tags map to languages, including bibliographic codes")
+    func languages() {
+        func code(_ tag: String?) -> String? { LanguageCodes.language(from: tag)?.languageCode?.identifier }
+        #expect(code("eng") == "en" && code("jpn") == "ja" && code("deu") == "de")
+        #expect(code("ger") == "de" && code("fre") == "fr" && code("chi") == "zh" && code("cze") == "cs")
+        #expect(code("ukr") == "uk" && code("rus") == "ru" && code("kor") == "ko" && code("hin") == "hi")
+        #expect(code("und") == nil && code("mul") == nil && code("zxx") == nil && code("qaa") == nil)
+        #expect(code(nil) == nil && code("") == nil)
+        #expect(code("pt-BR") == "pt")
+    }
+}

@@ -42,10 +42,19 @@ log "fixture-hdr10.mkv  (HEVC Main10 BT.2020/PQ + E-AC-3 5.1)"
   -c:a eac3 -b:a 384k -ac 6 \
   -metadata:s:a:0 language=eng \
   -f matroska .tmp-hdr10.mkv
-# The VideoToolbox encoder drops primaries/transfer, so tag them in a stream-copy pass (Matroska Colour element).
+# The VideoToolbox encoder drops primaries/transfer, so tag them in a stream-copy pass: in the HEVC bitstream
+# (VUI) and in the Matroska Colour element.
 "$FF" -v error -y -i .tmp-hdr10.mkv -map 0 -c copy \
+  -bsf:v "hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9:video_full_range_flag=0" \
   -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv \
   -f matroska fixture-hdr10.mkv
+
+log "fixture-hlg.mkv  (HEVC Main10 BT.2020/HLG + AAC)"
+"$FF" -v error -y -i .tmp-hdr10.mkv -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=3" \
+  -map 0:v -map 1:a -c:v copy -c:a aac_at -b:a 128k -ac 2 -metadata:s:a:0 language=eng \
+  -bsf:v "hevc_metadata=colour_primaries=9:transfer_characteristics=18:matrix_coefficients=9:video_full_range_flag=0" \
+  -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc -color_range tv \
+  -f matroska fixture-hlg.mkv
 rm -f .tmp-hdr10.mkv
 
 log "fixture-licensed-audio.mkv  (H.264 + DTS + TrueHD)"
@@ -58,6 +67,16 @@ log "fixture-licensed-audio.mkv  (H.264 + DTS + TrueHD)"
   -c:a:0 dca -strict -2 -b:a:0 768k -ac 2 -c:a:1 truehd -strict -2 -ac 2 \
   -metadata:s:a:0 language=eng -metadata:s:a:1 language=eng \
   -f matroska fixture-licensed-audio.mkv
+
+log "fixture-flac24.mkv  (H.264 + FLAC 24-bit stereo 44.1 kHz)"
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=3" \
+  -f lavfi -i "sine=frequency=1000:sample_rate=44100:duration=3" \
+  -map 0:v -map 1:a \
+  -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p \
+  -c:a flac -sample_fmt s32 -bits_per_raw_sample 24 -ac 2 \
+  -metadata:s:a:0 language=eng \
+  -f matroska fixture-flac24.mkv
 
 log "src/cover.jpg"
 "$FF" -v error -y -f lavfi -i "color=c=red:s=64x64:d=1" -frames:v 1 -pix_fmt yuvj420p -c:v mjpeg src/cover.jpg

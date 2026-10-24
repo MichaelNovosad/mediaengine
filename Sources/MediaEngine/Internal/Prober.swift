@@ -3,53 +3,13 @@ import Foundation
 
 /// Reads the container and builds ``MediaInfo``. Runs synchronously on a background thread.
 enum Prober {
-    /// Upper bounds that keep probing fast: header data and the first packets are enough.
-    private static let probeSize = "4194304"            // 4 MB
-    private static let analyzeDuration = "2000000"      // 2 s of stream time, in microseconds
     private static let unknownProfile: Int32 = -99      // AV_PROFILE_UNKNOWN
 
     static func probe(source: any ByteSource, cancellation: CancellationFlag,
                       capabilities: DeviceCapabilities = .current) throws -> MediaInfo {
-        FFmpegLogging.ensureInstalled()
-        let bridge = AVIOBridge(source: source, cancellation: cancellation)
-        return try withExtendedLifetime(bridge) {
-            try run(bridge: bridge, capabilities: capabilities)
-        }
-    }
-
-    private static func run(bridge: AVIOBridge, capabilities: DeviceCapabilities) throws -> MediaInfo {
-        let docType = sniffMatroskaDocType(bridge.source)
-        guard let io = bridge.makeContext() else { throw MediaError.engine(detail: "could not allocate I/O context") }
-        defer { AVIOBridge.free(io) }
-        guard let allocated = avformat_alloc_context() else { throw MediaError.engine(detail: "could not allocate format context") }
-        allocated.pointee.pb = io
-        allocated.pointee.flags |= AVFMT_FLAG_CUSTOM_IO
-
-        var options: OpaquePointer?
-        av_dict_set(&options, "probesize", probeSize, 0)
-        av_dict_set(&options, "analyzeduration", analyzeDuration, 0)
-        defer { av_dict_free(&options) }
-
-        var opened: UnsafeMutablePointer<AVFormatContext>? = allocated
-        let openResult = avformat_open_input(&opened, nil, nil, &options)
-        guard openResult >= 0, let format = opened else { throw openError(openResult, bridge) }
-        defer { avformat_close_input(&opened) }
-
-        let infoResult = avformat_find_stream_info(format, nil)
-        if bridge.cancellation.isCancelled { throw MediaError.cancelled }
-        if infoResult < 0, format.pointee.nb_streams == 0 { throw openError(infoResult, bridge) }
-        guard format.pointee.nb_streams > 0 else { throw MediaError.corrupt(detail: "no tracks") }
-
-        return build(format, source: bridge.source, docType: docType, capabilities: capabilities)
-    }
-
-    private static func openError(_ code: Int32, _ bridge: AVIOBridge) -> MediaError {
-        if bridge.cancellation.isCancelled || code == AVError.exit { return .cancelled }
-        if let failure = bridge.failure.withLock({ $0 }) {
-            return (failure as? MediaError) ?? .unreadable(detail: "\(type(of: failure))")
-        }
-        if code == AVError.invalidData || code == AVError.eof { return .notMedia }
-        return .corrupt(detail: AVError.describe(code))
+        let docType = sniffMatroskaDocType(source)
+        let context = try FormatContext.open(source: source, cancellation: cancellation)
+        return build(context.format, source: source, docType: docType, capabilities: capabilities)
     }
 
     /// Reads the first bytes to tell WebM from Matroska: the EBML header names its DocType.

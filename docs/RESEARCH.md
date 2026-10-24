@@ -156,3 +156,22 @@ SDK `xros27.0` and `xrsimulator27.0` are installed; the visionOS 27.0 simulator 
 - **Blocking I/O stays off Swift's thread pool.** FFmpeg's reads are synchronous, so probing runs on a GCD thread, with a cancellation flag the read callback polls and `ByteSource.cancelPendingReads()` for in-flight network requests. Cancelling a probe finishes in well under 500 ms in tests.
 - **HTTP testing without a network.** A `URLProtocol` stub serves ranges, injects 503s and delays, so retries, caching, missing range support and cancellation are tested deterministically on macOS and all simulators.
 - **Open for E2:** security-scoped URLs and iCloud placeholders need a device run; whether AVPlayer accepts FLAC and Opus in fragmented MP4 directly (the plan currently transcodes them); VP9 stays "software, extended profile" until VideoToolbox support is tested; AV1 hardware detection uses `VTIsHardwareDecodeSupported` (simulators may report differently from devices).
+
+## 11. E2 findings (2026-10-24)
+
+- **Design that works:** video-only HLS playlist plus one audio-only playlist per track (alternate renditions), fragmented MP4 segments cut at video keyframes from the Matroska index, served from a loopback server. The init segment comes from FFmpeg's MP4 muxer; media fragments (`moof`/`mdat`) are written by our own Swift code so any segment can be built alone and in any order with exact `tfdt` values.
+- **Verified by AVFoundation itself:** the assembled fragmented MP4 decodes frame-exact (video) and full-length (audio) through `AVAssetReader`; AVPlayer plays, seeks and finishes through HLS for H.264, HEVC and HLG.
+- **HEVC must be tagged `hvc1`** (FFmpeg defaults to `hev1`); we set the tag in the init segment.
+- **No edit list.** FFmpeg wrote an `elst` with a 2 ms empty edit; AVFoundation applied it, shifted the timeline by about 42 ms and produced one extra frame. `use_editlist=0` fixes it; our fragments already carry exact timestamps.
+- **Priming packets.** AAC/AC-3 streams start with packets at negative timestamps (about -44 ms). They must be kept (decoder warm-up, A/V alignment), so the whole presentation is shifted by the largest negative start (one global shift for all tracks) and the first window rewinds by reopening the file.
+- **Durations from dts deltas.** Matroska timestamps are rounded to milliseconds individually; summing rounded per-frame durations would drift by tens of milliseconds per segment, dts deltas do not.
+- **HDR10 over HLS is unresolved.** See PROGRESS.md. Facts: PQ is rejected by AVPlayer's HLS path, including FFmpeg's own HLS output; HLG and 10-bit SDR play; the same PQ stream plays as a local fMP4. Hypotheses to test with real HDR10 rips: SEI mastering/CLL metadata in the bitstream, 4K/level, display state.
+- **Swift/SDK facts:** `AVPlayerItem` is main-actor isolated (so `makePlayerItem()` is `@MainActor`); several AVAssetReader and AVPlayerItemVideoOutput calls are deprecated in the 27 SDK.
+
+## 12. E2.4 findings: audio transcoding (2026-10-24)
+
+- **Lossless ALAC is the only transcode target.** AAC's encoder delay would put priming samples at the start of every independently encoded segment. ALAC has none, so each segment is decoded and encoded from scratch and the pieces join sample-exactly (tested).
+- **Use FFmpeg's native ALAC encoder, not AudioToolbox's `alac_at`.** `alac_at` pads a short final frame with silence (3,456 extra samples in a 3-second test), which would stretch every segment, and rejected the 24-bit setup. The native encoder writes the short frame as is. ALAC is open (Apple released it under Apache-2.0 with a patent grant); the core profile now includes the `alac` encoder (framework size unchanged at 2.7-2.8 MB).
+- **Stateless codecs only, for now.** FLAC and PCM decode from any packet; Opus and Vorbis keep state and need pre-roll (read the end of the previous segment) before their segments can be transcoded cleanly.
+- **Lazy by design.** Window building keeps the source audio packets and transcodes a track only when the player requests it, so unselected tracks cost nothing.
+- **AVFoundation's audio menu shows the language name** (from `LANGUAGE`), not our `NAME`; same-language tracks will look identical in the system menu.

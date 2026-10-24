@@ -17,6 +17,8 @@ public enum MediaError: Error, Sendable, Equatable {
     case network(detail: String)
     /// The server does not support HTTP range requests, which the engine needs for seeking.
     case rangeRequestsUnsupported
+    /// The file is understood but this build cannot play it (for example a video format that is out of scope).
+    case unsupported(detail: String)
     /// Something went wrong inside the engine.
     case engine(detail: String)
 }
@@ -36,6 +38,8 @@ extension MediaError: LocalizedError {
             "The network connection failed."
         case .rangeRequestsUnsupported:
             "This server does not support skipping around in a file, which playback needs."
+        case .unsupported:
+            "This file uses a format the app cannot play."
         case .engine:
             "Something went wrong while opening the file."
         }
@@ -51,6 +55,7 @@ extension MediaError: CustomDebugStringConvertible {
         case .corrupt(let detail): "MediaError.corrupt(\(detail))"
         case .network(let detail): "MediaError.network(\(detail))"
         case .rangeRequestsUnsupported: "MediaError.rangeRequestsUnsupported"
+        case .unsupported(let detail): "MediaError.unsupported(\(detail))"
         case .engine(let detail): "MediaError.engine(\(detail))"
         }
     }

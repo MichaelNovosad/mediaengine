@@ -8,6 +8,7 @@ enum AVError {
     static let exit: Int32 = -1_414_092_869         // AVERROR_EXIT
     static let invalidData: Int32 = -1_094_995_529  // AVERROR_INVALIDDATA
     static let io: Int32 = -5                       // AVERROR(EIO)
+    static let again: Int32 = -35                   // AVERROR(EAGAIN) on Darwin
 
     static func describe(_ code: Int32) -> String {
         var buffer = [CChar](repeating: 0, count: 128)

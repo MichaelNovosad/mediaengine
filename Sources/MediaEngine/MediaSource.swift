@@ -8,7 +8,7 @@ import Foundation
 /// print(info.tracks.map(\.codec.displayName), info.playbackPlan.path)
 /// ```
 public struct MediaSource: Sendable {
-    private let byteSource: any ByteSource
+    let byteSource: any ByteSource
 
     /// Wraps a custom byte source, for example a network share.
     public init(byteSource: some ByteSource) {

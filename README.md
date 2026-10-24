@@ -2,7 +2,7 @@
 
 A Swift-native media engine for Apple platforms (iOS, iPadOS, macOS, visionOS 27). It opens Matroska/WebM and other containers AVFoundation cannot, and hands the result to AVPlayer (system UI, AirPlay, PiP, HDR) or to a software-decode renderer. Built on our own LGPL-only FFmpeg.
 
-Status: milestone E1 (probe API and byte sources). Planning, criteria and decisions: `CLAUDE.md`, `docs/`.
+Status: milestone E2 (MKV plays through AVPlayer) mostly done. Planning, criteria and decisions: `CLAUDE.md`, `docs/`.
 
 ## Build and verify
 
@@ -30,6 +30,19 @@ info.requiredProfile                                   // which optional codec m
 ```
 
 Bring your own storage (SMB, WebDAV, a cloud API) by implementing `ByteSource`: one blocking `read(at:into:)` and a `length`.
+
+## Play a file that AVFoundation cannot open
+
+```swift
+import AVKit
+import MediaEngine
+
+let session = try await PlaybackSession(url: fileURL)   // probes and picks the best path
+let item = try await session.makePlayerItem()            // a plain AVPlayerItem (main actor)
+player.replaceCurrentItem(with: item)                    // AVPlayerViewController, VideoPlayer, AVPlayerView
+```
+
+The item keeps the session alive. MKV video (H.264, HEVC) and audio (AAC, AC-3, E-AC-3 as is; FLAC and PCM as lossless ALAC) play with the system controls, AirPlay button and Picture in Picture.
 
 ## Layout
 

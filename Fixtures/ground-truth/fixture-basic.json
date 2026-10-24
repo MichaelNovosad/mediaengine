@@ -225,8 +225,8 @@
         "format_long_name": "Matroska / WebM",
         "start_time": "0.000000",
         "duration": "3.052000",
-        "size": "254385",
-        "bit_rate": "666802",
+        "size": "254384",
+        "bit_rate": "666799",
         "probe_score": 100,
         "tags": {
             "title": "MediaEngine fixture basic",

@@ -56,4 +56,4 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 
 ## Status
 
-Phase: building. **E0 and E1 are complete** (verified 2026-10-24 by `scripts/verify.sh`); E2 (remux to AVPlayer) is next. Live status is in `docs/PROGRESS.md`.
+Phase: building. **E0 and E1 are complete and committed; E2 (remux to AVPlayer) is mostly done and verified** (2026-10-24, `scripts/verify.sh`), still to do: Opus/Vorbis, hardening and measurements, AirPlay on devices, HDR10 over HLS. Live status is in `docs/PROGRESS.md`.

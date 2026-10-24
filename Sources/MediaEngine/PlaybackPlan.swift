@@ -19,7 +19,7 @@ public struct CodecProfile: OptionSet, Sendable, Hashable, Codable {
 public enum TrackTreatment: Sendable, Equatable, Codable {
     /// Apple's own decoders play the track as is.
     case passthrough
-    /// The engine decodes the audio and re-encodes it with Apple's encoder.
+    /// The engine decodes the audio and re-encodes it with Apple's encoder (always lossless ALAC today).
     case transcodeAudio(AudioTarget)
     /// Text subtitles converted to WebVTT for the system player.
     case convertToWebVTT
@@ -212,15 +212,15 @@ enum PlaybackPlanner {
         case "flac":
             return Decision(treatment: .transcodeAudio(.alac))
         case "opus", "vorbis":
-            return Decision(treatment: .transcodeAudio(.aac))
+            return Decision(treatment: .transcodeAudio(.alac))
         case _ where name.hasPrefix("pcm_"):
             return Decision(treatment: .transcodeAudio(.alac))
         case "dts":
-            return Decision(treatment: .transcodeAudio(.aac), needs: .licensedAudio)
+            return Decision(treatment: .transcodeAudio(.alac), needs: .licensedAudio)
         case "truehd", "mlp":
             return Decision(treatment: .transcodeAudio(.alac), needs: .licensedAudio)
         case "wmav1", "wmav2":
-            return Decision(treatment: .transcodeAudio(.aac), needs: .extended)
+            return Decision(treatment: .transcodeAudio(.alac), needs: .extended)
         default:
             return unavailable(.unknownCodec, "The audio format \(name) is not supported.")
         }

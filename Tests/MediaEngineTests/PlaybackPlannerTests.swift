@@ -70,7 +70,7 @@ struct PlaybackPlannerTests {
         #expect(vc1.blockingReason?.code == .pendingLegalClearance)
     }
 
-    @Test("audio decisions: passthrough, lossless transcode, lossy transcode")
+    @Test("audio decisions: passthrough or lossless ALAC transcode")
     func audioDecisions() {
         func treatment(_ codec: String) -> TrackTreatment? {
             plan([video("h264", profile: "High", id: 100), audio(codec)], everything).tracks.last?.treatment
@@ -78,9 +78,9 @@ struct PlaybackPlannerTests {
         for codec in ["aac", "ac3", "eac3", "alac", "mp3"] { #expect(treatment(codec) == .passthrough, "\(codec)") }
         #expect(treatment("flac") == .transcodeAudio(.alac))
         #expect(treatment("pcm_s24le") == .transcodeAudio(.alac))
-        #expect(treatment("opus") == .transcodeAudio(.aac))
-        #expect(treatment("vorbis") == .transcodeAudio(.aac))
-        #expect(treatment("dts") == .transcodeAudio(.aac))
+        #expect(treatment("opus") == .transcodeAudio(.alac))
+        #expect(treatment("vorbis") == .transcodeAudio(.alac))
+        #expect(treatment("dts") == .transcodeAudio(.alac))
         #expect(treatment("truehd") == .transcodeAudio(.alac))
     }
 

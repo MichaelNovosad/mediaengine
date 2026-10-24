@@ -68,6 +68,13 @@ struct ProbeTests {
         #expect(info.playbackPlan.path == .remux)
     }
 
+    @Test("HLG HEVC Main 10 is reported as HLG")
+    func hlg() async throws {
+        let info = try await Fixture.probe("fixture-hlg")
+        let video = try #require(info.videoTracks.first)
+        #expect(video.video?.hdr == .hlg && video.video?.colorTransfer == "arib-std-b67" && video.video?.bitDepth == 10)
+    }
+
     @Test("plain HEVC with AC-3 is SDR and needs nothing extra")
     func hevc() async throws {
         let info = try await Fixture.probe("fixture-hevc")

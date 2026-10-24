@@ -4,28 +4,31 @@
 
 ## Right now
 
-- Milestone: E0 and **E1 complete** (2026-10-24). **E2 not started.**
-- Next action: E2, remux to AVPlayer (the first MKV plays). Start with the packet reader and the fragmented-MP4 writer, then the local server and `AVPlayerItem` (spike E-S3 on macOS first). AirPlay (E-S4) needs a real Apple TV or HomePod and your iPhone.
-- Waiting on the owner: nothing blocking. Optional but useful for E2: real MKV test files (list in `PlayerApp/docs/RESEARCH.md` section 7); generated fixtures are enough to start.
+- Milestone: E0 and E1 complete and committed (`dfe779e`). **E2 (remux to AVPlayer) is mostly done and verified, not yet committed** (2026-10-24): an MKV plays through AVPlayer with the system controls, seeks, and switches audio tracks.
+- What exists: `PacketReader`, `SegmentPlan` (keyframe-aligned ~6 s segments), `InitSegmentBuilder` (FFmpeg MP4 muxer, no edit list, `hvc1`, nominal HDR10 boxes for PQ), `FragmentWriter` (own moof/mdat, exact timestamps), `HLSPlaylists`, `RemuxSession` (random-access segments, LRU cache, read-ahead, lazy audio transcoding), `AudioTranscoder` (FLAC/PCM to lossless ALAC, native encoder), `LoopbackServer` (loopback only, random port, 128-bit token, Host check), public `PlaybackSession.makePlayerItem()` (`@MainActor`; the item retains the session).
+- Verified (last full `scripts/verify.sh`: 2 min 49 s, exit 0): AVFoundation decodes the assembled streams frame-exact; AVPlayer plays, seeks and finishes the H.264, HEVC and HLG fixtures through our HLS; the audio menu lists English (AAC passthrough) and Japanese (FLAC to ALAC) and switching plays; FLAC to ALAC is bit-exact (16-bit mono, 24-bit stereo 44.1 kHz). macOS runs 76 tests (1 known issue), iPhone/iPad/iPhone Duo/visionOS simulators 72 each (AVPlayer and AVAssetReader tests are macOS-only).
+- **Open issue (E-S3 finding): HDR10 (PQ) over HLS.** AVPlayer rejects PQ video in HLS (CoreMedia -17223) even for FFmpeg's own HLS output of the same file; the same stream plays as a local fMP4, and HLG and 10-bit SDR play through HLS. Tried: `VIDEO-RANGE` variants, SDR+PQ twin variants, `mdcv`/`clli` boxes, VUI-tagged bitstream, other level strings. Next: a REAL HDR10 rip (SEI metadata, 4K, proper level) on the owner's iPhone/iPad/Mac. Tracked as `PlaybackSessionTests.pqKnownIssue`.
+- Next actions (in this order): (a) Opus/Vorbis transcoding with decoder pre-roll; (b) E2.5 measurements and hardening: first-frame time, seek latency, memory budget, damaged-file behavior, fuzzing, leak check (realistic numbers need big real files from the owner); (c) `.resourceLoader` transport; (d) E-S4 AirPlay on the owner's Apple TV or HomePod; (e) settle HDR10 over HLS with a real clip. Then E3 (subtitles and tracks, same-language track names in the menu), after which PlayerApp may start.
+- Waiting on the owner: nothing blocking. Useful when convenient: one real HDR10 MKV clip (30-60 s), a few big real MKVs for performance numbers, and an hour with a Mac, iPhone and Apple TV for the AirPlay spike.
 
 ## Task board
 
 ### In progress
-- (none)
+- Between steps. Candidates in "Up next".
 
 ### Up next (ordered)
-1. E2.1 Packet reader API on top of the demuxer (`async` sequence of packets per track, seek by time through the index) (RMX-5)
-2. E2.2 Fragmented MP4 writer: init segment plus media segments for H.264/HEVC and AAC/AC-3/E-AC-3 copied unchanged; correct codec tags (`avc1`, `hvc1`) (RMX-1, RMX-12)
-3. E2.3 HLS playlists and a session server (`.resourceLoader` and `.loopbackServer` transports), then `PlaybackSession.makePlayerItem()` (RMX-9, API-1). Spike E-S3 on macOS first.
-4. E2.4 Audio the system cannot play: FLAC to ALAC (lossless), Opus/Vorbis to AAC through AudioToolbox (RMX-2, ANM-5)
-5. E2.5 Alternate audio renditions in the system menu, seeking latency, memory budget, damaged-file behavior (RMX-3, RMX-5, RMX-7, RMX-13, PRF-2)
-6. E2.6 AirPlay spike E-S4 on a real Apple TV/HomePod (needs the owner's devices); HDR/Dolby Vision signaling stays off until LIC-6 (RMX-10, RMX-11)
-7. Then E3 subtitles and tracks; then PlayerApp may start
+1. Opus/Vorbis transcoding with pre-roll (RMX-2)
+2. E2.5 measurements and hardening (RMX-5, RMX-6, RMX-7, RMX-12, RMX-13, PRF-2, PRF-3, PRF-4)
+3. `.resourceLoader` transport (RMX-9)
+4. AirPlay spike E-S4 on real devices (RMX-10); HDR10/PQ over HLS (RMX-1, RMX-11)
+5. E3 subtitles and tracks; then PlayerApp may start
 
 ### Backlog (owner requests, newest last)
 - (empty)
 
 ### Done (newest first; date, what, evidence)
+- 2026-10-24 **E2.4 audio transcoding (FLAC/PCM to ALAC), lazy per track** (uncommitted). Evidence: `AudioTranscodeTests` (bit-exact 16-bit mono and 24-bit stereo, segments join, timestamps contiguous, lazy), `RemuxTests` (ALAC init segments, AVFoundation decodes the ALAC renditions), `AVPlayerEndToEndTests.audioSelection`; `scripts/verify.sh` passed. Ticked: ANM-5.
+- 2026-10-24 **E2.1 to E2.3 passthrough remux to AVPlayer** (uncommitted). Evidence: `scripts/verify.sh` passes in 3 min 4 s; `RemuxTests` (packet-exact fragments, continuous timestamps, init segment boxes, AVFoundation frame-exact decode), `LoopbackServerTests` (ranges, HEAD, 403/404/405/416, token, loopback-only), `PlaybackSessionTests` (item lifetime, close), `AVPlayerEndToEndTests` (play, seek, finish for H.264, HEVC, HLG). Server hardening part of RMX-9 verified (the `.resourceLoader` transport is still open).
 - 2026-10-24 **E1 probe API and byte sources.** Evidence: `scripts/verify.sh` passes in 2 min 29 s (macOS, iPhone, iPad, iPhone Duo, visionOS simulators; 46 tests each; zero warnings); ThreadSanitizer clean; `scripts/check-public-api.sh`, `scripts/check-ground-truth.sh`. Ticked: API-2, API-3, API-4, API-5, API-11, PRB-1, PRB-3, PRB-4, IO-1, IO-2, PRF-5. PRB-2 and ANM-1 partly done (see notes in the criteria).
 - 2026-10-24 **E0 build system and license skeleton.** Evidence: `scripts/verify.sh` passes in 1 min 47 s (macOS, iPhone 18 Pro Max, iPad Air 13-inch (M4), iPhone Duo, Apple Vision Pro simulators; 6 tests each; zero warnings); `scripts/build-all.sh` clean rebuild 2 min 21 s; `scripts/check-licenses.sh` passes and fails on a tampered build. Ticked in `ACCEPTANCE_CRITERIA.md`: BLD-1, 2, 3, 5, 7, LIC-1, PLT-1, PLT-2, E-S1.
 - 2026-10-24 E-S1 result: FFmpeg 9.0.2 builds LGPL-clean for five slices; one merged dynamic framework `FFmpegLGPL` (2.7-2.8 MB per slice); Swift demuxes MKV through custom I/O with no H.264/HEVC/AC-3 decoder compiled in.
@@ -51,6 +54,9 @@
 - Public API so far: `MediaSource` (`init(url:)`, `init(byteSource:)`, `probe()`), `MediaInfo` and friends, `PlaybackPlan`, `CodecProfile`, `ByteSource` (+ `DataByteSource`, `FileByteSource`, `HTTPByteSource`), `MediaError`, `MediaEngine.buildInfo/availableProfiles/enabledTraits`. Sources are under `Sources/MediaEngine/` (`Internal/` holds the FFmpeg bridge, prober, extradata and language helpers).
 - Test patterns: fixtures and ground-truth JSON are read through `#filePath` (works on simulators); HTTP tests use a `URLProtocol` stub (`StubServer`/`StubProtocol` in `ByteSourceTests.swift`, suite is `.serialized`); planner tests build synthetic tracks with `makeTrack`.
 - Regenerating fixtures changes their bytes (VideoToolbox is not bit-reproducible): rerun `scripts/make-fixtures.sh`, which also rewrites the ground-truth JSON; commit both together.
+- Audio: core now includes FFmpeg's native `alac` encoder (framework rebuilt with `scripts/build-all.sh core`). Transcoded tracks use a 1/sample-rate time base end to end; `FragmentWriter`, the init segment and `shift` follow it.
+- E2 gotchas learned the hard way: (1) seeking to time 0 skips packets with negative timestamps (AAC priming), so the first window reopens the file (`PacketReader.rewind()`); (2) the MP4 muxer writes an edit list that shifts AVFoundation's timeline, so `use_editlist=0`; (3) the muxer returns `ftyp`+`moov` only (no `moof`) with `delay_moov`, which is what we use as the init segment; (4) sample durations come from dts deltas (Matroska timestamps are ms-rounded); (5) in the macOS 27 SDK `AVPlayerItem` is main-actor isolated and `AVAssetReader.add/startReading/copyNextSampleBuffer`, `AVPlayerItemVideoOutput.copyPixelBuffer`, `errorLog()` are deprecated (use `outputProvider(for:)`, `start()`, `provider.next()`, `pixelBufferAndDisplayTime(forItemTime:)`); (6) Python's `http.server` cannot listen inside the tool sandbox, `NWListener` can.
+- Test hooks: `RemuxSession.masterTransform` rewrites the master playlist (for AVPlayer experiments); `ResourceProvider` lets the loopback server serve any directory or session.
 - The probe plans with `DeviceCapabilities.current`: AV1 hardware support comes from VideoToolbox and may differ between simulator and device.
 - The XCFramework (`build/FFmpegLGPL.xcframework`) is a build product and is git-ignored; `Package.swift` references it by path. Fresh clone: run `scripts/bootstrap.sh`, then `scripts/build-all.sh`.
 - Simulators used: iPhone 18 Pro Max (iOS 27.0), iPad Air 13-inch (M4) (iOS 27.0), iPhone Duo (iOS 27.1), Apple Vision Pro (visionOS 27.0). `verify.sh` finds them by name; there are two "iPhone Duo" devices, the first is used.

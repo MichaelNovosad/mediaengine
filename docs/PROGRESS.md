@@ -8,7 +8,7 @@
 - What exists: `PacketReader`, `SegmentPlan` (keyframe-aligned ~6 s segments), `InitSegmentBuilder` (FFmpeg MP4 muxer, no edit list, `hvc1`, nominal HDR10 boxes for PQ), `FragmentWriter` (own moof/mdat, exact timestamps), `HLSPlaylists`, `RemuxSession` (random-access segments, LRU cache, read-ahead, lazy audio transcoding with decoder pre-roll), `AudioTranscoder` (FLAC/PCM/Opus/Vorbis to lossless ALAC, native encoder), `LoopbackServer` (loopback only, random port, 128-bit token, Host check), public `PlaybackSession.makePlayerItem()` (`@MainActor`; the item retains the session).
 - Verified (full `scripts/verify.sh`, 2026-10-24, 5 min 58 s): AVFoundation decodes the assembled streams frame-exact (H.264, HEVC, HLG, B-frames); AVPlayer plays, seeks and finishes them through our HLS; the audio menu lists every track and switching works across segment boundaries for Opus and Vorbis; FLAC/PCM to ALAC is bit-exact, Vorbis sample-exact and Opus within rounding noise per segment. macOS runs 108 tests (1 known issue), the four simulators 100 each (AVPlayer and AVAssetReader tests are macOS-only).
 - **Open issue (E-S3 finding): HDR10 (PQ) over HLS.** AVPlayer rejects PQ video in HLS (CoreMedia -17223) even for FFmpeg's own HLS output of the same file; the same stream plays as a local fMP4, and HLG and 10-bit SDR play through HLS. Tried: `VIDEO-RANGE` variants, SDR+PQ twin variants, `mdcv`/`clli` boxes, VUI-tagged bitstream, other level strings. Next: a REAL HDR10 rip (SEI metadata, 4K, proper level) on the owner's iPhone/iPad/Mac. Tracked as `PlaybackSessionTests.pqKnownIssue`.
-- Next actions (in this order): (a) byte-bounded segments for high bitrates; (b) `.resourceLoader` transport; (c) E-S4 AirPlay on the owner's Apple TV or HomePod; (d) settle HDR10 over HLS with a real clip. Then E3 (subtitles and tracks, same-language track names in the menu), after which PlayerApp may start.
+- Next actions: see "Plan for 2026-10-25" on the board below (T1 byte-bounded segments, T2 `.resourceLoader` transport, T3 E3 kickoff with two spikes, T4 fillers). Then E-S4 AirPlay and the HDR10 check with real devices and clips, after E3 PlayerApp may start.
 - Waiting on the owner: nothing blocking. Useful when convenient: one real HDR10 MKV clip (30-60 s), a few big real MKVs for performance numbers (`MEDIAENGINE_BENCH_FILE=... swift test --filter BenchmarkTests`), and an hour with a Mac, iPhone and Apple TV for the AirPlay spike.
 
 ## Task board
@@ -16,15 +16,46 @@
 ### In progress
 - Between steps. Candidates in "Up next".
 
-### Up next (ordered)
-1. Byte-bounded segments (cut by size as well as by time, using Cue byte positions) and releasing packets while a fragment is written, so UHD remuxes stay under the memory target (RMX-7)
-2. `.resourceLoader` transport (RMX-9)
-3. AirPlay spike E-S4 on real devices (RMX-10); HDR10/PQ over HLS (RMX-1, RMX-11)
-4. E3 subtitles and tracks; then PlayerApp may start
-5. Optional: libFuzzer harness on the demux wrapper; stored benchmark baselines (PRF-1); variable-frame-rate and deep-pyramid real files (RMX-12)
+### Plan for 2026-10-25 (prepared 2026-10-24 at the owner's request; do the tasks in this order)
+
+Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.claude/skills/`; `scripts/verify.sh` before calling anything done; docs updated after each task (skill `engine-finish-step`); commit only when asked, no Claude trailer.
+
+**T1. Byte-bounded segments (RMX-7), about half a day, no owner input.**
+- Why: a segment holds 6 s of video, so memory scales with bitrate: 137 MB peak at 13 Mbps 1080p, and one UHD remux segment alone is 45-75 MB (target 150 MB total).
+- Steps: (1) `PacketReader`: next to `keyframeTimestamps`, return each keyframe's byte position (`avformat_index_get_entry(...).pointee.pos`). (2) `SegmentPlan.make(keyframes:duration:target:maxBytes:)`: cut at a keyframe when the segment is at least `target` seconds long OR its byte span (position delta, audio included) reaches the cap (start with 24 MB), never inside a GOP; the scan fallback adds up packet sizes instead. (3) Check `HLSPlaylists` (`EXT-X-TARGETDURATION` must stay at or above the longest segment). (4) Measure again; only if the peak is still too high, hand packets over to `FragmentWriter` so they are freed while the fragment is written. (5) Generate an 80 Mbps file (`h264_videotoolbox -b:v 80M`, 1080p or 4K, 60 s, B-frames; recipe in skill `engine-benchmark`) and run `BenchmarkTests` on it.
+- Done when: unit tests for the byte cap (segments tile, never shorter than one GOP, time-only behaviour unchanged when the cap is not reached), `fragmentsAreComplete` and the AVPlayer end-to-end tests still pass, the 80 Mbps file stays under 150 MB growth, RMX-7 ticked with the numbers, `scripts/verify.sh` passes.
+- Watch out: files without Cue positions fall back to time-only cutting plus the packet-size scan; keep the 48 MB cache budget in mind (it must hold at least the current and next segment).
+
+**T2. `.resourceLoader` transport (RMX-9), 3-4 hours, no owner input.**
+- Steps: public `PlaybackSession.Transport` (`.loopbackServer` stays the default, `.resourceLoader` new) and `makePlayerItem(transport:)`. Custom URL scheme per session with an unguessable host, an `AVAssetResourceLoaderDelegate` on its own queue that answers content-information and data requests (ranges) from the same `ResourceProvider` the server uses, cancels and finishes pending requests on `close()`.
+- Tests: run the AVPlayer end-to-end suite for both transports; with `.resourceLoader` no listener may exist (assert via the server type); closing the session finishes outstanding loading requests.
+- Done when: both transports pass play/seek/finish, API documented with a plain statement of what AirPlay is expected to do (unverified until E-S4), RMX-9 ticked for the automatable part.
+- Risk: AVPlayer might refuse HLS through a custom scheme in the 27 SDK. If so, record the exact failure in `docs/RESEARCH.md` and keep loopback as the only transport; RMX-9 then states the finding.
+
+**T3. E3 kickoff: design note and two spikes, about 3 hours.** E3 covers SUB-1..5, RMX-4 (text subtitles as WebVTT renditions), RMX-8 (chapters, Now Playing metadata), AUD-1 (external audio), ANM-2 and ANM-4 (ordered chapters, chapter types) and the same-language track names; PlayerApp M0 starts after it.
+- Spike S1: text subtitles (SRT, ASS dialogue stripped of override tags) from the core decoders into a WebVTT HLS rendition (segment per 6 s, `X-TIMESTAMP-MAP`), proven by an end-to-end check that `item.asset.loadMediaSelectionGroup(for: .legible)` lists the track and a cue shows at the right time (use the existing `fixture-basic` SRT and `fixture-anime` ASS).
+- Spike S2: telling apart two audio tracks of the same language in the system menu (AVFoundation shows the language name only): try HLS `NAME`, `CHARACTERISTICS`, `LANGUAGE` variants and record what the menu actually shows.
+- Write `docs/RESEARCH.md` section 15 (E3 design: sub-milestones E3.1 text subtitles, E3.2 chapters and metadata, E3.3 external subtitle/audio files with encoding detection, E3.4 libass overlay for full ASS, E3.5 ordered chapters) and refine the E3 criteria. **Ask the owner before fetching new third-party sources** for E3.4 (libass ISC, FreeType FTL, HarfBuzz MIT, FriBidi LGPL; BLD-9, E-S8): list licenses and pins first.
+- Done when: both spikes have a written result and a test (passing, or a recorded known issue with the reason), E3 sub-milestones are in the board.
+
+**T4. Filler if time remains (each 1-2 hours, independent):**
+- Stored benchmark baselines (PRF-1): `Benchmarks/baseline-*.json` plus `scripts/bench.sh` that fails on a regression over 10%.
+- Truncation hint: compare the Matroska Segment size from the header with the file length to flag a cut-off download and avoid showing the header duration as the real one (only if it stays small).
+- A libFuzzer harness on the demux wrapper (`-sanitize=fuzzer`) with the fixtures as seed corpus.
+
+**Owner side (nothing here blocks tomorrow):**
+- Real files in `TestMedia/` (gitignored): one HDR10 clip (30-60 s), two or three big real MKVs (H.264 or HEVC, ASS subtitles, several audio tracks; anime source if possible). I run the benchmarks and the PQ-over-HLS check on them.
+- To measure on hardware (RMX-6, ANM-6, AirPlay E-S4, HDR10 on a phone) a small device harness app is needed. Choose how to build it: XcodeGen (needs your OK to install it; PlayerApp M0 plans it anyway), a hand-made Xcode project, or a Swift Playgrounds-style app package. I would add it right after T2 once you answer; one hour with Mac, iPhone and Apple TV or HomePod on the same Wi-Fi then covers the AirPlay spike.
+- Decisions still open: D-E11 (packaging of optional codec profiles, due in E4), the PlayerApp decisions D-1..D-12, Apple Developer Program enrolment, legal review of the codec modules and the EULA.
+
+### Up next after tomorrow (ordered)
+1. E3.1 text subtitles as WebVTT renditions, then E3.2 chapters and metadata
+2. AirPlay spike E-S4 on real devices (RMX-10); HDR10/PQ over HLS (RMX-1, RMX-11) with a real clip
+3. Rest of E3 (external subtitles and audio, encoding detection, libass overlay, ordered chapters); then PlayerApp may start (M0)
+4. Variable-frame-rate and deep-pyramid real files (RMX-12)
 
 ### Backlog (owner requests, newest last)
-- (empty)
+- 2026-10-24 Prepare tasks for tomorrow: done, see "Plan for 2026-10-25" above.
 
 ### Done (newest first; date, what, evidence)
 - 2026-10-24 **Project skills added** (`.claude/skills/`: engine-verify, engine-add-fixture, engine-benchmark, engine-finish-step, engine-rebuild-ffmpeg, engine-playback-debug), listed in `CLAUDE.md`. Engine work E2.4b/E2.5 committed as `b253911`.

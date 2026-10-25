@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import Foundation
 import ObjectiveC
 import Synchronization
@@ -62,7 +63,30 @@ public final class PlaybackSession: @unchecked Sendable {
 
         let remux = try await startRemux()
         let server = try await startServer(for: remux)
-        return attach(AVPlayerItem(url: server.masterURL))
+        let item = AVPlayerItem(url: server.masterURL)
+        await describe(item)
+        return attach(item)
+    }
+
+    /// Title and cover art of the file, for Now Playing and the lock screen. Files that AVFoundation plays by itself
+    /// carry their own. `AVPlayerItem.externalMetadata` does not exist on macOS, where an app sets
+    /// `MPNowPlayingInfoCenter` itself from ``info`` and ``MediaSource/data(of:)``. Chapters are not handed to the
+    /// system player: its marker API is tvOS-only, so apps use ``MediaInfo/chapters`` and ``Chapter/kind``.
+    @MainActor
+    private func describe(_ item: AVPlayerItem) async {
+        #if !os(macOS)
+        let title = info.title ?? fileURL.map { $0.deletingPathExtension().lastPathComponent }
+        var artwork: Data?
+        let cover = info.attachments.first { $0.kind == .coverArt && ($0.filename ?? "").lowercased().hasPrefix("cover") }
+            ?? info.attachments.first { $0.kind == .coverArt }
+        if let cover { artwork = try? await source.data(of: cover) }
+        // `externalMetadata` is added to AVPlayerItem by AVKit; naming a class from it makes sure the framework is loaded
+        // (a process that never touched AVKit would crash with "unrecognized selector").
+        Bundle(for: AVPlayerViewController.self).load()
+        if item.responds(to: NSSelectorFromString("setExternalMetadata:")) {
+            item.externalMetadata = PlayerItemMetadata.external(title: title, artwork: artwork)
+        }
+        #endif
     }
 
     /// Stops the local server and releases the file. The player item stops working.

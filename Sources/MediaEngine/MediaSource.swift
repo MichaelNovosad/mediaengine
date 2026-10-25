@@ -49,4 +49,22 @@ public struct MediaSource: Sendable {
             source.cancelPendingReads()
         }
     }
+
+    /// The bytes of a file embedded in the container: cover art, or a font for subtitle rendering. Attachments larger
+    /// than 32 MB are refused.
+    public func data(of attachment: Attachment) async throws -> Data {
+        let source = byteSource
+        let cancellation = CancellationFlag()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(with: Result { try AttachmentReader.read(attachment, from: source, cancellation: cancellation) })
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+            source.cancelPendingReads()
+        }
+    }
 }
+

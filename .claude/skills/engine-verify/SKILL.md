@@ -24,7 +24,7 @@ Always `export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer` firs
 - Filter noise: `... 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E "error:|warning:|􀢄|Test run with" | grep -v started`.
 - Search failures for the marker `􀢄`, not for "recorded an issue" (that misses some). Known and expected: `HDR10 (PQ) over HLS is rejected by AVPlayer` (E-S3, open) and `AVPlayer does not take HLS media segments from a resource loader` (two issues, a tripwire for a future SDK).
 - `verify.sh` fails on any warning in our code. Fix warnings, do not filter them.
-- Test counts (2026-10-25): macOS 135 (3 known issues), simulators 124 (AVPlayer/AVAssetReader tests are macOS-only), isolated pass 8.
+- Test counts (2026-10-25): macOS 144 (3 known issues), simulators 134 (AVPlayer/AVAssetReader tests are macOS-only), isolated pass 8.
 
 ## Rules
 

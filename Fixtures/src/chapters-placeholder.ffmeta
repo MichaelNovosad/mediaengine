@@ -1,0 +1,36 @@
+;FFMETADATA1
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=500
+title=Placeholder chapter one with a long title to reserve room
+[CHAPTER]
+TIMEBASE=1/1000
+START=500
+END=1000
+title=Placeholder chapter two with a long title to reserve room
+[CHAPTER]
+TIMEBASE=1/1000
+START=1000
+END=1500
+title=Placeholder chapter three with a long title to reserve room
+[CHAPTER]
+TIMEBASE=1/1000
+START=1500
+END=2000
+title=Placeholder chapter four with a long title to reserve room
+[CHAPTER]
+TIMEBASE=1/1000
+START=2000
+END=2500
+title=Placeholder chapter five with a long title to reserve room
+[CHAPTER]
+TIMEBASE=1/1000
+START=2500
+END=3000
+title=Placeholder chapter six with a long title to reserve room
+[CHAPTER]
+TIMEBASE=1/1000
+START=3000
+END=4000
+title=Placeholder chapter seven with a long title to reserve room

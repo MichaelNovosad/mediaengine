@@ -15,3 +15,10 @@ Fixtures live in `Fixtures/*.mkv` (each under 2 MB, committed) with ffprobe JSON
 5. Note it in `docs/PROGRESS.md` (Done) and, if it lifts a gap, in the matching criterion (for example ANM-1).
 
 Never commit large or real media; real test files go in a gitignored `TestMedia/` or the scratchpad.
+
+## Subtitle fixtures
+
+- Rendering tests that must not depend on system fonts use the generated block font (`Fixtures/src/BlockFont.ttf`, made by `scripts/make-block-font.py`, family "Media Blocks": every letter is a rectangle). Attach it with `-attach src/BlockFont.ttf -metadata:s:t:0 mimetype=application/x-truetype-font -metadata:s:t:0 filename=BlockFont.ttf`. `fixture-ass-fx.mkv` and the ordered-chapter fixtures carry it.
+- Picture subtitles (PGS, VobSub, DVB): `scripts/make-bitmap-subs.py` writes the `.sup` and `.idx/.sub` by hand; `fixture-bitmap.mkv` holds all three. Needs the rebuilt host tools (see engine-rebuild-ffmpeg) and `-copyts`.
+- Golden frames: `Tests/MediaEngineTests/GoldenFrameTests.swift` (scenes) and `Tests/MediaEngineTests/Golden/*.png`; re-record with `MEDIAENGINE_RECORD_GOLDEN=1` and look at every picture.
+- A recipe that changes the ordered-chapter fixtures changes their ground truth: regenerate `Fixtures/ground-truth/*.json` for them and rerun `OrderedChapters|TimelineReader|PlayListSession|PlayListPlayback`.

@@ -1,3 +1,8 @@
 # Pinned third-party sources. Tab-separated; every line is verified by scripts/fetch-sources.sh.
 # name	version	url	sha256	signature_url	signing_key_fingerprint	key_url
+# harfbuzz and fribidi publish no signatures: pinned by SHA-256 only (checked against the publisher's release page on 2026-10-25).
 ffmpeg	9.0.2	https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz	8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e	https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz.asc	FCF986EA15E6E293A5644F10B4322F04D67658D8	https://ffmpeg.org/ffmpeg-devel.asc
+libass	0.17.5	https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz	2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc	https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz.asc	5EE63F2A71BF132CFE3567E1DFFE615F2824C720	https://keys.openpgp.org/vks/v1/by-fingerprint/DDAFC19E46B2AD2D6B26F84397A08E0CFFD70951
+freetype	2.14.3	https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz	36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f	https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz.sig	E30674707856409FF1948010BE6C3AAC63AD8E3F	https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xE30674707856409FF1948010BE6C3AAC63AD8E3F
+harfbuzz	14.6.0	https://github.com/harfbuzz/harfbuzz/releases/download/14.6.0/harfbuzz-14.6.0.tar.xz	d07a007327277708a2a73ae437887cdbaf282937f6d03ca5467723e9099af586
+fribidi	1.0.16	https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz	1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c

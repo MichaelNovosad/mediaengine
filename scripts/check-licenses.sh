@@ -34,4 +34,18 @@ for s in $SLICES; do
   fi
 done
 
+# LibASS.framework: libass (ISC), FreeType (FTL), HarfBuzz (MIT), FriBidi (LGPL-2.1, replaceable because the framework is dynamic).
+for s in $SLICES; do
+  fwbin="$(find "$BUILD/frameworks-subs/$s" -name LibASS -type f 2>/dev/null | head -1)"
+  if [ -z "$fwbin" ]; then bad "$s: LibASS framework not packaged"; continue; fi
+  nm -gU "$fwbin" 2>/dev/null | awk '{print $3}' | lacks -v '^_ass_' || bad "$s: LibASS exports symbols outside ass_*"
+  otool -L "$fwbin" | tail -n +2 | lacks -v '(/System/Library/|/usr/lib/|@rpath/LibASS)' || bad "$s: LibASS links against non-system libraries"
+  strings -a "$fwbin" | lacks -i 'gnu general public|GPLv[23]|fontconfig|libunibreak' || bad "$s: LibASS contains GPL or unexpected components"
+  res="$(dirname "$fwbin")"; [ -d "$res/Resources/licenses" ] && res="$res/Resources" || res="$res"
+  for notice in libass-ISC.txt freetype-FTL.txt harfbuzz-MIT.txt fribidi-LGPL-2.1.txt; do
+    [ -f "$res/licenses/$notice" ] || bad "$s: LibASS is missing the notice $notice"
+  done
+  grep -E 'LGPL|Lesser' "$res/licenses/fribidi-LGPL-2.1.txt" >/dev/null || bad "$s: FriBidi notice is not the LGPL text"
+done
+
 if [ "$fail" -eq 0 ]; then log "license check passed for slices: $SLICES"; else exit 1; fi

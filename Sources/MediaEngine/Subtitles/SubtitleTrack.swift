@@ -26,6 +26,8 @@ public struct SubtitleTrack: Sendable, Equatable {
     public var cueCount: Int { cues.count }
 
     let cues: [SubtitleCue]
+    /// The whole script of an ASS/SSA file (UTF-8), for the overlay renderer (``PlaybackSession/makeSubtitleRenderer(for:)``).
+    let assScript: Data?
 
     /// Largest file accepted (real subtitle files are well under a megabyte).
     static let sizeLimit = 16 * 1024 * 1024
@@ -65,6 +67,7 @@ public struct SubtitleTrack: Sendable, Equatable {
         self.encoding = used
         self.format = ["subRip": "SubRip", "webVTT": "WebVTT", "ass": "ASS"][parsed.format.rawValue] ?? parsed.format.rawValue
         self.cues = parsed.cues
+        self.assScript = self.format == "ASS" ? Data(text.utf8) : nil
     }
 
     /// The cues with the delay applied; cues that end before the start are dropped, the rest start no earlier than 0.

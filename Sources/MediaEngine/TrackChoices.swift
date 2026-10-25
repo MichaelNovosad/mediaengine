@@ -25,6 +25,9 @@ public struct TrackChoice: Sendable, Equatable, Hashable, Identifiable, Codable 
     public var isCommentary: Bool
     /// The track comes from a separate file added with ``PlaybackSession/add(_:)-(SubtitleTrack)``, not from the video file.
     public var isExternal = false
+    /// A picture track (PGS, VobSub, DVB). The system player cannot show it: draw it with
+    /// ``PlaybackSession/makeSubtitleRenderer(for:)``.
+    public var isBitmap = false
 }
 
 /// What a viewer wants to hear and read, for example per series: "Japanese audio, English subtitles".

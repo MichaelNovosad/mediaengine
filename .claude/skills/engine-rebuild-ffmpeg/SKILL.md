@@ -27,3 +27,13 @@ Pinned sources: `third_party/sources.lock` (SHA-256 and key fingerprints, verifi
 - The native `alac` encoder is used for lossless audio (AudioToolbox's pads the last frame and rejects 24-bit).
 - Never link Homebrew's `ffmpeg` (GPL). Product name must not contain "FFmpeg".
 - The framework is a build product (git-ignored); `Package.swift` points at `build/FFmpegLGPL.xcframework`.
+
+## The subtitle libraries (LibASS.framework)
+
+libass, FreeType, HarfBuzz and FriBidi are a second binary, `build/LibASS.xcframework` (git-ignored like the FFmpeg one; `Package.swift` points at it). Pins and signatures are in `third_party/sources.lock` (HarfBuzz and FriBidi publish none: SHA-256 only).
+
+- Rebuild: `for s in macos ios ios-simulator xros xros-simulator; do scripts/build-subtitle-libs.sh $s; done && scripts/package-subtitle-xcframework.sh` (about 1 min, slices can run in parallel). `scripts/build-all.sh` does it too.
+- New version: change the line in `sources.lock` (download first, `shasum -a 256`, check the signature with `gpg`, note that the lock wants the **primary** key fingerprint that `VALIDSIG` prints last), run `scripts/fetch-sources.sh`, rebuild, run the tests, then **re-record the golden frames** (`MEDIAENGINE_RECORD_GOLDEN=1 swift test --filter GoldenFrameTests`) and look at the pictures before committing them.
+- Never build with `-fvisibility=hidden`: the framework's export list (`_ass_*`) then matches nothing. Only libass's `ass_*` leaves the framework; `scripts/check-licenses.sh` checks that, the linked libraries and the four licence texts.
+- Licences: libass ISC, FreeType under the FTL (an app must show the credit line in `third_party/NOTICES.md`), HarfBuzz MIT, FriBidi LGPL-2.1 (the framework is dynamic so it can be replaced).
+- The host `ffmpeg` also has the `sup`, `vobsub`, `mpegps` demuxers, the `dvdsub`, `pgssub`, `dvbsub` decoders and the `dvdsub`, `dvbsub` encoders, for the picture-subtitle fixtures (`scripts/make-bitmap-subs.py`; give `-copyts` when muxing a `.sup`).

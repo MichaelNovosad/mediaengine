@@ -36,8 +36,22 @@ struct MediaPacket: Sendable, Equatable {
     var position: Int64 = -1
 }
 
+/// What the remuxer needs from a source of packets: one opened file (``PacketReader``) or a play list that stitches
+/// parts of several files into one timeline (``TimelineReader``).
+protocol PacketSource: AnyObject {
+    func timeBase(_ index: Int) -> Rational
+    func parameters(_ index: Int) -> UnsafeMutablePointer<AVCodecParameters>
+    func stream(_ index: Int) -> UnsafeMutablePointer<AVStream>
+    func next() throws -> MediaPacket?
+    func seek(stream index: Int, to timestamp: Int64) throws
+    func rewind() throws
+    func keyframeIndex(stream index: Int, loadingIndexUpTo duration: Double?) -> [(timestamp: Int64, position: Int64?)]
+    /// Delivers packets of these streams only (the demuxer skips the others without copying them).
+    func limit(to streams: Set<Int>)
+}
+
 /// Reads compressed packets from an opened file. Not thread-safe: confine it to one serial queue.
-final class PacketReader {
+final class PacketReader: PacketSource {
     private(set) var context: FormatContext
     private let source: any ByteSource
     private let cancellation: CancellationFlag
@@ -50,6 +64,7 @@ final class PacketReader {
     private var clock: [Int: Int64] = [:]
     private var untimedStreams: Set<Int> = []
     private var untimedIndex: [Int: [(ticks: Int64, position: Int64)]] = [:]
+    private var onlyStreams: Set<Int>?
 
     init(source: any ByteSource, cancellation: CancellationFlag) throws {
         self.source = source
@@ -97,11 +112,22 @@ final class PacketReader {
         return result.sorted { $0.timestamp < $1.timestamp }
     }
 
+    func limit(to streams: Set<Int>) {
+        onlyStreams = streams
+        applyStreamLimit()
+    }
+
+    private func applyStreamLimit() {
+        guard let onlyStreams else { return }
+        for index in 0..<streamCount { stream(index).pointee.discard = onlyStreams.contains(index) ? AVDISCARD_DEFAULT : AVDISCARD_ALL }
+    }
+
     /// Starts again from the very first packet. Seeking to time zero would skip packets with negative
     /// timestamps (the encoder-delay "priming" frames of AAC and others), so the file is simply reopened.
     func rewind() throws {
         context = try FormatContext.open(source: source, cancellation: cancellation)
         clock = [:]
+        applyStreamLimit()
         // The new context knows nothing of the extradata made for ADTS; it is made again on the first frame.
     }
 

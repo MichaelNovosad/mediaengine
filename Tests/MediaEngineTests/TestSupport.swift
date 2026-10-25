@@ -9,7 +9,7 @@ enum Fixture {
     static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-    static let names = ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-subs-long", "fixture-multi", "fixture-licensed-audio", "fixture-anime"]
+    static let names = ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-subs-long", "fixture-multi", "fixture-ordered", "fixture-ordered-missing", "fixture-linked-opening", "fixture-licensed-audio", "fixture-anime", "fixture-ass-fx", "fixture-bitmap"]
 
     static func url(_ name: String) -> URL { root.appendingPathComponent("Fixtures/\(name).mkv") }
     static func data(_ name: String) throws -> Data { try Data(contentsOf: url(name)) }

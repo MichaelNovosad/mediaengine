@@ -18,6 +18,10 @@ public struct MediaInfo: Sendable, Equatable, Codable {
     public var attachments: [Attachment]
     /// How the engine would play this file and what it would need.
     public var playbackPlan: PlaybackPlan
+    /// This Matroska file's own segment identifier (32 hexadecimal digits), which other files link to.
+    public var segmentUID: String?
+    /// The play list of a file with an ordered edition (see ``OrderedChapters``), `nil` for ordinary files.
+    public var orderedChapters: OrderedChapters?
 
     public var videoTracks: [Track] { tracks.filter { $0.kind == .video } }
     public var audioTracks: [Track] { tracks.filter { $0.kind == .audio } }

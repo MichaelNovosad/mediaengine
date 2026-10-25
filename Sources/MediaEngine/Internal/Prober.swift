@@ -83,12 +83,23 @@ enum Prober {
 
         let duration = format.pointee.duration != Int64.min && format.pointee.duration > 0
             ? Double(format.pointee.duration) / Double(AV_TIME_BASE) : nil
-        let plan = PlaybackPlanner.plan(container: container, tracks: tracks, capabilities: capabilities)
+        var plan = PlaybackPlanner.plan(container: container, tracks: tracks, capabilities: capabilities)
+
+        // What FFmpeg does not tell: this file's segment identifier and an ordered edition (chapters as a play list).
+        var segmentUID: String?
+        var ordered: OrderedChapters?
+        if container.kind == .matroska, let structure = MatroskaChapters.read(from: source) {
+            segmentUID = structure.segmentUID.map { LinkedSegment(data: $0).uid }
+            ordered = OrderedChapters.make(editions: structure.editions, ownUID: structure.segmentUID)
+            if let ordered, !ordered.segments.isEmpty {
+                plan.notes.append("This file plays parts of \(ordered.segments.count) other file(s); they are looked for next to it.")
+            }
+        }
         return MediaInfo(
             container: container, duration: duration, title: tags["title"], tags: tags,
             bitrate: format.pointee.bit_rate > 0 ? format.pointee.bit_rate : nil,
             fileSize: source.length, tracks: tracks, chapters: chapters, attachments: attachments,
-            playbackPlan: plan)
+            playbackPlan: plan, segmentUID: segmentUID, orderedChapters: ordered)
     }
 
     private static func containerKind(_ name: String, docType: String?) -> Container.Kind {

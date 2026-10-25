@@ -22,15 +22,17 @@ let package = Package(
     ],
     targets: [
         .binaryTarget(name: "FFmpegLGPL", path: ffmpegFramework),
+        // libass with FreeType, HarfBuzz and FriBidi, built by scripts/build-subtitle-libs.sh and scripts/package-subtitle-xcframework.sh.
+        .binaryTarget(name: "LibASS", path: "build/LibASS.xcframework"),
         .target(
             name: "MediaEngine",
-            dependencies: ["FFmpegLGPL"],
+            dependencies: ["FFmpegLGPL", "LibASS"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "MediaEngineTests",
-            dependencies: ["MediaEngine", "FFmpegLGPL"],
-            exclude: ["Corpus"],
+            dependencies: ["MediaEngine", "FFmpegLGPL", "LibASS"],
+            exclude: ["Corpus", "Golden"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

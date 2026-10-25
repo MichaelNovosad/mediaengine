@@ -9,6 +9,8 @@ cd "$ROOT"
 ./scripts/fetch-sources.sh
 for s in $SLICES; do ./scripts/build-ffmpeg.sh "$s" "$profile"; done
 ./scripts/package-xcframework.sh "$profile"
+for s in $SLICES; do ./scripts/build-subtitle-libs.sh "$s"; done
+./scripts/package-subtitle-xcframework.sh
 [ -x "$BUILD/tools/bin/ffmpeg" ] || ./scripts/build-host-tools.sh
 ./scripts/make-fixtures.sh >/dev/null
 
@@ -22,6 +24,8 @@ info="$BUILD/BUILD-INFO.txt"
   echo
   echo "Sources (see third_party/sources.lock):"
   grep -v '^#' "$ROOT/third_party/sources.lock" | awk -F'\t' '{print "  " $1 " " $2 "  sha256 " $4 "  " $3}'
+  echo
+  echo "Subtitle libraries (LibASS.framework): libass $(lock_field libass 2) ISC, FreeType $(lock_field freetype 2) FTL, HarfBuzz $(lock_field harfbuzz 2) MIT, FriBidi $(lock_field fribidi 2) LGPL-2.1; built by scripts/build-subtitle-libs.sh"
   echo
   for s in $SLICES; do
     echo "Slice $s configure line:"

@@ -37,7 +37,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     let info: MediaInfo
     let plan: SegmentPlan
 
-    private let reader: PacketReader
+    private let reader: any PacketSource
+    /// Set when the file is played as an ordered play list: knows which parts have which streams.
+    private let timeline: TimelineReader?
     private let cancellation: CancellationFlag
     private let queue = DispatchQueue(label: "dev.mediaengine.remux", qos: .userInitiated)
     private var outputs: [Int: Output] = [:]
@@ -89,11 +91,17 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Blocking: reads the start of the file, builds the segment plan and the initialization segments.
     init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024,
-         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes, externalSubtitles: [SubtitleTrack] = [], externalAudio audioFiles: [AudioTrack] = []) throws {
+         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes, externalSubtitles: [SubtitleTrack] = [], externalAudio audioFiles: [AudioTrack] = [], packetSource: (any PacketSource)? = nil) throws {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
-        reader = try PacketReader(source: source, cancellation: cancellation)
+        if let packetSource {
+            reader = packetSource
+            timeline = packetSource as? TimelineReader
+        } else {
+            reader = try PacketReader(source: source, cancellation: cancellation)
+            timeline = nil
+        }
 
         let treatments = Dictionary(uniqueKeysWithValues: info.playbackPlan.tracks.map { ($0.trackID, $0.treatment) })
         let served = ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: audioFiles)
@@ -189,7 +197,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     }
 
     /// The init segment, fragment writer and (for audio AVPlayer cannot decode) transcoder of one stream.
-    private static func makeOutput(reader: PacketReader, stream: Int, track: Track, isVideo: Bool, transcodes: Bool,
+    private static func makeOutput(reader: any PacketSource, stream: Int, track: Track, isVideo: Bool, transcodes: Bool,
                                    first: [MediaPacket], shiftSeconds: Double) throws -> Output {
         let sourceBase = reader.timeBase(stream)
         if transcodes {
@@ -239,7 +247,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Reads packets from the start of the file until every stream has a handful. Video yields its whole first run
     /// (up to the second keyframe, at most 1,000 packets), which is what the reordering depth is measured on.
-    private static func readStart(_ reader: PacketReader, streams: [Int], video: Int?) throws -> [Int: [MediaPacket]] {
+    private static func readStart(_ reader: any PacketSource, streams: [Int], video: Int?) throws -> [Int: [MediaPacket]] {
         var result: [Int: [MediaPacket]] = [:]               // a freshly opened file is already at its first packet
         var inspected = 0
         var keyframes = 0
@@ -270,7 +278,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     }
 
     /// Reads the whole file once to find keyframes and the true duration.
-    private static func scan(_ reader: PacketReader, video: Int?, fallbackStream: Int) throws -> (keyframes: [Double], positions: [Int64?], duration: Double) {
+    private static func scan(_ reader: any PacketSource, video: Int?, fallbackStream: Int) throws -> (keyframes: [Double], positions: [Int64?], duration: Double) {
         try reader.rewind()
         var keyframes: [Double] = []
         var positions: [Int64?] = []
@@ -589,6 +597,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return HLSPlaylists.media(plan: plan, initURI: "video-init.mp4", segmentURI: { "video-\($0).m4s" })
         }
         var gaps = Set<Int>()
+        if let timeline, stream != videoIndex, externalAudio[stream] == nil {
+            // A part of the play list from a file without this audio has no media for it: say so.
+            let covered = timeline.coverage(of: stream)
+            for segment in plan.segments where !covered.contains(where: { $0.lowerBound < segment.end - 0.001 && $0.upperBound > segment.start + 0.001 }) {
+                gaps.insert(segment.index)
+            }
+        }
         if let external = externalAudio[stream] {
             // Segments the file does not reach hold no media; say so instead of serving empty fragments.
             let covered = (external.delay + external.start)...(external.delay + external.end)

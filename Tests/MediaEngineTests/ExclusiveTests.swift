@@ -1,5 +1,6 @@
 import AVFoundation
 import Darwin
+import CoreGraphics
 import Foundation
 import Testing
 @testable import MediaEngine
@@ -46,6 +47,26 @@ struct ExclusiveTests {
         let grown = footprint() - memoryBefore
         if !underAddressSanitizer { #expect(grown < 30 * 1_024 * 1_024, "memory grew by \(grown / 1_024) KB over 100 cycles") }
         #expect(openDescriptors() - descriptorsBefore <= 2, "descriptors went from \(descriptorsBefore) to \(openDescriptors())")
+    }
+
+    @Test("overlay subtitle renderers (libass, picture decoders) leak neither memory nor file descriptors")
+    func noOverlayLeaks() async throws {
+        func cycle(_ name: String) async throws {
+            let session = try await PlaybackSession(url: Fixture.url(name))
+            let renderer = try await session.makeSubtitleRenderer(for: session.overlayChoices[0])
+            try await renderer.prepare(at: 1.0)
+            _ = renderer.frame(at: 1.0, size: CGSize(width: 640, height: 360))
+            renderer.close()
+            session.close()
+        }
+        for name in ["fixture-ass-fx", "fixture-bitmap"] {
+            for _ in 0..<10 { try await cycle(name) }
+            let memoryBefore = footprint(), descriptorsBefore = openDescriptors()
+            for _ in 0..<60 { try await cycle(name) }
+            let grown = footprint() - memoryBefore
+            if !underAddressSanitizer { #expect(grown < 30 * 1_024 * 1_024, "\(name): memory grew by \(grown / 1_024) KB over 60 cycles") }
+            #expect(openDescriptors() - descriptorsBefore <= 2, "\(name): descriptors went from \(descriptorsBefore) to \(openDescriptors())")
+        }
     }
 
     @Test("playback sessions with a server also clean up completely")

@@ -139,6 +139,19 @@ SINE="sine=frequency=700:sample_rate=48000:duration=3"
 "$FF" -v error -y -f lavfi -i "$SINE" -c:a ac3 -b:a 96k -f ac3 audio/ext-ac3.ac3
 "$FF" -v error -y -f lavfi -i "$SINE" -c:a opus -strict -2 -b:a 48k -metadata:s:a:0 language=jpn -metadata:s:a:0 title="Japanese dub" -f matroska audio/ext-opus.mka
 
+log "fixture-ordered.mkv, fixture-ordered-missing.mkv, fixture-linked-opening.mkv  (ordered chapters that play a separate file; scripts/make-ordered-fixtures.py patches the bytes)"
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=4" -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=4" -i src/chapters-placeholder.ffmeta \
+  -i src/ordered-main.ass -attach src/BlockFont.ttf -metadata:s:t:0 mimetype=application/x-truetype-font -metadata:s:t:0 filename=BlockFont.ttf \
+  -map 0:v -map 1:a -map 3:s -map_chapters 2 -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -c:s copy \
+  -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng -f matroska "$BUILD/work/ordered-base.mkv"
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=2" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=2" -i src/ordered-opening.ass \
+  -map 0:v -map 1:a -map 2:s -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -c:s copy \
+  -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng -f matroska "$BUILD/work/linked-base.mkv"
+python3 -I ../scripts/make-ordered-fixtures.py "$BUILD/work/ordered-base.mkv" "$BUILD/work/linked-base.mkv" \
+  fixture-ordered.mkv fixture-ordered-missing.mkv fixture-linked-opening.mkv
+
 log "src/cover.jpg"
 "$FF" -v error -y -f lavfi -i "color=c=red:s=64x64:d=1" -frames:v 1 -pix_fmt yuvj420p -c:v mjpeg src/cover.jpg
 
@@ -159,6 +172,32 @@ log "fixture-anime.mkv  (H.264, jpn+eng AAC, ASS dialogue + forced signs ASS, fo
   -metadata:s:s:1 language=eng -metadata:s:s:1 title="Signs and Songs" \
   -disposition:a:0 default -disposition:a:1 0 -disposition:s:0 default -disposition:s:1 forced \
   -f matroska fixture-anime.mkv
+
+log "fixture-ass-fx.mkv  (6 s: H.264 + AAC + an ASS track with a karaoke line, plus the generated block font as an attachment)"
+python3 -I ../scripts/make-block-font.py src/BlockFont.ttf >/dev/null
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=6" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
+  -i src/fx.ass \
+  -attach src/BlockFont.ttf -metadata:s:t:0 mimetype=application/x-truetype-font -metadata:s:t:0 filename=BlockFont.ttf \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -c:s copy \
+  -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng -metadata:s:s:0 title="Effects" \
+  -f matroska fixture-ass-fx.mkv
+
+log "fixture-bitmap.mkv  (6 s: H.264 + AAC + picture subtitles: PGS, VobSub and DVB, all showing the same red box twice)"
+python3 -I ../scripts/make-bitmap-subs.py src >/dev/null
+"$FF" -v error -y -copyts \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=6" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
+  -i src/bitmap.sup -i src/bitmap.idx -i src/bitmap.idx \
+  -map 0:v -map 1:a -map 2:s -map 3:s -map 4:s \
+  -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -c:s:0 copy -c:s:1 copy -c:s:2 dvbsub \
+  -metadata:s:a:0 language=eng \
+  -metadata:s:s:0 language=eng -metadata:s:s:0 title="PGS" \
+  -metadata:s:s:1 language=jpn -metadata:s:s:1 title="VobSub" \
+  -metadata:s:s:2 language=fre -metadata:s:s:2 title="DVB" \
+  -f matroska fixture-bitmap.mkv
 
 log "ground truth (ffprobe JSON, committed next to the fixtures)"
 mkdir -p ground-truth

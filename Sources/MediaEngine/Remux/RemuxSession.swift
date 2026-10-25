@@ -43,6 +43,17 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var outputs: [Int: Output] = [:]
     private let videoIndex: Int?
     private let audioIndices: [Int]
+    /// Audio from separate files: ids, and for each the reader on its file.
+    private let externalAudioIDs: [Int]
+    private struct ExternalAudioSource {
+        var reader: PacketReader
+        var stream: Int
+        var delay: Double
+        /// The file's own first and last time in seconds.
+        var start: Double
+        var end: Double
+    }
+    private var externalAudio: [Int: ExternalAudioSource] = [:]
     private var cache: [CacheKey: Data] = [:]
     private var cacheOrder: [CacheKey] = []
     private var cacheBytes = 0
@@ -78,20 +89,21 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Blocking: reads the start of the file, builds the segment plan and the initialization segments.
     init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024,
-         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes) throws {
+         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes, externalSubtitles: [SubtitleTrack] = [], externalAudio audioFiles: [AudioTrack] = []) throws {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
         reader = try PacketReader(source: source, cancellation: cancellation)
 
         let treatments = Dictionary(uniqueKeysWithValues: info.playbackPlan.tracks.map { ($0.trackID, $0.treatment) })
-        let served = ServedTracks(info: info)
+        let served = ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: audioFiles)
         videoIndex = served.video?.id
-        audioIndices = served.audio.map(\.id)
+        audioIndices = served.audio.filter { !served.externalAudioIDs.contains($0.id) }.map(\.id)
+        externalAudioIDs = audioFiles.indices.map { ServedTracks.externalAudioBase + $0 }
         audioNames = served.audioTitles()
         subtitleNames = served.subtitleTitles()
-        let textTracks = served.subtitles
-        subtitleTracks = textTracks
+        let textTracks = served.subtitles.filter { !served.externalSubtitleIDs.contains($0.id) }      // read from the file's own streams
+        subtitleTracks = served.subtitles
         subtitleCodecs = Dictionary(uniqueKeysWithValues: textTracks.map { ($0.id, $0.codec.name) })
         let packetReader = reader
         assHeaders = Dictionary(uniqueKeysWithValues: textTracks.filter { ["ass", "ssa"].contains($0.codec.name) }.map { track in
@@ -101,6 +113,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             } ?? ""
             return (track.id, ASSHeader(header))
         })
+        for (index, file) in externalSubtitles.enumerated() {
+            subtitleCues[ServedTracks.externalSubtitleBase + index] = Set(file.shiftedCues)
+        }
         let wanted = (videoIndex.map { [$0] } ?? []) + audioIndices
         guard !wanted.isEmpty else { throw MediaError.unsupported(detail: "no playable video or audio track") }
 
@@ -116,6 +131,14 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var earliest = 0.0
         for (stream, packets) in first {
             if let packet = packets.first { earliest = min(earliest, reader.timeBase(stream).seconds(packet.dts)) }
+        }
+        // Audio from separate files starts its own timeline; it never moves the video. What would land before the start of
+        // the presentation (a negative delay) is cut, and the files' first packets are read here for their init segments.
+        var externalStarts: [(id: Int, file: AudioTrack, reader: PacketReader, first: [MediaPacket])] = []
+        for (index, file) in audioFiles.enumerated() {
+            let audioReader = try PacketReader(source: file.source.byteSource, cancellation: cancellation)
+            let start = try Self.readStart(audioReader, streams: [file.stream], video: nil)
+            externalStarts.append((ServedTracks.externalAudioBase + index, file, audioReader, start[file.stream] ?? []))
         }
         let shiftSeconds = -earliest
         mediaShift = shiftSeconds
@@ -146,41 +169,58 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
         for stream in wanted {
             guard let track = info.tracks.first(where: { $0.id == stream }) else { continue }
-            let isVideo = stream == videoIndex
-            let sourceBase = reader.timeBase(stream)
-            let treatment = treatments[stream]
-
-            if case .transcodeAudio = treatment {
-                // Decoded and re-encoded to ALAC: the packets, the init segment and the fragments all use 1/sample-rate.
-                let transcoder = try AudioTranscoder(parameters: reader.parameters(stream), sourceTimeBase: sourceBase)
-                let timeBase = transcoder.outputTimeBase
-                let shift = timeBase.ticks(seconds: shiftSeconds)
-                let encodedParameters = try transcoder.makeEncodedParameters()
-                defer { var pointer: UnsafeMutablePointer<AVCodecParameters>? = encodedParameters; avcodec_parameters_free(&pointer) }
-                let sample = try transcoder.transcode(first[stream] ?? [], stream: stream)
-                let initSegment = try InitSegmentBuilder.build(
-                    parameters: encodedParameters, timeBase: timeBase, sampleAspect: AVRational(num: 0, den: 1),
-                    samples: sample, shift: shift)
-                outputs[stream] = Output(
-                    streamIndex: stream, kind: .audio, track: track, initSegment: initSegment,
-                    writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: timeBase,
-                                           hasCompositionOffsets: false, shift: shift),
-                    codecs: "alac", transcoder: transcoder, prerollSeconds: AudioTranscoder.prerollSeconds(track.codec.name))
-                continue
-            }
-
-            let shift = sourceBase.ticks(seconds: shiftSeconds)
-            let st = reader.stream(stream)
-            let initSegment = try InitSegmentBuilder.build(
-                parameters: reader.parameters(stream), timeBase: sourceBase,
-                sampleAspect: isVideo ? st.pointee.sample_aspect_ratio : AVRational(num: 0, den: 1),
-                samples: Array((first[stream] ?? []).prefix(8)), shift: shift)
-            outputs[stream] = Output(
-                streamIndex: stream, kind: isVideo ? .video : .audio, track: track, initSegment: initSegment,
-                writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: sourceBase,
-                                       hasCompositionOffsets: isVideo, shift: shift),
-                codecs: HLSPlaylists.codecString(for: reader.parameters(stream)))
+            var transcodes = false
+            if case .transcodeAudio = treatments[stream] { transcodes = true }
+            outputs[stream] = try Self.makeOutput(reader: reader, stream: stream, track: track, isVideo: stream == videoIndex,
+                                                  transcodes: transcodes, first: first[stream] ?? [], shiftSeconds: shiftSeconds)
         }
+        for start in externalStarts {
+            var track = start.file.track
+            track.id = start.id
+            // The writer's shift carries the delay, so the file's own timestamps land where the viewer wants them.
+            outputs[start.id] = try Self.makeOutput(reader: start.reader, stream: start.file.stream, track: track, isVideo: false,
+                                                    transcodes: start.file.transcodes, first: start.first,
+                                                    shiftSeconds: shiftSeconds + start.file.delay)
+            let base = start.reader.timeBase(start.file.stream)
+            let begin = start.first.first.map { base.seconds($0.pts) } ?? 0
+            externalAudio[start.id] = ExternalAudioSource(reader: start.reader, stream: start.file.stream, delay: start.file.delay,
+                                                          start: min(begin, 0), end: start.file.duration ?? 0)
+        }
+    }
+
+    /// The init segment, fragment writer and (for audio AVPlayer cannot decode) transcoder of one stream.
+    private static func makeOutput(reader: PacketReader, stream: Int, track: Track, isVideo: Bool, transcodes: Bool,
+                                   first: [MediaPacket], shiftSeconds: Double) throws -> Output {
+        let sourceBase = reader.timeBase(stream)
+        if transcodes {
+            // Decoded and re-encoded to ALAC: the packets, the init segment and the fragments all use 1/sample-rate.
+            let transcoder = try AudioTranscoder(parameters: reader.parameters(stream), sourceTimeBase: sourceBase)
+            let timeBase = transcoder.outputTimeBase
+            let shift = timeBase.ticks(seconds: shiftSeconds)
+            let encodedParameters = try transcoder.makeEncodedParameters()
+            defer { var pointer: UnsafeMutablePointer<AVCodecParameters>? = encodedParameters; avcodec_parameters_free(&pointer) }
+            let sample = try transcoder.transcode(first, stream: stream)
+            let initSegment = try InitSegmentBuilder.build(
+                parameters: encodedParameters, timeBase: timeBase, sampleAspect: AVRational(num: 0, den: 1),
+                samples: sample, shift: shift)
+            return Output(
+                streamIndex: stream, kind: .audio, track: track, initSegment: initSegment,
+                writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: timeBase,
+                                       hasCompositionOffsets: false, shift: shift),
+                codecs: "alac", transcoder: transcoder, prerollSeconds: AudioTranscoder.prerollSeconds(track.codec.name))
+        }
+
+        let shift = sourceBase.ticks(seconds: shiftSeconds)
+        let st = reader.stream(stream)
+        let initSegment = try InitSegmentBuilder.build(
+            parameters: reader.parameters(stream), timeBase: sourceBase,
+            sampleAspect: isVideo ? st.pointee.sample_aspect_ratio : AVRational(num: 0, den: 1),
+            samples: Array(first.prefix(8)), shift: shift)
+        return Output(
+            streamIndex: stream, kind: isVideo ? .video : .audio, track: track, initSegment: initSegment,
+            writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: sourceBase,
+                                   hasCompositionOffsets: isVideo, shift: shift),
+            codecs: HLSPlaylists.codecString(for: reader.parameters(stream)))
     }
 
     /// Whether the session serves this stream (used by tests and the player item builder).
@@ -287,7 +327,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let segment = plan.segments[number]
         let cues = try queue.sync { () throws -> [SubtitleCue] in
             if cancellation.isCancelled { throw MediaError.cancelled }
-            try scanSubtitles(through: number)
+            if !subtitleCodecs.isEmpty { try scanSubtitles(through: number) }      // external files need no reading
             return (subtitleCues[id] ?? []).sorted { ($0.start, $0.end, $0.text) < ($1.start, $1.end, $1.text) }
         }
         return Resource(data: Data(WebVTT.segment(cues: cues, start: segment.start, end: segment.end, shift: mediaShift).utf8),
@@ -326,6 +366,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     private func segment(stream: Int, number: Int) throws -> Resource? {
         guard plan.segments.indices.contains(number), let output = outputs[stream] else { return nil }
+        if let source = externalAudio[stream] {
+            let data = try queue.sync { () throws -> Data in
+                if cancellation.isCancelled { throw MediaError.cancelled }
+                let key = CacheKey(stream: stream, segment: number)
+                if let hit = touch(key) { return hit }
+                return try buildExternalAudio(stream, source: source, output: output, number: number)
+            }
+            return Resource(data: data, contentType: "audio/mp4")
+        }
         let epoch = requestEpoch.withLock { $0 }
         let data: Data? = try queue.sync {
             if cancellation.isCancelled { throw MediaError.cancelled }
@@ -346,6 +395,45 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         return data.map { Resource(data: $0, contentType: output.kind == .video ? "video/mp4" : "audio/mp4") }
     }
 
+    /// One segment of audio from a separate file: the packets whose (delayed) time falls in the segment, converted if
+    /// need be, written at their own timestamps plus the delay. Call on `queue`.
+    private func buildExternalAudio(_ id: Int, source: ExternalAudioSource, output: Output, number: Int) throws -> Data {
+        let segment = plan.segments[number]
+        let reader = source.reader
+        let base = reader.timeBase(source.stream)
+        let windowStart = segment.start - source.delay          // the file's own time that lands at the segment's start
+        let windowEnd = segment.end - source.delay
+        let isLast = number == plan.segments.count - 1
+        let from = windowStart - output.prerollSeconds
+        if number == 0 || from <= 0 { try reader.rewind() } else { try reader.seek(stream: source.stream, to: base.ticks(seconds: from)) }
+
+        var packets: [MediaPacket] = [], preroll: [MediaPacket] = []
+        while let packet = try reader.next() {
+            if cancellation.isCancelled { throw MediaError.cancelled }
+            guard packet.stream == source.stream else { continue }
+            let seconds = base.seconds(packet.pts)
+            if seconds >= windowEnd, !isLast { break }
+            // A negative delay moves the start of the file before the start of the video: that part is dropped.
+            if number == 0, seconds + base.seconds(max(packet.duration, 0)) + source.delay + mediaShift <= 0 { continue }
+            if seconds < windowStart, number > 0 {
+                if output.prerollSeconds > 0, seconds >= from { preroll.append(packet) }
+                continue
+            }
+            packets.append(packet)
+        }
+
+        let sequence = UInt32(number + 1)
+        var data: Data
+        if let transcoder = output.transcoder, !packets.isEmpty {
+            let encoded = try transcoder.transcode(packets, preroll: preroll, stream: source.stream)
+            data = output.writer.fragment(sequence: sequence, packets: encoded) ?? output.writer.emptyFragment(sequence: sequence, atSeconds: segment.start)
+        } else {
+            data = output.writer.fragment(sequence: sequence, packets: packets) ?? output.writer.emptyFragment(sequence: sequence, atSeconds: segment.start)
+        }
+        store(CacheKey(stream: id, segment: number), data)
+        return data
+    }
+
     // MARK: Windows
 
     /// Reads the packets of one segment for every output and stores the finished fragments. Call on `queue`.
@@ -353,7 +441,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let segment = plan.segments[number]
         let seekStream = videoIndex ?? audioIndices[0]
         let seekBase = reader.timeBase(seekStream)
-        let maxPreroll = outputs.values.map(\.prerollSeconds).max() ?? 0
+        // Audio from separate files has its own reader and is built when asked for; a window of this file is not its business.
+        let mainOutputs = outputs.filter { externalAudio[$0.key] == nil }
+        let maxPreroll = mainOutputs.values.map(\.prerollSeconds).max() ?? 0
         if number == 0 {
             try reader.rewind()
         } else {
@@ -409,7 +499,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
         subtitleWindows.insert(number)
         pendingTranscodes = pendingTranscodes.filter { abs($0.key.segment - number) <= 2 }      // keep only nearby windows
-        for (stream, output) in outputs {
+        for (stream, output) in mainOutputs {
             let list = packets[stream] ?? []
             let key = CacheKey(stream: stream, segment: number)
             if output.transcoder != nil, !list.isEmpty {
@@ -479,13 +569,18 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return HLSPlaylists.AudioRendition(id: id, name: name, language: output.track.language?.minimalIdentifier ?? language,
                                                channels: output.track.audio?.channels ?? 2, codecs: output.codecs, isDefault: id == defaultID)
         }
+        let externalRenditions = externalAudioIDs.compactMap { id -> HLSPlaylists.AudioRendition? in
+            guard let output = outputs[id] else { return nil }
+            return HLSPlaylists.AudioRendition(id: id, name: audioNames[id] ?? "Audio \(id)", language: output.track.language?.minimalIdentifier,
+                                               channels: max(output.track.audio?.channels ?? 2, 1), codecs: output.codecs, isDefault: false)
+        }
         let subtitles = subtitleTracks.map { track -> HLSPlaylists.SubtitleRendition in
             let language = track.language?.minimalIdentifier
             let name = subtitleNames[track.id] ?? "Subtitles \(track.id)"
             return HLSPlaylists.SubtitleRendition(id: track.id, name: name, language: language, isDefault: track.isDefault,
                                                   isForced: track.isForced, isHearingImpaired: track.isHearingImpaired)
         }
-        return HLSPlaylists.master(video: video, audio: audio, subtitles: subtitles, videoPlaylist: "video.m3u8",
+        return HLSPlaylists.master(video: video, audio: audio + externalRenditions, subtitles: subtitles, videoPlaylist: "video.m3u8",
                                    audioPlaylist: { "audio-\($0).m3u8" }, subtitlePlaylist: { "subs-\($0).m3u8" })
     }
 
@@ -493,7 +588,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         if stream == videoIndex {
             return HLSPlaylists.media(plan: plan, initURI: "video-init.mp4", segmentURI: { "video-\($0).m4s" })
         }
-        return HLSPlaylists.media(plan: plan, initURI: "audio-\(stream)-init.mp4", segmentURI: { "audio-\(stream)-\($0).m4s" })
+        var gaps = Set<Int>()
+        if let external = externalAudio[stream] {
+            // Segments the file does not reach hold no media; say so instead of serving empty fragments.
+            let covered = (external.delay + external.start)...(external.delay + external.end)
+            for segment in plan.segments where !(segment.start < covered.upperBound && segment.end > covered.lowerBound) { gaps.insert(segment.index) }
+        }
+        return HLSPlaylists.media(plan: plan, initURI: "audio-\(stream)-init.mp4", gaps: gaps, segmentURI: { "audio-\(stream)-\($0).m4s" })
     }
 }
 

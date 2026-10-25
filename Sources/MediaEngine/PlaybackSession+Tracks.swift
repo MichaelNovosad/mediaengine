@@ -2,12 +2,16 @@ import AVFoundation
 import Foundation
 
 extension PlaybackSession {
-    /// The audio tracks the player can play, in file order. Tracks the engine cannot play (DTS without the licensed
+    /// The audio tracks the player can play: the ones inside the file in file order, then the files added with
+    /// ``add(_:)-(AudioTrack)``. Tracks the engine cannot play (DTS without the licensed
     /// module, for example) are not listed; ``MediaInfo/playbackPlan`` says why.
-    public var audioChoices: [TrackChoice] { ServedTracks(info: info).choices().audio }
+    public var audioChoices: [TrackChoice] { served.choices().audio }
 
-    /// The text subtitle tracks the player can show, in file order.
-    public var subtitleChoices: [TrackChoice] { ServedTracks(info: info).choices().subtitles }
+    /// The text subtitle tracks the player can show: the ones inside the file in file order, then the files added with
+    /// ``add(_:)``.
+    public var subtitleChoices: [TrackChoice] { served.choices().subtitles }
+
+    private var served: ServedTracks { ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: externalAudio) }
 
     /// Switches the item to this audio or subtitle track.
     ///

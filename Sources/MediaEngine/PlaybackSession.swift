@@ -24,6 +24,8 @@ public final class PlaybackSession: @unchecked Sendable {
     private struct State {
         var remux: RemuxSession?
         var server: LoopbackServer?
+        var externalSubtitles: [SubtitleTrack] = []
+        var externalAudio: [AudioTrack] = []
         var isClosed = false
     }
     private let state = Mutex(State())
@@ -101,6 +103,40 @@ public final class PlaybackSession: @unchecked Sendable {
         remux?.close()
     }
 
+    /// Adds a subtitle file to be shown with the video, next to the tracks inside it. It appears among
+    /// ``subtitleChoices`` (with ``TrackChoice/isExternal`` set) and in the player's subtitle menu.
+    ///
+    /// Add files before the first ``makePlayerItem()``: the list of tracks is fixed once an item exists. To add one
+    /// later, create a new session, add all files and make a new item at the current time.
+    public func add(_ subtitles: SubtitleTrack) throws {
+        try state.withLock { state in
+            if state.isClosed { throw MediaError.cancelled }
+            if state.remux != nil {
+                throw MediaError.unsupported(detail: "subtitle files must be added before the first player item is made")
+            }
+            state.externalSubtitles.append(subtitles)
+        }
+    }
+
+    /// Adds an audio file that can be played instead of the video's own sound. It appears among ``audioChoices`` (with
+    /// ``TrackChoice/isExternal`` set) and in the player's audio menu. The same rule as for subtitle files applies:
+    /// add it before the first ``makePlayerItem()``.
+    public func add(_ audio: AudioTrack) throws {
+        try state.withLock { state in
+            if state.isClosed { throw MediaError.cancelled }
+            if state.remux != nil {
+                throw MediaError.unsupported(detail: "audio files must be added before the first player item is made")
+            }
+            state.externalAudio.append(audio)
+        }
+    }
+
+    /// The audio files added so far.
+    var externalAudio: [AudioTrack] { state.withLock { $0.externalAudio } }
+
+    /// The subtitle files added so far.
+    var externalSubtitles: [SubtitleTrack] { state.withLock { $0.externalSubtitles } }
+
     // MARK: Internals
 
     private func startRemux() async throws -> RemuxSession {
@@ -113,9 +149,12 @@ public final class PlaybackSession: @unchecked Sendable {
         let byteSource = source.byteSource
         let info = info
         let cancellation = cancellation
+        let (external, externalAudio) = state.withLock { ($0.externalSubtitles, $0.externalAudio) }
         let remux: RemuxSession = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(with: Result { try RemuxSession(source: byteSource, info: info, cancellation: cancellation) })
+                continuation.resume(with: Result {
+                    try RemuxSession(source: byteSource, info: info, cancellation: cancellation, externalSubtitles: external, externalAudio: externalAudio)
+                })
             }
         }
         let outcome = try state.withLock { state -> (RemuxSession, lost: Bool) in

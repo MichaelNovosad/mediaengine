@@ -130,6 +130,15 @@ log "fixture-multi.mkv  (3 s: four audio tracks incl. two English and a duplicat
   -disposition:s:0 default -disposition:s:1 hearing_impaired -disposition:s:2 forced \
   -f matroska fixture-multi.mkv
 
+log "audio/ext-*  (external audio files: m4a/AAC, aac/ADTS, flac, ac3, mka/Opus; 3 s of a 700 Hz sine, mono)"
+mkdir -p audio
+SINE="sine=frequency=700:sample_rate=48000:duration=3"
+"$FF" -v error -y -f lavfi -i "$SINE" -c:a aac_at -b:a 64k -metadata:s:a:0 language=eng -f mp4 audio/ext-aac.m4a
+"$FF" -v error -y -f lavfi -i "$SINE" -c:a aac_at -b:a 64k -f adts audio/ext-aac.aac
+"$FF" -v error -y -f lavfi -i "$SINE" -c:a flac audio/ext-flac.flac
+"$FF" -v error -y -f lavfi -i "$SINE" -c:a ac3 -b:a 96k -f ac3 audio/ext-ac3.ac3
+"$FF" -v error -y -f lavfi -i "$SINE" -c:a opus -strict -2 -b:a 48k -metadata:s:a:0 language=jpn -metadata:s:a:0 title="Japanese dub" -f matroska audio/ext-opus.mka
+
 log "src/cover.jpg"
 "$FF" -v error -y -f lavfi -i "color=c=red:s=64x64:d=1" -frames:v 1 -pix_fmt yuvj420p -c:v mjpeg src/cover.jpg
 

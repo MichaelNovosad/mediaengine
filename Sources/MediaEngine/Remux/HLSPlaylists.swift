@@ -85,11 +85,13 @@ enum HLSPlaylists {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    static func media(plan: SegmentPlan, initURI: String, segmentURI: (Int) -> String) -> String {
+    /// - Parameter gaps: Segments that hold no media (an audio file that does not reach them); marked `EXT-X-GAP`.
+    static func media(plan: SegmentPlan, initURI: String, gaps: Set<Int> = [], segmentURI: (Int) -> String) -> String {
         let target = Int((plan.segments.map(\.duration).max() ?? 6).rounded(.up))
-        var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-TARGETDURATION:\(max(target, 1))", "#EXT-X-MEDIA-SEQUENCE:0",
+        var lines = ["#EXTM3U", "#EXT-X-VERSION:\(gaps.isEmpty ? 7 : 8)", "#EXT-X-TARGETDURATION:\(max(target, 1))", "#EXT-X-MEDIA-SEQUENCE:0",
                      "#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-INDEPENDENT-SEGMENTS", "#EXT-X-MAP:URI=\(quoted(initURI))"]
         for segment in plan.segments {
+            if gaps.contains(segment.index) { lines.append("#EXT-X-GAP") }
             lines.append("#EXTINF:\(String(format: "%.5f", segment.duration)),")
             lines.append(segmentURI(segment.index))
         }

@@ -23,6 +23,8 @@ public struct TrackChoice: Sendable, Equatable, Hashable, Identifiable, Codable 
     public var isForced: Bool
     public var isHearingImpaired: Bool
     public var isCommentary: Bool
+    /// The track comes from a separate file added with ``PlaybackSession/add(_:)-(SubtitleTrack)``, not from the video file.
+    public var isExternal = false
 }
 
 /// What a viewer wants to hear and read, for example per series: "Japanese audio, English subtitles".
@@ -97,9 +99,17 @@ public struct TrackPreferences: Sendable, Equatable, Codable {
 struct ServedTracks {
     var video: Track?
     var audio: [Track]
+    /// Embedded text tracks first, then the external files (whose ids are `externalSubtitleBase + index`).
     var subtitles: [Track]
+    var externalSubtitleIDs: Set<Int> = []
+    var externalAudioIDs: Set<Int> = []
 
-    init(info: MediaInfo) {
+    /// Identifiers of external subtitle files, far above any stream index.
+    static let externalSubtitleBase = 10_000
+    /// Identifiers of external audio files.
+    static let externalAudioBase = 20_000
+
+    init(info: MediaInfo, externalSubtitles: [SubtitleTrack] = [], externalAudio: [AudioTrack] = []) {
         let treatments = Dictionary(uniqueKeysWithValues: info.playbackPlan.tracks.map { ($0.trackID, $0.treatment) })
         video = info.videoTracks.first { treatments[$0.id] == .passthrough }
         audio = info.audioTracks.filter { track in
@@ -110,6 +120,24 @@ struct ServedTracks {
             }
         }
         subtitles = info.subtitleTracks.filter { treatments[$0.id] == .convertToWebVTT && SubtitleText.canConvert(codec: $0.codec.name) }
+        for (index, file) in externalAudio.enumerated() {
+            var pseudo = file.track
+            pseudo.id = Self.externalAudioBase + index
+            pseudo.title = file.title
+            pseudo.language = file.language
+            pseudo.isDefault = false
+            pseudo.isForced = false
+            pseudo.isCommentary = false
+            externalAudioIDs.insert(pseudo.id)
+            audio.append(pseudo)
+        }
+        for (index, file) in externalSubtitles.enumerated() {
+            let id = Self.externalSubtitleBase + index
+            externalSubtitleIDs.insert(id)
+            subtitles.append(Track(id: id, kind: .subtitle, codec: Codec(name: "external", displayName: file.format), language: file.language,
+                                   title: file.title, isDefault: false, isForced: file.isForced, isHearingImpaired: file.isHearingImpaired,
+                                   isCommentary: false, bitrate: nil))
+        }
     }
 
     /// Names that are unique among the given tracks (an HLS requirement and what selection relies on).
@@ -136,7 +164,8 @@ struct ServedTracks {
             tracks.map { track in
                 TrackChoice(id: track.id, kind: kind, title: titles[track.id] ?? "", language: track.language,
                             codec: track.codec.displayName, isDefault: track.isDefault, isForced: track.isForced,
-                            isHearingImpaired: track.isHearingImpaired, isCommentary: track.isCommentary)
+                            isHearingImpaired: track.isHearingImpaired, isCommentary: track.isCommentary,
+                            isExternal: externalSubtitleIDs.contains(track.id) || externalAudioIDs.contains(track.id))
             }
         }
         return (make(audio, kind: .audio, titles: audioTitles()), make(subtitles, kind: .subtitle, titles: subtitleTitles()))

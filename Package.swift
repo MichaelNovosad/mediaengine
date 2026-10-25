@@ -30,6 +30,7 @@ let package = Package(
         .testTarget(
             name: "MediaEngineTests",
             dependencies: ["MediaEngine", "FFmpegLGPL"],
+            exclude: ["Corpus"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

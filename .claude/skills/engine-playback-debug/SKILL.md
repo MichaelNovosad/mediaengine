@@ -26,5 +26,7 @@ Pipeline: `PacketReader` (FFmpeg demux) -> `RemuxSession` (segment plan from key
 - 27 SDK: `AVPlayerItem` is `@MainActor`; use `outputProvider(for:)`, `reader.start()`, `provider.next()`, `pixelBufferAndDisplayTime(forItemTime:)`, `CVPixelBufferAttributes()` instead of the deprecated calls.
 - The tool sandbox cannot run Python's `http.server`; `NWListener` works. `leaks`/`vmmap` cannot attach.
 - HLS media segments cannot come from an `AVAssetResourceLoader` ("custom url not redirect", -12881); only a real network URL works, so the loopback server is the transport (RESEARCH.md section 16).
+- An audio rendition that does not cover the video (a dub shorter than the film, or delayed) stalls AVPlayer unless the uncovered segments are `#EXT-X-GAP` in its playlist (version 8); empty fragments do not help. Anything that loops over `outputs` in `buildWindow` must skip external audio, which has its own reader and cache entries.
+- Raw ADTS AAC has no timestamps and no durations without a decoder; `PacketReader` numbers the frames itself.
 - `AVPlayerItem.externalMetadata` lives in AVKit and crashes ("unrecognized selector") if AVKit is not loaded; chapter markers for the system player are tvOS-only (RESEARCH.md section 19).
 - AVFoundation's audio menu shows language names, not track titles (E3 item for same-language tracks).

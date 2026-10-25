@@ -113,9 +113,11 @@ func facts(_ fragment: Data) throws -> FragmentFacts {
                          totalDuration: total, sequence: fragment.uint32(at: mfhd.payload.lowerBound + 4))
 }
 
-/// Like `facts`, but returns `nil` instead of failing the test (for benchmarks that tolerate odd fragments).
+/// Like `facts`, but returns `nil` (without recording a failure) for a fragment that has no samples, such as the empty
+/// fragment of a segment a track does not reach.
 func fragmentFacts(_ fragment: Data) -> FragmentFacts? {
-    guard MP4Box.find(["moof"], in: fragment) != nil else { return nil }
+    guard let moof = MP4Box.find(["moof"], in: fragment), let traf = MP4Box.find(["traf"], in: fragment, within: moof.payload),
+          MP4Box.find(["trun"], in: fragment, within: traf.payload) != nil else { return nil }
     return try? facts(fragment)
 }
 

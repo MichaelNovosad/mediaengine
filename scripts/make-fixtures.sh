@@ -109,6 +109,27 @@ log "fixture-subs-long.mkv  (14 s: H.264 + AAC + SRT with cues that span the 6-s
   -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng -metadata:s:s:0 title="English" \
   -f matroska fixture-subs-long.mkv
 
+log "fixture-multi.mkv  (3 s: four audio tracks incl. two English and a duplicate title, three subtitle tracks incl. SDH and forced)"
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=3" \
+  -f lavfi -i "sine=frequency=300:sample_rate=48000:duration=3" \
+  -f lavfi -i "sine=frequency=400:sample_rate=48000:duration=3" \
+  -f lavfi -i "sine=frequency=500:sample_rate=48000:duration=3" \
+  -f lavfi -i "sine=frequency=600:sample_rate=48000:duration=3" \
+  -i src/subtitle-en.srt -i src/subtitle-sdh.srt -i src/subtitle-ja.srt \
+  -map 0:v -map 1:a -map 2:a -map 3:a -map 4:a -map 5:s -map 6:s -map 7:s \
+  -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -c:s copy \
+  -metadata:s:a:0 language=eng -metadata:s:a:0 title="Main" \
+  -metadata:s:a:1 language=eng -metadata:s:a:1 title="Director commentary" \
+  -metadata:s:a:2 language=jpn -metadata:s:a:2 title="Japanese" \
+  -metadata:s:a:3 language=eng -metadata:s:a:3 title="Main" \
+  -metadata:s:s:0 language=eng -metadata:s:s:0 title="English" \
+  -metadata:s:s:1 language=eng -metadata:s:s:1 title="English SDH" \
+  -metadata:s:s:2 language=jpn -metadata:s:s:2 title="Signs" \
+  -disposition:a:0 default -disposition:a:1 comment -disposition:a:2 0 -disposition:a:3 0 \
+  -disposition:s:0 default -disposition:s:1 hearing_impaired -disposition:s:2 forced \
+  -f matroska fixture-multi.mkv
+
 log "src/cover.jpg"
 "$FF" -v error -y -f lavfi -i "color=c=red:s=64x64:d=1" -frames:v 1 -pix_fmt yuvj420p -c:v mjpeg src/cover.jpg
 

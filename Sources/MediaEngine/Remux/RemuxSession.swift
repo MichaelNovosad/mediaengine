@@ -52,6 +52,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var videoKeyframes: [Double] = []
     /// Text subtitle tracks served as WebVTT renditions, and their cues once read (on first request).
     private let subtitleTracks: [Track]
+    /// Unique rendition names, the same ones ``PlaybackSession`` offers as track choices.
+    private let audioNames: [Int: String]
+    private let subtitleNames: [Int: String]
     private let subtitleCodecs: [Int: String]
     private let assHeaders: [Int: ASSHeader]
     /// Cues seen so far per subtitle track, filled by the windows that are built for audio and video anyway (a window
@@ -82,15 +85,12 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         reader = try PacketReader(source: source, cancellation: cancellation)
 
         let treatments = Dictionary(uniqueKeysWithValues: info.playbackPlan.tracks.map { ($0.trackID, $0.treatment) })
-        videoIndex = info.videoTracks.first { treatments[$0.id] == .passthrough }?.id
-        audioIndices = info.audioTracks.filter { track in
-            switch treatments[track.id] {
-            case .passthrough: true
-            case .transcodeAudio(.alac): AudioTranscoder.canTranscode(track.codec.name)
-            default: false
-            }
-        }.map(\.id)
-        let textTracks = info.subtitleTracks.filter { treatments[$0.id] == .convertToWebVTT && SubtitleText.canConvert(codec: $0.codec.name) }
+        let served = ServedTracks(info: info)
+        videoIndex = served.video?.id
+        audioIndices = served.audio.map(\.id)
+        audioNames = served.audioTitles()
+        subtitleNames = served.subtitleTitles()
+        let textTracks = served.subtitles
         subtitleTracks = textTracks
         subtitleCodecs = Dictionary(uniqueKeysWithValues: textTracks.map { ($0.id, $0.codec.name) })
         let packetReader = reader
@@ -475,15 +475,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let audio = audioIndices.compactMap { id -> HLSPlaylists.AudioRendition? in
             guard let output = outputs[id] else { return nil }
             let language = output.track.language?.maximalIdentifier.split(separator: "-").first.map(String.init)
-            let name = output.track.title ?? output.track.language.flatMap { Locale.current.localizedString(forIdentifier: $0.minimalIdentifier) }
-                ?? "Audio \(id)"
+            let name = audioNames[id] ?? "Audio \(id)"
             return HLSPlaylists.AudioRendition(id: id, name: name, language: output.track.language?.minimalIdentifier ?? language,
                                                channels: output.track.audio?.channels ?? 2, codecs: output.codecs, isDefault: id == defaultID)
         }
         let subtitles = subtitleTracks.map { track -> HLSPlaylists.SubtitleRendition in
             let language = track.language?.minimalIdentifier
-            let name = track.title ?? track.language.flatMap { Locale.current.localizedString(forIdentifier: $0.minimalIdentifier) }
-                ?? "Subtitles \(track.id)"
+            let name = subtitleNames[track.id] ?? "Subtitles \(track.id)"
             return HLSPlaylists.SubtitleRendition(id: track.id, name: name, language: language, isDefault: track.isDefault,
                                                   isForced: track.isForced, isHearingImpaired: track.isHearingImpaired)
         }

@@ -171,12 +171,13 @@ struct ProbeTests {
         await #expect(throws: MediaError.cancelled) { try await task.value }
     }
 
-    @Test("cancelling during slow reads ends with .cancelled")
+    @Test("cancelling while a read is in flight ends with .cancelled")
     func cancelledDuringReads() async throws {
-        let slow = SlowByteSource(base: DataByteSource(try Fixture.data("fixture-basic")), delay: 0.1)
-        let task = Task { try await MediaSource(byteSource: slow).probe() }
-        while slow.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }      // cancel while a read is in flight
+        let gated = GatedByteSource(base: DataByteSource(try Fixture.data("fixture-basic")))
+        let task = Task { try await MediaSource(byteSource: gated).probe() }
+        while gated.readCount == 0 { try await Task.sleep(for: .milliseconds(5)) }      // the probe is blocked inside its first read
         task.cancel()
+        gated.release()
         await #expect(throws: MediaError.cancelled) { try await task.value }           // how fast: ExclusiveTests
     }
 

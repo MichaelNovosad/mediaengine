@@ -102,8 +102,7 @@ final class PacketReader {
     }
 
     /// The next packet of any stream, or `nil` at the end of the file.
-    /// - Parameter only: When set, packets of other streams are skipped before their data is copied.
-    func next(only streams: Set<Int>? = nil) throws -> MediaPacket? {
+    func next() throws -> MediaPacket? {
         while true {
             let result = av_read_frame(format, packet)
             if result == AVError.eof {
@@ -113,7 +112,6 @@ final class PacketReader {
             }
             if result < 0 { throw FormatContext.openError(result, context.bridge) }
             defer { av_packet_unref(packet) }
-            if let streams, !streams.contains(Int(packet.pointee.stream_index)) { continue }
 
             var pts = packet.pointee.pts
             var dts = packet.pointee.dts

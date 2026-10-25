@@ -334,6 +334,33 @@ struct AVPlayerEndToEndTests {
         session.close()
     }
 
+    @Test("a positioned ASS sign is drawn where the script put it")
+    func subtitlePlacement() async throws {
+        let session = try await PlaybackSession(url: Fixture.url("fixture-anime"))
+        let item = try await session.makePlayerItem()
+        let collector = CueCollector()
+        let output = AVPlayerItemLegibleOutput(mediaSubtypesForNativeRepresentation: [])
+        output.suppressesPlayerRendering = true
+        output.setDelegate(collector, queue: .main)
+        item.add(output)
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        #expect(await waitUntil(10) { item.status == .readyToPlay }, "\(String(describing: item.error))")
+        let group = try #require(try await item.asset.loadMediaSelectionGroup(for: .legible))
+        // The forced "Signs and Songs" track: a sign at \pos(320,60) of a 640x360 script, then an unpositioned line.
+        let signs = try #require(group.options.first { $0.displayName == "English Forced" })
+        item.select(signs, in: group)
+        player.play()
+        #expect(await waitUntil(8) { collector.texts.contains("Karaoke line") }, "got \(collector.texts)")
+        let sign = try #require(collector.cue("SIGN: Station"))
+        #expect(sign.position == 50, "text position \(String(describing: sign.position))")
+        #expect(abs((sign.line ?? -1) - 17) < 1, "line position \(String(describing: sign.line))")
+        let line = try #require(collector.cue("Karaoke line"))
+        #expect(line.line == 100, "an unpositioned cue sits at the bottom, not at \(String(describing: line.line))")
+        player.pause()
+        session.close()
+    }
+
     @Test("a file with B-frames plays, seeks and finishes")
     func playsBFrames() async throws {
         try await verifyPlayback(name: "fixture-bframes", width: 640, height: 360, duration: 10.0, seeks: [0.4, 6.5])
@@ -378,16 +405,23 @@ struct AVPlayerEndToEndTests {
 }
 #endif
 
-/// Receives the subtitle text AVPlayer would draw.
+/// Receives the subtitle text AVPlayer would draw, with the placement it computed.
 private final class CueCollector: NSObject, AVPlayerItemLegibleOutputPushDelegate, @unchecked Sendable {
-    private let received = Mutex<[(time: Double, text: String)]>([])
+    struct Cue { var time: Double; var text: String; var line: Double?; var position: Double? }
+    private let received = Mutex<[Cue]>([])
     var texts: [String] { received.withLock { $0.map(\.text) } }
     func firstTime(of text: String) -> Double? { received.withLock { $0.first { $0.text == text }?.time } }
+    func cue(_ text: String) -> Cue? { received.withLock { $0.first { $0.text == text } } }
 
     func legibleOutput(_ output: AVPlayerItemLegibleOutput, didOutputAttributedStrings strings: [NSAttributedString],
                        nativeSampleBuffers nativeSamples: [Any], forItemTime itemTime: CMTime) {
-        let text = strings.map(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        received.withLock { $0.append((itemTime.seconds, text)) }
+        for string in strings {
+            let text = string.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let attributes = string.attributes(at: 0, effectiveRange: nil)
+            let line = attributes[NSAttributedString.Key(kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String)] as? Double
+            let position = attributes[NSAttributedString.Key(kCMTextMarkupAttribute_TextPositionPercentageRelativeToWritingDirection as String)] as? Double
+            received.withLock { $0.append(Cue(time: itemTime.seconds, text: text, line: line, position: position)) }
+        }
     }
 }

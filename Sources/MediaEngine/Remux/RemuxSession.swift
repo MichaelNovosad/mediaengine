@@ -52,7 +52,14 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var videoKeyframes: [Double] = []
     /// Text subtitle tracks served as WebVTT renditions, and their cues once read (on first request).
     private let subtitleTracks: [Track]
-    private var subtitleCues: [Int: [SubtitleCue]]?
+    private let subtitleCodecs: [Int: String]
+    private let assHeaders: [Int: ASSHeader]
+    /// Cues seen so far per subtitle track, filled by the windows that are built for audio and video anyway (a window
+    /// reads every stream in its time range), and which windows have been seen.
+    private var subtitleCues: [Int: Set<SubtitleCue>] = [:]
+    private var subtitleWindows = Set<Int>()
+    /// How far back from a segment a cue may have started and still be shown in it (seconds).
+    private static let subtitleLookback = 15.0
     /// Seconds added to every source time so that nothing starts negative (same for all tracks).
     private(set) var mediaShift = 0.0
     /// Reordering depth of the video, to restore decode timestamps that Matroska does not store.
@@ -83,7 +90,17 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             default: false
             }
         }.map(\.id)
-        subtitleTracks = info.subtitleTracks.filter { treatments[$0.id] == .convertToWebVTT && SubtitleText.canConvert(codec: $0.codec.name) }
+        let textTracks = info.subtitleTracks.filter { treatments[$0.id] == .convertToWebVTT && SubtitleText.canConvert(codec: $0.codec.name) }
+        subtitleTracks = textTracks
+        subtitleCodecs = Dictionary(uniqueKeysWithValues: textTracks.map { ($0.id, $0.codec.name) })
+        let packetReader = reader
+        assHeaders = Dictionary(uniqueKeysWithValues: textTracks.filter { ["ass", "ssa"].contains($0.codec.name) }.map { track in
+            let parameters = packetReader.parameters(track.id)
+            let header = parameters.pointee.extradata.map {
+                String(decoding: UnsafeBufferPointer(start: $0, count: Int(parameters.pointee.extradata_size)), as: UTF8.self)
+            } ?? ""
+            return (track.id, ASSHeader(header))
+        })
         let wanted = (videoIndex.map { [$0] } ?? []) + audioIndices
         guard !wanted.isEmpty else { throw MediaError.unsupported(detail: "no playable video or audio track") }
 
@@ -168,6 +185,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Whether the session serves this stream (used by tests and the player item builder).
     func hasOutput(_ stream: Int) -> Bool { outputs[stream] != nil }
+    /// Which windows have been read for subtitle cues so far (diagnostics and tests).
+    var scannedSubtitleWindows: Set<Int> { queue.sync { subtitleWindows } }
     /// Bytes of finished fragments held in the cache right now (diagnostics and tests).
     var cachedBytes: Int { queue.sync { cacheBytes } }
     /// Media timescale of a served stream.
@@ -268,31 +287,32 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let segment = plan.segments[number]
         let cues = try queue.sync { () throws -> [SubtitleCue] in
             if cancellation.isCancelled { throw MediaError.cancelled }
-            return try loadSubtitleCues()[id] ?? []
+            try scanSubtitles(through: number)
+            return (subtitleCues[id] ?? []).sorted { ($0.start, $0.end, $0.text) < ($1.start, $1.end, $1.text) }
         }
         return Resource(data: Data(WebVTT.segment(cues: cues, start: segment.start, end: segment.end, shift: mediaShift).utf8),
                         contentType: "text/vtt")
     }
 
-    /// Reads every subtitle packet of the file once, on the first request for subtitles. Call on `queue`.
-    /// (A production version would read the subtitle blocks of each window instead of the whole file.)
-    private func loadSubtitleCues() throws -> [Int: [SubtitleCue]] {
-        if let subtitleCues { return subtitleCues }
-        try reader.rewind()
-        let ids = Set(subtitleTracks.map(\.id))
-        let codecs = Dictionary(uniqueKeysWithValues: subtitleTracks.map { ($0.id, $0.codec.name) })
-        var result: [Int: [SubtitleCue]] = [:]
-        while let packet = try reader.next(only: ids) {
-            if cancellation.isCancelled { throw MediaError.cancelled }
-            let base = reader.timeBase(packet.stream)
-            if let cue = SubtitleText.cue(codec: codecs[packet.stream] ?? "", data: packet.data,
-                                          start: base.seconds(packet.pts), duration: base.seconds(packet.duration)) {
-                result[packet.stream, default: []].append(cue)
-            }
+    /// Makes sure the windows that can hold cues shown in segment `number` have been read: the ones from
+    /// `subtitleLookback` seconds before it up to the next one (a block can sit just behind its keyframe). Reading a
+    /// window also builds its audio and video, which the player asks for next anyway. Call on `queue`.
+    private func scanSubtitles(through number: Int) throws {
+        let earliest = plan.segments[number].start - Self.subtitleLookback
+        let last = min(number + 1, plan.segments.count - 1)
+        for index in 0...last where plan.segments[index].end > earliest && !subtitleWindows.contains(index) {
+            try buildWindow(index)
         }
-        for id in result.keys { result[id]?.sort { $0.start < $1.start } }
-        subtitleCues = result
-        return result
+    }
+
+    /// Converts a subtitle packet seen while a window is read and keeps the cue (overlapping windows see it twice).
+    private func record(subtitle packet: MediaPacket) {
+        guard let codec = subtitleCodecs[packet.stream] else { return }
+        let base = reader.timeBase(packet.stream)
+        if let cue = SubtitleText.cue(codec: codec, data: packet.data, start: base.seconds(packet.pts),
+                                      duration: base.seconds(packet.duration), header: assHeaders[packet.stream]) {
+            subtitleCues[packet.stream, default: []].insert(cue)
+        }
     }
 
     private static func segmentNumber(_ path: String, prefix: String) -> Int? {
@@ -357,6 +377,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         while !(videoDone && audioDone.count == audioIndices.count) {
             if cancellation.isCancelled { throw MediaError.cancelled }
             guard let packet = try reader.next() else { break }
+            if subtitleCodecs[packet.stream] != nil { record(subtitle: packet); continue }
             guard outputs[packet.stream] != nil else { continue }
             let seconds = reader.timeBase(packet.stream).seconds(packet.pts)
 
@@ -386,6 +407,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             packets[videoIndex] = video
         }
 
+        subtitleWindows.insert(number)
         pendingTranscodes = pendingTranscodes.filter { abs($0.key.segment - number) <= 2 }      // keep only nearby windows
         for (stream, output) in outputs {
             let list = packets[stream] ?? []

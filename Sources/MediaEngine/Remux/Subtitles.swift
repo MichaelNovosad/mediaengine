@@ -2,10 +2,38 @@ import Foundation
 
 /// One line of subtitle text with its time on the file's own timeline. `text` is ready for a WebVTT cue: it holds only
 /// escaped text and the tags `<i>`, `<b>` and `<u>`.
-struct SubtitleCue: Equatable, Sendable {
+struct SubtitleCue: Equatable, Hashable, Sendable {
     var start: Double
     var end: Double
     var text: String
+    /// WebVTT cue settings (position and alignment), empty for the default bottom-centre placement.
+    var settings = ""
+}
+
+/// What a track's ASS header says that cues need: the script resolution (for `\pos`) and each style's alignment.
+struct ASSHeader: Equatable, Sendable {
+    var playResX = 384.0
+    var playResY = 288.0
+    var alignments: [String: Int] = [:]
+
+    /// Reads `[Script Info]` and `[V4+ Styles]` / `[V4 Styles]` from the track's header text.
+    init(_ header: String) {
+        var format: [String] = []
+        for rawLine in header.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("PlayResX:"), let value = Double(line.dropFirst(9).trimmingCharacters(in: .whitespaces)), value > 0 { playResX = value }
+            else if line.hasPrefix("PlayResY:"), let value = Double(line.dropFirst(9).trimmingCharacters(in: .whitespaces)), value > 0 { playResY = value }
+            else if line.hasPrefix("Format:") {
+                format = line.dropFirst(7).split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            } else if line.hasPrefix("Style:"), let nameIndex = format.firstIndex(of: "name"), let alignIndex = format.firstIndex(of: "alignment") {
+                let fields = line.dropFirst(6).split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+                if fields.indices.contains(nameIndex), fields.indices.contains(alignIndex), let value = Int(fields[alignIndex]) {
+                    alignments[fields[nameIndex]] = value
+                }
+            }
+        }
+    }
+    init() {}
 }
 
 /// Turns the packets of text subtitle tracks into cues. Styling beyond italic, bold and underline is dropped (WebVTT
@@ -16,16 +44,21 @@ enum SubtitleText {
     static func canConvert(codec: String) -> Bool { supportedCodecs.contains(codec) }
 
     /// The cue for one demuxed packet, or `nil` when nothing visible is left (empty text, vector drawings only).
-    static func cue(codec: String, data: Data, start: Double, duration: Double) -> SubtitleCue? {
+    /// - Parameter header: The track's ASS header, for the placement of ASS events.
+    static func cue(codec: String, data: Data, start: Double, duration: Double, header: ASSHeader? = nil) -> SubtitleCue? {
         guard duration > 0, let raw = String(data: data, encoding: .utf8) else { return nil }
         let text: String
+        var settings = ""
         switch codec {
-        case "ass", "ssa": text = fromASSEvent(raw)
+        case "ass", "ssa":
+            let event = splitASSEvent(raw)
+            text = event.map { fromASSText($0.text) } ?? ""
+            if let event { settings = cueSettings(forASSEvent: event, header: header ?? ASSHeader()) }
         case "webvtt": text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         default: text = fromMarkup(raw)
         }
         guard hasVisibleText(text) else { return nil }
-        return SubtitleCue(start: start, end: start + duration, text: text)
+        return SubtitleCue(start: start, end: start + duration, text: text, settings: settings)
     }
 
     /// Whether anything but tags and white space is left, so a cue of `<i></i>` is not shown as an empty box.
@@ -72,14 +105,57 @@ enum SubtitleText {
 
     /// An event as Matroska stores it: `ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text`.
     static func fromASSEvent(_ event: String) -> String {
-        var commas = 0
-        var index = event.startIndex
-        while index < event.endIndex, commas < 8 {
-            if event[index] == "," { commas += 1 }
-            index = event.index(after: index)
+        splitASSEvent(event).map { fromASSText($0.text) } ?? ""
+    }
+
+    /// The style name and the text of an event, or `nil` when it does not have the nine fields.
+    static func splitASSEvent(_ event: String) -> (style: String, text: String)? {
+        var fields: [Substring] = []
+        var rest = event[...]
+        while fields.count < 8, let comma = rest.firstIndex(of: ",") {
+            fields.append(rest[..<comma])
+            rest = rest[rest.index(after: comma)...]
         }
-        guard commas == 8 else { return "" }
-        return fromASSText(String(event[index...]))
+        guard fields.count == 8 else { return nil }
+        return (fields[2].trimmingCharacters(in: .whitespaces), String(rest))
+    }
+
+    // MARK: Placement
+
+    /// WebVTT settings for an event's `\anN` alignment (or its style's) and `\pos(x,y)`; empty for the usual bottom centre.
+    static func cueSettings(forASSEvent event: (style: String, text: String), header: ASSHeader) -> String {
+        var alignment = header.alignments[event.style] ?? 2
+        var position: (x: Double, y: Double)?
+        var characters = event.text[...]
+        // Only the first override block counts, like the player does for placement.
+        if characters.first == "{", let close = characters.firstIndex(of: "}") {
+            let block = characters[characters.index(after: characters.startIndex)..<close]
+            for part in block.split(separator: "\\", omittingEmptySubsequences: true) {
+                if part.hasPrefix("an"), let value = Int(part.dropFirst(2)), (1...9).contains(value) { alignment = value }
+                else if part.hasPrefix("pos("), let end = part.firstIndex(of: ")") {
+                    let numbers = part[part.index(part.startIndex, offsetBy: 4)..<end].split(separator: ",").compactMap {
+                        Double($0.trimmingCharacters(in: .whitespaces))
+                    }
+                    if numbers.count == 2 { position = (numbers[0], numbers[1]) }
+                }
+            }
+            characters = characters[characters.index(after: close)...]
+        }
+        guard (1...9).contains(alignment) else { return "" }
+        let column = (alignment - 1) % 3, row = (alignment - 1) / 3            // column: 0 left, 1 centre, 2 right; row: 0 bottom, 1 middle, 2 top
+        func percent(_ value: Double) -> Int { Int(min(max(value, 0), 100).rounded()) }
+        let align = ["left", "center", "right"][column]
+        var settings: [String] = []
+        if let position {
+            settings.append("line:\(percent(position.y / header.playResY * 100))%,\(["end", "center", "start"][row])")
+            settings.append("position:\(percent(position.x / header.playResX * 100))%,\(["line-left", "center", "line-right"][column])")
+            settings.append("align:\(align)")
+        } else {
+            if row == 2 { settings.append("line:6%,start") } else if row == 1 { settings.append("line:50%,center") }
+            if column != 1 { settings.append("position:\(column == 0 ? 5 : 95)%,\(column == 0 ? "line-left" : "line-right")") }
+            if column != 1 { settings.append("align:\(align)") }
+        }
+        return settings.joined(separator: " ")
     }
 
     /// ASS dialogue text: italic, bold and underline switches become tags, drawings and all other overrides are
@@ -158,7 +234,7 @@ enum WebVTT {
     static func segment(cues: [SubtitleCue], start: Double, end: Double, shift: Double) -> String {
         var lines = ["WEBVTT", "X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000", ""]
         for cue in cues where cue.end > start && cue.start < end {
-            lines.append("\(timestamp(cue.start + shift)) --> \(timestamp(cue.end + shift))")
+            lines.append("\(timestamp(cue.start + shift)) --> \(timestamp(cue.end + shift))" + (cue.settings.isEmpty ? "" : " " + cue.settings))
             lines.append(cue.text)
             lines.append("")
         }

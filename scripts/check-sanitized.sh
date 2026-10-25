@@ -10,7 +10,9 @@ if [ "${1:-}" = "--rebuild" ] || [ ! -d "$BUILD/FFmpegLGPL-address.xcframework" 
   FFMPEG_SANITIZE=address ./scripts/package-xcframework.sh core
 fi
 log "swift test --sanitize=address with the instrumented FFmpeg"
-MEDIAENGINE_SANITIZED_FFMPEG=1 swift test --sanitize=address 2>&1 | tee "$BUILD/sanitized.log" | grep -E 'Test run with|AddressSanitizer|recorded an issue' || true
+# A scratch path of its own keeps the instrumented framework out of the normal build directory (a TSan run right after
+# it once crashed in the sanitizer runtime, most likely from stale instrumented artifacts).
+MEDIAENGINE_SANITIZED_FFMPEG=1 swift test --sanitize=address --scratch-path "$ROOT/.build-sanitized" 2>&1 | tee "$BUILD/sanitized.log" | grep -E 'Test run with|AddressSanitizer|recorded an issue' || true
 grep -E 'Test run with .* passed' "$BUILD/sanitized.log" >/dev/null || die "sanitizer run failed (see $BUILD/sanitized.log)"
 grep -E 'ERROR: AddressSanitizer' "$BUILD/sanitized.log" >/dev/null && die "AddressSanitizer reported an error (see $BUILD/sanitized.log)"
 log "sanitized run passed"

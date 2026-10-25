@@ -9,7 +9,7 @@ enum Fixture {
     static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-    static let names = ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-licensed-audio", "fixture-anime"]
+    static let names = ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-subs-long", "fixture-licensed-audio", "fixture-anime"]
 
     static func url(_ name: String) -> URL { root.appendingPathComponent("Fixtures/\(name).mkv") }
     static func data(_ name: String) throws -> Data { try Data(contentsOf: url(name)) }
@@ -57,6 +57,24 @@ final class SlowByteSource: ByteSource {
     func read(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
         reads.withLock { $0 += 1 }
         Thread.sleep(forTimeInterval: delay)
+        return try base.read(at: offset, into: buffer)
+    }
+}
+
+/// Blocks its first read until `release()`, so a test can act while the probe is certainly still in flight, however
+/// busy the machine is (sleeping and polling is not enough: parallel tests can starve the task that would act).
+final class GatedByteSource: ByteSource {
+    let base: DataByteSource
+    private let gate = DispatchSemaphore(value: 0)
+    private let reads = Mutex(0)
+    init(base: DataByteSource) { self.base = base }
+    var length: Int64? { base.length }
+    var readCount: Int { reads.withLock { $0 } }
+    func release() { gate.signal() }
+
+    func read(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
+        let number = reads.withLock { count -> Int in count += 1; return count }
+        if number == 1 { gate.wait() }
         return try base.read(at: offset, into: buffer)
     }
 }

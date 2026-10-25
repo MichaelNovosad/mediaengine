@@ -99,6 +99,16 @@ log "fixture-bframes.mkv  (10 s: H.264 High with B-frames + AAC; Matroska has no
   -c:a aac_at -b:a 96k -metadata:s:a:0 language=eng \
   -f matroska fixture-bframes.mkv
 
+log "fixture-subs-long.mkv  (14 s: H.264 + AAC + SRT with cues that span the 6-second segment boundaries)"
+"$FF" -v error -y \
+  -f lavfi -i "testsrc2=size=640x360:rate=25:duration=14" \
+  -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=14" \
+  -i src/subtitle-long.srt \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v h264_videotoolbox -b:v 250k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -c:s copy \
+  -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng -metadata:s:s:0 title="English" \
+  -f matroska fixture-subs-long.mkv
+
 log "src/cover.jpg"
 "$FF" -v error -y -f lavfi -i "color=c=red:s=64x64:d=1" -frames:v 1 -pix_fmt yuvj420p -c:v mjpeg src/cover.jpg
 

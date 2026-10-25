@@ -50,6 +50,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var pendingTranscodes: [CacheKey: PendingTranscode] = [:]
     /// Keyframe times (seconds) of the video stream, for seeking a little before a segment.
     private var videoKeyframes: [Double] = []
+    /// Text subtitle tracks served as WebVTT renditions, and their cues once read (on first request).
+    private let subtitleTracks: [Track]
+    private var subtitleCues: [Int: [SubtitleCue]]?
+    /// Seconds added to every source time so that nothing starts negative (same for all tracks).
+    private(set) var mediaShift = 0.0
     /// Reordering depth of the video, to restore decode timestamps that Matroska does not store.
     private(set) var reorder: ReorderModel?
     /// How many (track, segment) transcodes have run (diagnostics and tests).
@@ -62,7 +67,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     // MARK: Opening
 
     /// Blocking: reads the start of the file, builds the segment plan and the initialization segments.
-    init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024) throws {
+    init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024,
+         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes) throws {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
@@ -77,6 +83,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             default: false
             }
         }.map(\.id)
+        subtitleTracks = info.subtitleTracks.filter { treatments[$0.id] == .convertToWebVTT && SubtitleText.canConvert(codec: $0.codec.name) }
         let wanted = (videoIndex.map { [$0] } ?? []) + audioIndices
         guard !wanted.isEmpty else { throw MediaError.unsupported(detail: "no playable video or audio track") }
 
@@ -94,24 +101,31 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             if let packet = packets.first { earliest = min(earliest, reader.timeBase(stream).seconds(packet.dts)) }
         }
         let shiftSeconds = -earliest
+        mediaShift = shiftSeconds
 
         // Segment plan from the video index; a scan covers files that lack one.
         var keyframes: [Double] = []
+        var positions: [Int64?] = []
         var duration = info.duration
         if let videoIndex {
             let videoBase = reader.timeBase(videoIndex)
-            keyframes = reader.keyframeTimestamps(stream: videoIndex, loadingIndexUpTo: duration).map { videoBase.seconds($0) }
+            let index = reader.keyframeIndex(stream: videoIndex, loadingIndexUpTo: duration)
+            keyframes = index.map { videoBase.seconds($0.timestamp) }
+            positions = index.map(\.position)
         }
         // An index that is missing, or has gaps far longer than any real GOP, cannot be trusted: read the file once.
         let indexComplete = Self.looksComplete(keyframes: keyframes, duration: duration)
         if (videoIndex != nil && !indexComplete) || duration == nil {
             let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0])
-            if !indexComplete { keyframes = scan.keyframes }
+            if !indexComplete { keyframes = scan.keyframes; positions = scan.positions }
             if duration == nil { duration = scan.duration }
         }
         guard let totalDuration = duration, totalDuration > 0 else { throw MediaError.unsupported(detail: "unknown duration") }
         videoKeyframes = keyframes.sorted()
-        plan = SegmentPlan.make(keyframes: keyframes, duration: totalDuration)
+        // Segments are cut by time and by size: at high bitrates six seconds of video are too much to hold at once.
+        let averageRate = info.fileSize.map { Double($0) / totalDuration }
+        plan = SegmentPlan.make(keyframes: keyframes, positions: positions, duration: totalDuration,
+                                maxSegmentBytes: maxSegmentBytes, averageBytesPerSecond: averageRate)
 
         for stream in wanted {
             guard let track = info.tracks.first(where: { $0.id == stream }) else { continue }
@@ -197,16 +211,20 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     }
 
     /// Reads the whole file once to find keyframes and the true duration.
-    private static func scan(_ reader: PacketReader, video: Int?, fallbackStream: Int) throws -> (keyframes: [Double], duration: Double) {
+    private static func scan(_ reader: PacketReader, video: Int?, fallbackStream: Int) throws -> (keyframes: [Double], positions: [Int64?], duration: Double) {
         try reader.rewind()
         var keyframes: [Double] = []
+        var positions: [Int64?] = []
         var end = 0.0
         while let packet = try reader.next() {
             let timeBase = reader.timeBase(packet.stream)
             end = max(end, timeBase.seconds(packet.pts + packet.duration))
-            if packet.stream == video, packet.isKeyframe { keyframes.append(timeBase.seconds(packet.pts)) }
+            if packet.stream == video, packet.isKeyframe {
+                keyframes.append(timeBase.seconds(packet.pts))
+                positions.append(packet.position >= 0 ? packet.position : nil)
+            }
         }
-        return (keyframes, end)
+        return (keyframes, positions, end)
     }
 
     // MARK: Serving
@@ -223,6 +241,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         if path.hasPrefix("video-"), let stream = videoIndex, let number = Self.segmentNumber(path, prefix: "video-") {
             return try segment(stream: stream, number: number)
         }
+        if path.hasPrefix("subs-") { return try subtitleResource(path) }
         if path.hasPrefix("audio-") {
             if path.hasSuffix(".m3u8"), let id = Int(path.dropFirst("audio-".count).dropLast(".m3u8".count)),
                outputs[id]?.kind == .audio {
@@ -235,6 +254,45 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             if let number = Self.segmentNumber(tail, prefix: "") { return try segment(stream: id, number: number) }
         }
         return nil
+    }
+
+    /// `subs-ID.m3u8` and `subs-ID-N.vtt`.
+    private func subtitleResource(_ path: String) throws -> Resource? {
+        let body = path.dropFirst("subs-".count)
+        if body.hasSuffix(".m3u8"), let id = Int(body.dropLast(".m3u8".count)), subtitleTracks.contains(where: { $0.id == id }) {
+            return text(HLSPlaylists.subtitles(plan: plan, segmentURI: { "subs-\(id)-\($0).vtt" }))
+        }
+        guard body.hasSuffix(".vtt"), let dash = body.firstIndex(of: "-"), let id = Int(body[..<dash]),
+              let number = Int(body[body.index(after: dash)...].dropLast(".vtt".count)),
+              subtitleTracks.contains(where: { $0.id == id }), plan.segments.indices.contains(number) else { return nil }
+        let segment = plan.segments[number]
+        let cues = try queue.sync { () throws -> [SubtitleCue] in
+            if cancellation.isCancelled { throw MediaError.cancelled }
+            return try loadSubtitleCues()[id] ?? []
+        }
+        return Resource(data: Data(WebVTT.segment(cues: cues, start: segment.start, end: segment.end, shift: mediaShift).utf8),
+                        contentType: "text/vtt")
+    }
+
+    /// Reads every subtitle packet of the file once, on the first request for subtitles. Call on `queue`.
+    /// (A production version would read the subtitle blocks of each window instead of the whole file.)
+    private func loadSubtitleCues() throws -> [Int: [SubtitleCue]] {
+        if let subtitleCues { return subtitleCues }
+        try reader.rewind()
+        let ids = Set(subtitleTracks.map(\.id))
+        let codecs = Dictionary(uniqueKeysWithValues: subtitleTracks.map { ($0.id, $0.codec.name) })
+        var result: [Int: [SubtitleCue]] = [:]
+        while let packet = try reader.next(only: ids) {
+            if cancellation.isCancelled { throw MediaError.cancelled }
+            let base = reader.timeBase(packet.stream)
+            if let cue = SubtitleText.cue(codec: codecs[packet.stream] ?? "", data: packet.data,
+                                          start: base.seconds(packet.pts), duration: base.seconds(packet.duration)) {
+                result[packet.stream, default: []].append(cue)
+            }
+        }
+        for id in result.keys { result[id]?.sort { $0.start < $1.start } }
+        subtitleCues = result
+        return result
     }
 
     private static func segmentNumber(_ path: String, prefix: String) -> Int? {
@@ -400,7 +458,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return HLSPlaylists.AudioRendition(id: id, name: name, language: output.track.language?.minimalIdentifier ?? language,
                                                channels: output.track.audio?.channels ?? 2, codecs: output.codecs, isDefault: id == defaultID)
         }
-        return HLSPlaylists.master(video: video, audio: audio, videoPlaylist: "video.m3u8", audioPlaylist: { "audio-\($0).m3u8" })
+        let subtitles = subtitleTracks.map { track -> HLSPlaylists.SubtitleRendition in
+            let language = track.language?.minimalIdentifier
+            let name = track.title ?? track.language.flatMap { Locale.current.localizedString(forIdentifier: $0.minimalIdentifier) }
+                ?? "Subtitles \(track.id)"
+            return HLSPlaylists.SubtitleRendition(id: track.id, name: name, language: language, isDefault: track.isDefault,
+                                                  isForced: track.isForced, isHearingImpaired: track.isHearingImpaired)
+        }
+        return HLSPlaylists.master(video: video, audio: audio, subtitles: subtitles, videoPlaylist: "video.m3u8",
+                                   audioPlaylist: { "audio-\($0).m3u8" }, subtitlePlaylist: { "subs-\($0).m3u8" })
     }
 
     private func mediaPlaylist(stream: Int) -> String {

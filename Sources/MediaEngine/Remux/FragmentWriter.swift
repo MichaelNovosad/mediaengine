@@ -59,11 +59,18 @@ struct FragmentWriter: Sendable {
 
         let moofSize = moof(dataOffset: 0).count
         let payload = packets.reduce(0) { $0 + $1.data.count }
-        var output = ByteWriter(capacity: moofSize + 8 + payload)
-        output.append(moof(dataOffset: Int32(moofSize + 8)))             // samples start right after the mdat header
-        output.u32(UInt32(8 + payload))
-        output.fourCC("mdat")
-        for packet in packets { output.append(packet.data) }
-        return output.data
+        var head = ByteWriter(capacity: moofSize + 8)
+        head.append(moof(dataOffset: Int32(moofSize + 8)))             // samples start right after the mdat header
+        head.u32(UInt32(8 + payload))
+        head.fourCC("mdat")
+        let header = head.data
+        return BigBuffer.make(count: header.count + payload) { buffer in
+            var offset = header.count
+            header.copyBytes(to: UnsafeMutableRawBufferPointer(rebasing: buffer[..<offset]))
+            for packet in packets {
+                packet.data.copyBytes(to: UnsafeMutableRawBufferPointer(rebasing: buffer[offset..<(offset + packet.data.count)]))
+                offset += packet.data.count
+            }
+        }
     }
 }

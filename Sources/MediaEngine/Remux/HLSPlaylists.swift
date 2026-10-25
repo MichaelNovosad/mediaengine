@@ -21,7 +21,17 @@ enum HLSPlaylists {
         var isDefault: Bool
     }
 
-    static func master(video: VideoRendition?, audio: [AudioRendition], videoPlaylist: String, audioPlaylist: (Int) -> String) -> String {
+    struct SubtitleRendition {
+        var id: Int
+        var name: String
+        var language: String?
+        var isDefault: Bool
+        var isForced: Bool
+        var isHearingImpaired: Bool
+    }
+
+    static func master(video: VideoRendition?, audio: [AudioRendition], subtitles: [SubtitleRendition] = [], videoPlaylist: String,
+                       audioPlaylist: (Int) -> String, subtitlePlaylist: (Int) -> String = { _ in "" }) -> String {
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
         for rendition in audio {
             var attributes = ["TYPE=AUDIO", "GROUP-ID=\"audio\"", "NAME=\(quoted(rendition.name))"]
@@ -32,6 +42,18 @@ enum HLSPlaylists {
             attributes.append("URI=\(quoted(audioPlaylist(rendition.id)))")
             lines.append("#EXT-X-MEDIA:" + attributes.joined(separator: ","))
         }
+        for rendition in subtitles {
+            var attributes = ["TYPE=SUBTITLES", "GROUP-ID=\"subs\"", "NAME=\(quoted(rendition.name))"]
+            if let language = rendition.language { attributes.append("LANGUAGE=\(quoted(language))") }
+            attributes.append("DEFAULT=\(rendition.isDefault ? "YES" : "NO")")
+            attributes.append("AUTOSELECT=\(rendition.isDefault || rendition.isForced ? "YES" : "NO")")
+            attributes.append("FORCED=\(rendition.isForced ? "YES" : "NO")")
+            if rendition.isHearingImpaired {
+                attributes.append("CHARACTERISTICS=\"public.accessibility.transcribes-spoken-dialog,public.accessibility.describes-music-and-sound\"")
+            }
+            attributes.append("URI=\(quoted(subtitlePlaylist(rendition.id)))")
+            lines.append("#EXT-X-MEDIA:" + attributes.joined(separator: ","))
+        }
         if let video {
             let codecs = ([video.codecs] + audio.prefix(1).map(\.codecs)).joined(separator: ",")
             var attributes = ["BANDWIDTH=\(video.bandwidth)", "AVERAGE-BANDWIDTH=\(video.bandwidth)", "CODECS=\(quoted(codecs))",
@@ -39,13 +61,27 @@ enum HLSPlaylists {
             if let rate = video.frameRate { attributes.append("FRAME-RATE=\(String(format: "%.3f", rate))") }
             if let range = video.range { attributes.append("VIDEO-RANGE=\(range)") }
             if !audio.isEmpty { attributes.append("AUDIO=\"audio\"") }
+            if !subtitles.isEmpty { attributes.append("SUBTITLES=\"subs\"") }
             lines.append("#EXT-X-STREAM-INF:" + attributes.joined(separator: ","))
             lines.append(videoPlaylist)
         } else if let first = audio.first {
             // Audio-only: the first rendition doubles as the only variant.
-            lines.append("#EXT-X-STREAM-INF:BANDWIDTH=256000,CODECS=\(quoted(first.codecs))")
+            lines.append("#EXT-X-STREAM-INF:BANDWIDTH=256000,CODECS=\(quoted(first.codecs))" + (subtitles.isEmpty ? "" : ",SUBTITLES=\"subs\""))
             lines.append(audioPlaylist(first.id))
         }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The playlist of a WebVTT track: the same segment boundaries as the video, text files instead of media.
+    static func subtitles(plan: SegmentPlan, segmentURI: (Int) -> String) -> String {
+        let target = Int((plan.segments.map(\.duration).max() ?? 6).rounded(.up))
+        var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-TARGETDURATION:\(max(target, 1))", "#EXT-X-MEDIA-SEQUENCE:0",
+                     "#EXT-X-PLAYLIST-TYPE:VOD"]
+        for segment in plan.segments {
+            lines.append("#EXTINF:\(String(format: "%.5f", segment.duration)),")
+            lines.append(segmentURI(segment.index))
+        }
+        lines.append("#EXT-X-ENDLIST")
         return lines.joined(separator: "\n") + "\n"
     }
 

@@ -32,6 +32,8 @@ struct MediaPacket: Sendable, Equatable {
     /// Samples the decoder must drop from the start / end of this packet (Opus codec delay, end padding).
     var skipStart: Int = 0
     var skipEnd: Int = 0
+    /// Byte position of the packet in the file, `-1` when the demuxer does not know it.
+    var position: Int64 = -1
 }
 
 /// Reads compressed packets from an opened file. Not thread-safe: confine it to one serial queue.
@@ -67,16 +69,24 @@ final class PacketReader {
     /// end of the file load lazily, on the first seek. Seeking once to the end makes the demuxer read them. The
     /// read position is undefined afterwards: seek or rewind before reading packets.
     func keyframeTimestamps(stream index: Int, loadingIndexUpTo duration: Double? = nil) -> [Int64] {
+        keyframeIndex(stream: index, loadingIndexUpTo: duration).map(\.timestamp)
+    }
+
+    /// Keyframes of a stream from the container's index (time in the stream's time base, byte position when known),
+    /// in time order. The index is loaded by a seek to the end first, since Matroska reads its Cues lazily.
+    func keyframeIndex(stream index: Int, loadingIndexUpTo duration: Double? = nil) -> [(timestamp: Int64, position: Int64?)] {
         if let duration { _ = try? seek(stream: index, to: timeBase(index).ticks(seconds: duration)) }
         let st = stream(index)
         let count = avformat_index_get_entries_count(st)
-        var result: [Int64] = []
+        var result: [(timestamp: Int64, position: Int64?)] = []
         result.reserveCapacity(Int(count))
         for entry in 0..<count {
             guard let item = avformat_index_get_entry(st, entry) else { continue }
-            if item.pointee.flags & Int32(AVINDEX_KEYFRAME) != 0 { result.append(item.pointee.timestamp) }
+            if item.pointee.flags & Int32(AVINDEX_KEYFRAME) != 0 {
+                result.append((item.pointee.timestamp, item.pointee.pos >= 0 ? item.pointee.pos : nil))
+            }
         }
-        return result.sorted()
+        return result.sorted { $0.timestamp < $1.timestamp }
     }
 
     /// Starts again from the very first packet. Seeking to time zero would skip packets with negative
@@ -92,7 +102,8 @@ final class PacketReader {
     }
 
     /// The next packet of any stream, or `nil` at the end of the file.
-    func next() throws -> MediaPacket? {
+    /// - Parameter only: When set, packets of other streams are skipped before their data is copied.
+    func next(only streams: Set<Int>? = nil) throws -> MediaPacket? {
         while true {
             let result = av_read_frame(format, packet)
             if result == AVError.eof {
@@ -102,6 +113,7 @@ final class PacketReader {
             }
             if result < 0 { throw FormatContext.openError(result, context.bridge) }
             defer { av_packet_unref(packet) }
+            if let streams, !streams.contains(Int(packet.pointee.stream_index)) { continue }
 
             var pts = packet.pointee.pts
             var dts = packet.pointee.dts
@@ -121,7 +133,8 @@ final class PacketReader {
             return MediaPacket(
                 stream: Int(packet.pointee.stream_index), data: data, pts: pts, dts: dts,
                 duration: max(packet.pointee.duration, 0),
-                isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0, skipStart: skipStart, skipEnd: skipEnd)
+                isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0, skipStart: skipStart, skipEnd: skipEnd,
+                position: packet.pointee.pos)
         }
     }
 }

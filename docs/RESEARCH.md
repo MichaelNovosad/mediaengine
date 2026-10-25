@@ -209,3 +209,62 @@ SDK `xros27.0` and `xrsimulator27.0` are installed; the visionOS 27.0 simulator 
 - **Sanitizers.** The full suite is clean under AddressSanitizer, ThreadSanitizer and UBSan. Those instrument Swift only, and the damaged-file corpus is only useful if FFmpeg's demuxers are checked too, so `scripts/check-sanitized.sh` builds an AddressSanitizer-instrumented macOS FFmpeg (`FFMPEG_SANITIZE=address`, separate `build/FFmpegLGPL-address.xcframework`, selected by `MEDIAENGINE_SANITIZED_FFMPEG=1` in `Package.swift`) and runs everything against it: clean (the framework has 42 `__asan_*` imports and is 11 MB instead of 2.9 MB). This is a mutation corpus on tiny files, not coverage-guided fuzzing; a libFuzzer harness on the demux wrapper is the next step if more assurance is wanted.
 - **Timing and process-wide measurements need the process to themselves.** Tests that measure probe speed, cancellation latency, memory, descriptors or idle CPU failed intermittently once the suite grew, because other tests ran at the same time. They now live in `ExclusiveTests`, which runs only with `MEDIAENGINE_EXCLUSIVE=1` (a separate pass in `scripts/verify.sh`); the functional parts stay in the normal run. Reproducing a flake: run the suite in a loop with logs (`swift test > log`) and search for the failure marker; grepping for "recorded an issue" missed some failures.
 - **Idle and leaks.** 100 open/close cycles add under 30 MB and no descriptors; an open idle session used under 50 ms of CPU in 2 s; sessions are freed after `close()` (weak-reference tests, no retain cycle between session, item and server).
+
+## 15. Byte-bounded segments and mmap-backed fragments (2026-10-25)
+
+- **Problem.** Segments were cut by time only (about 6 s), so their size followed the bitrate: with 44 Mbps 4K video one segment is 40 MB and a full pass peaked at 312 MB of footprint (target 150 MB); the first segment alone took 2.4 s to build before AVPlayer started playing.
+- **Size-aware cutting** (`SegmentPlan.make(keyframes:positions:duration:target:maxSegmentBytes:averageBytesPerSecond:)`, cap 24 MB). Two rules, both cutting only at keyframes: (1) the target duration shrinks to `cap / average bytes per second` (file size over duration, never below 1 s), which works for every file whatever its index looks like; (2) when the index gives byte positions (Matroska Cues carry cluster positions, the scan fallback reads packet positions), a keyframe is also a cut if keeping the next GOP would push the segment past the cap, which catches bursts above the average. A single GOP above the cap is never split, so the cap is a soft limit. Low-bitrate files keep their 6-second segments (test `ordinaryBitrate`); the cap also shortens the first segment, and with it the time to first playback.
+- **The allocator, again.** With the cap the 44 Mbps file still peaked at 168 MB, flat from the first segment on, so not a leak but retained heap: `malloc` keeps freed blocks of several megabytes and the footprint keeps them. Finished fragments are now written into `mmap`ed pages (`Remux/BigBuffer.swift`, used for outputs of 512 KB and up), which go back to the system the moment the last `Data` slice is released. Same file: 101 MB peak growth and 70 MB after `close()`. Tests: `fragmentsAreReturned` (fails with malloc-backed output: 0 of 52 MB came back), `BigBufferTests`.
+- **Numbers** (M1 Max, synthetic test pattern, H.264 High with B-frames, AC-3 5.1; growth over a full sequential pass plus random seeks; AVPlayer playing means `currentTime` past 0.1 s):
+
+  | file | before (time-only segments, malloc output) | time-only + mmap | cap + mmap (now) | AVPlayer playing, now |
+  |---|---|---|---|---|
+  | 1080p 13 Mbps, 281 MB, 3 min | 129 MB | n/a | 82 MB | 629 ms |
+  | 4K 44 Mbps, 638 MB, 2 min | 304 MB | 142 MB | 101 MB | 558 ms (2437 ms before) |
+  | 4K 66 Mbps, 718 MB, 90 s | n/a | 236 MB | 116 MB | 565 ms |
+
+  Segments at 66 Mbps are one GOP (3 s, about 24 MB) long. A file with GOPs of several seconds at 100 Mbps would still exceed the target because a GOP is not split; real UHD remuxes usually have 1-2 s GOPs.
+- **Making test files this fast.** `h264_videotoolbox -b:v 120M` stops at 44 Mbps on a 4K test pattern; `-q:v 90` gives 66 Mbps, `-q:v 100` switches to "High 4:4:4 Predictive" at level 6.0 (94 Mbps), which the planner correctly refuses (profile out of scope), a handy accidental check of that path.
+- **Still open for RMX-7:** a phone; coverage-guided checks on bursty real files; releasing packets while a fragment is written would save another window's worth, but is not needed for the target.
+
+## 16. Spike: HLS through `AVAssetResourceLoader` (RMX-9, 2026-10-25)
+
+- **Question.** Can the remuxed HLS stream reach AVPlayer without a socket (a custom URL scheme served by an `AVAssetResourceLoaderDelegate`)? That would remove the loopback listener and might behave differently for AirPlay and Picture in Picture.
+- **Experiment.** A delegate bridge answering content-information and byte-range requests from the same resources the loopback server serves (random scheme and 128-bit host; 7 requests for a two-track file), tried with UTI content types, MIME types and no content type, as a master playlist and as a single media playlist, with `isEntireLengthAvailableOnDemand` on and off.
+- **Result: it does not work.** AVPlayer asks the delegate for everything, reads the playlists (duration 3.052 s is parsed) and takes the initialization segments, and then fails on the first media segment: `CoreMediaErrorDomain -12881`, and the item's error log says `custom url not redirect` for `video-0.m4s`. HLS media segments have to come from a real network URL; a custom-scheme loader may only answer them with a redirect. The content type made no difference.
+- **Decision.** No `.resourceLoader` transport. The loopback server stays the only transport (hardening tested in `LoopbackServerTests`); a `.lanServer` variant is added only if the AirPlay spike (E-S4) shows that a device on the network needs to fetch segments itself. Serving a single progressive fragmented MP4 through the loader would avoid the restriction, but it needs the size of every fragment up front (the byte offsets live in the `sidx`/`mfra`), which means building the whole file first.
+- **Kept as a tripwire.** The bridge now lives in the test target (`ResourceLoaderProbe`) and `AVPlayerEndToEndTests.resourceLoaderLimitation` expects the failure as a known issue. If a later SDK accepts media segments from a loader, that test starts failing, and the socket-free transport can be built.
+
+## 17. E3 design note and the first two spikes (2026-10-25)
+
+**Scope of E3** (gate for PlayerApp M0): SUB-1..5, RMX-4, RMX-8, AUD-1, ANM-2, ANM-4 and the track names in the system menu. Proposed order, each step shippable and tested on its own:
+
+| Step | What | Notes |
+|---|---|---|
+| E3.1 | Text subtitles (SubRip, ASS/SSA, WebVTT) as WebVTT renditions | **Started: spike S1 passed and is in the tree** (below). Still to do: read cues per window instead of the whole file, long-cue look-back, `\an`/`\pos` as cue settings, SSA v4 events. |
+| E3.2 | Chapters and Now Playing metadata (RMX-8, ANM-4) | Chapters via `AVPlayerItem.navigationMarkerGroups` (`AVNavigationMarkersGroup` of timed metadata groups); title and cover attachment via `externalMetadata`; chapter titles and types exposed in the API. Needs a spike on the 27 SDK. |
+| E3.3 | Track choices API and selection (RMX-3) | `PlaybackSession` lists audio and subtitle choices (title, language, flags) and selects one on an item; see S2. |
+| E3.4 | External files (SUB-3, SUB-4, SUB-5, AUD-1) | External SRT/ASS/VTT go through the same cue pipeline; encoding detection (UTF-8/16, Windows-125x, ISO-8859-x, KOI8, GBK/Big5, Shift-JIS/EUC) with a fixture set; external audio as one more rendition from a second reader with a sync offset. |
+| E3.5 | Full ASS and bitmap subtitles on the overlay path (SUB-2, ANM-3, E-S8) | libass with CoreText fonts, FreeType, HarfBuzz, FriBidi, embedded fonts; PGS/DVB/VobSub bitmaps. **New third-party components: the owner is asked before anything is fetched** (licenses to confirm: libass ISC, FreeType FTL, HarfBuzz MIT, FriBidi LGPL-2.1). |
+| E3.6 | Ordered chapters and linked segments (ANM-2) | A virtual timeline over ranges of several files; touches `RemuxSession` (multiple sources). Largest item; may move behind PlayerApp M0 if the owner agrees. |
+
+**Spike S1: text subtitles as WebVTT in HLS. Passed.**
+- Matroska delivers SubRip blocks as plain text with the block's time and duration, and ASS blocks as `ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text`. No FFmpeg subtitle decoder is needed for either: `SubtitleText` takes the text, keeps `<i>`, `<b>`, `<u>` (SubRip tags, and `\i1`/`\b1`/`\u1` switches in ASS), drops everything else (`\pos`, `\fad`, karaoke `\k`, vector drawings `\p1`), maps `\N` to a line break and `\h` to a no-break space, and escapes `&`, `<`, `>`.
+- The master playlist gets one `EXT-X-MEDIA:TYPE=SUBTITLES` entry per track (`DEFAULT` from the source flag, `FORCED` from the forced flag, `CHARACTERISTICS` for hearing-impaired tracks) and `SUBTITLES="subs"` on the variant; each track has a playlist with the video's segment boundaries and one `.vtt` per segment (`X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000`, times shifted like the audio and video, cues that cross a boundary repeated in both segments).
+- AVPlayer lists the track as "English" and delivers the cues (`AVPlayerItemLegibleOutput`) for the item time that equals their time in the file (0.2 s and 1.6 s, within 0.15 s): subtitles are in step with the video.
+- The ASS fixture shows a forced "Signs and Songs" track as "English Forced" next to "English": the forced flag is enough to tell those two apart in the system menu.
+- OS 27 adds machine-translated options to the subtitle menu for the viewer's other languages ("Russian (Russia) Translated"). They have no title metadata, which is how to tell them from ours.
+- Today the cues are read from the whole file at the first request (one pass over the subtitle packets only; the reader skips other streams before copying them). Fine for the spike, too slow for a 5 GB file on a phone; E3.1 reads subtitle blocks window by window (Matroska stores them in the cluster of their start time) with a look-back for long cues.
+
+**Spike S2: telling same-language tracks apart. Result: the system menu cannot.**
+
+| Playlist attribute for a second English track | System menu (`displayName`) | `commonMetadata` title |
+|---|---|---|
+| only `NAME="English commentary"` | "English" (same as the first) | "English commentary" |
+| `LANGUAGE="en-US"` and `"en-GB"` | "English (US)" / "English (UK)" | the names |
+| `CHARACTERISTICS="public.accessibility.describes-video"` | "English AD" (misleading for a commentary) | the name |
+| no `LANGUAGE` / `und` | "Unknown" / "Unknown language" | the name |
+| `LANGUAGE="en-x-commentary"` | "English" | the name |
+
+The menu of `AVPlayerViewController` is built from `displayName`, which comes from the language and a few characteristics, never from `NAME`; the name is available to code in `AVMediaSelectionOption.commonMetadata` (title). So the engine cannot fix the system menu without lying about languages or accessibility roles. Decision: keep honest tags; add a track choices API (E3.3) that lists title, language and flags and selects the matching `AVMediaSelectionOption` by its title; the app shows its own picker when two tracks share a language. AVPlayer also applies media selection criteria on its own (in the anime fixture it picks the English dub over the file's default Japanese track and the forced English subtitles); the choices API needs to turn that off (`appliesMediaSelectionCriteriaAutomatically`) or set criteria for per-series preferences.
+

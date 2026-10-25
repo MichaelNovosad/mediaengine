@@ -65,4 +65,4 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 
 ## Status
 
-Phase: building. **E0 and E1 are complete and committed; E2 (remux to AVPlayer) is done and verified except** (2026-10-24, `scripts/verify.sh`): AirPlay on devices, HDR10 over HLS, the `.resourceLoader` transport and byte-bounded segments for very high bitrates. Audio (AAC/AC-3/E-AC-3 as is; FLAC/PCM/Opus/Vorbis to ALAC), B-frames, damaged files, leaks and measurements are covered. Live status is in `docs/PROGRESS.md`.
+Phase: building. **E0 and E1 are complete and committed; E2 (remux to AVPlayer) is done and verified except** (2026-10-24, `scripts/verify.sh`): AirPlay on devices and HDR10 over HLS (byte-bounded segments are done; a `.resourceLoader` transport is impossible for HLS, see RESEARCH.md section 16). Audio (AAC/AC-3/E-AC-3 as is; FLAC/PCM/Opus/Vorbis to ALAC), B-frames, damaged files, leaks and measurements are covered. Live status is in `docs/PROGRESS.md`.

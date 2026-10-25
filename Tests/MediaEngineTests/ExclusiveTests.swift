@@ -115,6 +115,30 @@ struct ExclusiveTests {
         if !underAddressSanitizer { #expect(grown < 40 * 1_024 * 1_024, "30 more builds added \(grown / 1_048_576) MB") }
     }
 
+    @Test("finished fragments go back to the system as soon as they are released")
+    func fragmentsAreReturned() {
+        var packets: [MediaPacket] = []
+        for index in 0..<200 {
+            let time = Int64(index) * 40
+            packets.append(MediaPacket(stream: 0, data: Data(repeating: UInt8(index & 0xFF), count: 100_000),
+                                       pts: time, dts: time, duration: 40, isKeyframe: index == 0))
+        }
+        let writer = FragmentWriter(trackID: 1, timescale: 1000, timeBase: Rational(num: 1, den: 1000),
+                                    hasCompositionOffsets: true, shift: 0)
+        var held: [Data] = []
+        for _ in 0..<3 { held.append(writer.fragment(sequence: 1, packets: packets) ?? Data()) }    // warm-up
+        held.removeAll()
+        let before = footprint()
+        for _ in 0..<5 { held.append(writer.fragment(sequence: 1, packets: packets) ?? Data()) }    // 5 x 20 MB
+        let holding = footprint() - before
+        held.removeAll()
+        let released = holding - (footprint() - before)
+        #expect(holding > 80 * 1_048_576, "five 20 MB fragments should show up in the footprint, not \(holding / 1_048_576) MB")
+        if !underAddressSanitizer {
+            #expect(released > 80 * 1_048_576, "only \(released / 1_048_576) MB of \(holding / 1_048_576) MB came back after release")
+        }
+    }
+
     @Test("probing every fixture takes well under 500 ms (PRB-1)")
     func probeIsFast() async throws {
         for name in Fixture.names {

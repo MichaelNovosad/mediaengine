@@ -5,9 +5,10 @@ import Testing
 import AVFoundation
 #endif
 
-private func makeSession(_ name: String) async throws -> RemuxSession {
+private func makeSession(_ name: String, maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes) async throws -> RemuxSession {
     let info = try await Fixture.probe(name)
-    return try RemuxSession(source: FileByteSource(url: Fixture.url(name)), info: info, cancellation: CancellationFlag())
+    return try RemuxSession(source: FileByteSource(url: Fixture.url(name)), info: info, cancellation: CancellationFlag(),
+                            maxSegmentBytes: maxSegmentBytes)
 }
 
 /// Counts packets per stream by reading the whole file independently of the session.
@@ -34,6 +35,65 @@ struct SegmentPlanTests {
         #expect(plan.segments.first?.start == 0 && plan.segments.last?.end == 601.3)
         for pair in zip(plan.segments, plan.segments.dropFirst()) { #expect(pair.0.end == pair.1.start) }
         #expect(plan.segments.dropLast().allSatisfy { $0.duration >= 5.999 })
+    }
+
+    @Test("a high bitrate shortens segments so that one holds about the byte cap")
+    func highBitrate() {
+        let keyframes = stride(from: 0.0, to: 120, by: 1).map { $0 }
+        let tenMegabytesPerSecond = 10.0 * 1_048_576                          // about 84 Mbps
+        let plan = SegmentPlan.make(keyframes: keyframes, duration: 120, averageBytesPerSecond: tenMegabytesPerSecond)
+        #expect(plan.segments.first?.start == 0 && plan.segments.last?.end == 120)
+        for pair in zip(plan.segments, plan.segments.dropFirst()) { #expect(pair.0.end == pair.1.start) }
+        for segment in plan.segments.dropLast() {
+            #expect(segment.duration >= 2.4 - 0.001 && segment.duration <= 3.001, "segment \(segment.index) lasts \(segment.duration) s")
+            #expect(segment.duration * tenMegabytesPerSecond < 1.4 * Double(SegmentPlan.defaultMaxSegmentBytes))
+        }
+    }
+
+    @Test("an ordinary bitrate keeps six-second segments")
+    func ordinaryBitrate() {
+        let keyframes = stride(from: 0.0, to: 120, by: 2).map { $0 }
+        let withRate = SegmentPlan.make(keyframes: keyframes, duration: 120, averageBytesPerSecond: 1_600_000)   // 13 Mbps
+        #expect(withRate == SegmentPlan.make(keyframes: keyframes, duration: 120))
+        #expect(withRate.segments.dropLast().allSatisfy { $0.duration >= 5.999 })
+    }
+
+    @Test("an absurd bitrate still cuts only at keyframes and never below one second")
+    func shortestSegments() {
+        let keyframes = stride(from: 0.0, to: 30, by: 0.5).map { $0 }
+        let plan = SegmentPlan.make(keyframes: keyframes, duration: 30, averageBytesPerSecond: 500 * 1_048_576)
+        #expect(plan.segments.dropLast().allSatisfy { $0.duration >= 1 - 0.001 })
+        #expect(plan.segments.allSatisfy { segment in keyframes.contains { abs($0 - segment.start) < 0.001 } })
+    }
+
+    @Test("index positions cut a burst of data early, whatever the average says")
+    func positionsCapBursts() {
+        // Keyframes every second; the first 6 seconds are quiet (1 MB each), then 6 seconds of 8 MB each.
+        let keyframes = (0..<30).map { Double($0) }
+        var positions: [Int64?] = []
+        var position: Int64 = 0
+        for index in 0..<30 { positions.append(position); position += (index < 6 ? 1 : (index < 12 ? 8 : 1)) * 1_048_576 }
+        let plan = SegmentPlan.make(keyframes: keyframes, positions: positions, duration: 30)
+        func bytes(_ segment: SegmentPlan.Segment) -> Int64 {
+            let start = positions[Int(segment.start)]!
+            let end = Int(segment.end) < positions.count ? positions[Int(segment.end)]! : position
+            return end - start
+        }
+        for segment in plan.segments.dropLast() {
+            #expect(bytes(segment) <= SegmentPlan.defaultMaxSegmentBytes, "segment \(segment.index) spans \(bytes(segment) / 1_048_576) MB")
+        }
+        #expect(plan.segments.count > SegmentPlan.make(keyframes: keyframes, duration: 30).segments.count)
+    }
+
+    @Test("a single GOP above the cap is not split, and unknown positions are ignored")
+    func hugeGOPAndMissingPositions() {
+        let keyframes = [0.0, 10, 20, 30]
+        let huge = SegmentPlan.make(keyframes: keyframes, positions: [0, 100, 200, 300].map { Int64($0) * 1_048_576 }, duration: 40)
+        #expect(huge.segments.map(\.start) == [0, 10, 20, 30])
+        let unknown = SegmentPlan.make(keyframes: keyframes, positions: [nil, nil, nil, nil], duration: 40)
+        #expect(unknown == SegmentPlan.make(keyframes: keyframes, duration: 40))
+        let mismatched = SegmentPlan.make(keyframes: keyframes, positions: [0, 1], duration: 40)
+        #expect(mismatched == SegmentPlan.make(keyframes: keyframes, duration: 40))
     }
 
     @Test("a short file is one segment; an audio-only file uses a fixed grid; a tiny tail is folded in")
@@ -130,6 +190,37 @@ struct RemuxTests {
             } else {
                 #expect(samples == expected[track.id], "\(name) stream \(track.id): \(samples) samples vs \(expected[track.id] ?? -1) packets")
             }
+        }
+    }
+
+    @Test("a small size cap cuts the file into more segments, and every packet still lands in exactly one",
+          arguments: ["fixture-basic", "fixture-bframes", "fixture-opus-vorbis", "fixture-hevc"])
+    func sizeCap(name: String) async throws {
+        let normal = try await makeSession(name)
+        let capped = try await makeSession(name, maxSegmentBytes: 60_000)
+        #expect(capped.plan.segments.count > normal.plan.segments.count, "\(name): \(capped.plan.segments.count) vs \(normal.plan.segments.count)")
+        #expect(abs(capped.plan.totalDuration - normal.plan.totalDuration) < 0.001)
+
+        let expected = try packetCounts(name)
+        let info = try await Fixture.probe(name)
+        for track in info.tracks where capped.hasOutput(track.id) {
+            let transcoded = info.playbackPlan.tracks.contains { plan in
+                if plan.trackID == track.id, case .transcodeAudio = plan.treatment { true } else { false }
+            }
+            guard !transcoded else { continue }
+            let prefix = track.kind == .video ? "video" : "audio-\(track.id)"
+            var samples = 0
+            var previousEnd: UInt64?
+            for index in capped.plan.segments.indices {
+                let fact = try facts(try #require(try capped.resource(path: "\(prefix)-\(index).m4s")).data)
+                samples += fact.sampleCount
+                if let previousEnd {
+                    let gap = (Double(fact.baseDecodeTime) - Double(previousEnd)) / Double(capped.timescale(track.id))
+                    #expect(abs(gap) < 0.05, "\(name) \(prefix) gap at segment \(index): \(gap) s")
+                }
+                previousEnd = fact.baseDecodeTime + fact.totalDuration
+            }
+            #expect(samples == expected[track.id], "\(name) stream \(track.id): \(samples) samples vs \(expected[track.id] ?? -1) packets")
         }
     }
 
@@ -291,5 +382,22 @@ struct KeyframeIndexTests {
         #expect(!RemuxSession.looksComplete(keyframes: [], duration: 10))
         #expect(!RemuxSession.looksComplete(keyframes: [30, 31], duration: 40))         // nothing near the start
         #expect(RemuxSession.looksComplete(keyframes: [0, 50, 100], duration: 140))
+    }
+}
+
+@Suite("Big buffers")
+struct BigBufferTests {
+    @Test("small and large buffers hold what was written, and slices stay valid")
+    func contents() {
+        for size in [0, 1, 1_000, BigBuffer.threshold - 1, BigBuffer.threshold, 3 * 1_024 * 1_024 + 17] {
+            let data = BigBuffer.make(count: size) { buffer in
+                for index in 0..<buffer.count { buffer[index] = UInt8(truncatingIfNeeded: index &* 31) }
+            }
+            #expect(data.count == size)
+            let slice = data.dropFirst(size / 2)
+            let copy = Data(slice)
+            #expect(slice.elementsEqual(copy))
+            if size > 0 { #expect(data[size - 1] == UInt8(truncatingIfNeeded: (size - 1) &* 31)) }
+        }
     }
 }

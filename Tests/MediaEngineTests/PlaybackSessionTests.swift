@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Synchronization
 import Testing
 @testable import MediaEngine
 
@@ -277,6 +278,62 @@ struct AVPlayerEndToEndTests {
         session.close()
     }
 
+    /// SPIKE RESULT (RMX-9, 2026-10-25): AVPlayer takes HLS playlists and initialization segments from an
+    /// `AVAssetResourceLoader` but refuses media segments with "custom url not redirect" (CoreMedia -12881): they
+    /// must come from a real network URL. So there is no socket-free transport; see docs/RESEARCH.md section 16.
+    /// This test fails the day AVPlayer starts accepting them, which is when the transport is worth building.
+    @Test("AVPlayer does not take HLS media segments from a resource loader: known limitation")
+    func resourceLoaderLimitation() async throws {
+        await withKnownIssue("HLS media segments cannot come from an AVAssetResourceLoader (-12881, custom url not redirect)") {
+            let info = try await Fixture.probe("fixture-basic")
+            let remux = try RemuxSession(source: FileByteSource(url: Fixture.url("fixture-basic")), info: info, cancellation: CancellationFlag())
+            let probe = ResourceLoaderProbe(provider: remux)
+            defer { probe.stop(); remux.close() }
+            let asset = AVURLAsset(url: probe.masterURL)
+            asset.resourceLoader.setDelegate(probe, queue: probe.queue)
+            let item = AVPlayerItem(asset: asset)
+            let player = AVPlayer(playerItem: item)
+            player.isMuted = true
+            let ready = await waitUntil(5) { item.status != .unknown }
+            #expect(ready && item.status == .readyToPlay, "\(String(describing: item.error))")
+            player.play()
+            #expect(await waitUntil(5) { item.currentTime().seconds > 0.5 })
+        }
+    }
+
+    @Test("an SRT track shows up in the subtitle menu and its cues arrive on time")
+    func subtitleCues() async throws {
+        let session = try await PlaybackSession(url: Fixture.url("fixture-basic"))
+        let item = try await session.makePlayerItem()
+        let collector = CueCollector()
+        let output = AVPlayerItemLegibleOutput(mediaSubtypesForNativeRepresentation: [])
+        output.suppressesPlayerRendering = true
+        output.setDelegate(collector, queue: .main)
+        item.add(output)
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        #expect(await waitUntil(10) { item.status == .readyToPlay }, "\(String(describing: item.error))")
+
+        let group = try #require(try await item.asset.loadMediaSelectionGroup(for: .legible))
+        // The system may add machine-translated options for the viewer's languages ("Russian (Russia) Translated"); ours is the plain one.
+        let ours = group.options.filter { $0.mediaType == .subtitle && !$0.displayName.contains("Translated") }
+        #expect(ours.count == 1, "options: \(group.options.map { "\($0.displayName) \($0.extendedLanguageTag ?? "-")" })")
+        let option = try #require(ours.first)
+        #expect(option.locale?.language.languageCode?.identifier == "en" && option.displayName == "English", "\(option.displayName)")
+        item.select(option, in: group)
+        player.play()
+        #expect(await waitUntil(8) { collector.texts.contains("こんにちは — second line, UTF-8.") }, "got \(collector.texts)")
+        #expect(collector.texts.contains("Hello, subtitle one."), "got \(collector.texts)")
+        // The cues arrive for the item time that equals their time in the file, i.e. in step with the video frame
+        // shown at that moment (the WebVTT times carry the same shift as the remuxed audio and video).
+        let arrival = try #require(collector.firstTime(of: "Hello, subtitle one."))
+        #expect(abs(arrival - 0.2) < 0.15, "the first cue (0.2 s in the file) was delivered for item time \(arrival)")
+        let second = try #require(collector.firstTime(of: "こんにちは — second line, UTF-8."))
+        #expect(abs(second - 1.6) < 0.15, "the second cue (1.6 s in the file) was delivered for item time \(second)")
+        player.pause()
+        session.close()
+    }
+
     @Test("a file with B-frames plays, seeks and finishes")
     func playsBFrames() async throws {
         try await verifyPlayback(name: "fixture-bframes", width: 640, height: 360, duration: 10.0, seeks: [0.4, 6.5])
@@ -320,3 +377,17 @@ struct AVPlayerEndToEndTests {
     }
 }
 #endif
+
+/// Receives the subtitle text AVPlayer would draw.
+private final class CueCollector: NSObject, AVPlayerItemLegibleOutputPushDelegate, @unchecked Sendable {
+    private let received = Mutex<[(time: Double, text: String)]>([])
+    var texts: [String] { received.withLock { $0.map(\.text) } }
+    func firstTime(of text: String) -> Double? { received.withLock { $0.first { $0.text == text }?.time } }
+
+    func legibleOutput(_ output: AVPlayerItemLegibleOutput, didOutputAttributedStrings strings: [NSAttributedString],
+                       nativeSampleBuffers nativeSamples: [Any], forItemTime itemTime: CMTime) {
+        let text = strings.map(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        received.withLock { $0.append((itemTime.seconds, text)) }
+    }
+}

@@ -60,10 +60,9 @@ public final class PlaybackSession: @unchecked Sendable {
             break
         }
 
-        let (remux, server) = try await startRemux()
-        let item = AVPlayerItem(url: server.masterURL)
-        _ = remux
-        return attach(item)
+        let remux = try await startRemux()
+        let server = try await startServer(for: remux)
+        return attach(AVPlayerItem(url: server.masterURL))
     }
 
     /// Stops the local server and releases the file. The player item stops working.
@@ -80,11 +79,10 @@ public final class PlaybackSession: @unchecked Sendable {
 
     // MARK: Internals
 
-    private func startRemux() async throws -> (RemuxSession, LoopbackServer) {
-        let existing = try state.withLock { state -> (RemuxSession, LoopbackServer)? in
+    private func startRemux() async throws -> RemuxSession {
+        let existing = try state.withLock { state -> RemuxSession? in
             if state.isClosed { throw MediaError.cancelled }
-            if let remux = state.remux, let server = state.server { return (remux, server) }
-            return nil
+            return state.remux
         }
         if let existing { return existing }
 
@@ -96,17 +94,31 @@ public final class PlaybackSession: @unchecked Sendable {
                 continuation.resume(with: Result { try RemuxSession(source: byteSource, info: info, cancellation: cancellation) })
             }
         }
-        let server = try await LoopbackServer.start(session: remux)
-
-        let outcome = try state.withLock { state -> (RemuxSession, LoopbackServer, lost: Bool) in
+        let outcome = try state.withLock { state -> (RemuxSession, lost: Bool) in
             if state.isClosed { throw MediaError.cancelled }
-            if let existing = state.remux, let existingServer = state.server { return (existing, existingServer, true) }   // a concurrent call won
+            if let existing = state.remux { return (existing, true) }               // a concurrent call won
             state.remux = remux
-            state.server = server
-            return (remux, server, false)
+            return (remux, false)
         }
-        if outcome.lost { server.stop(); remux.close() }
-        return (outcome.0, outcome.1)
+        if outcome.lost { remux.close() }
+        return outcome.0
+    }
+
+    private func startServer(for remux: RemuxSession) async throws -> LoopbackServer {
+        let existing = try state.withLock { state -> LoopbackServer? in
+            if state.isClosed { throw MediaError.cancelled }
+            return state.server
+        }
+        if let existing { return existing }
+        let server = try await LoopbackServer.start(session: remux)
+        let outcome = try state.withLock { state -> (LoopbackServer, lost: Bool) in
+            if state.isClosed { throw MediaError.cancelled }
+            if let existing = state.server { return (existing, true) }
+            state.server = server
+            return (server, false)
+        }
+        if outcome.lost { server.stop() }
+        return outcome.0
     }
 
     private nonisolated(unsafe) static var associationKey: UInt8 = 0

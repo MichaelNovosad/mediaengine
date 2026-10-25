@@ -25,4 +25,5 @@ Pipeline: `PacketReader` (FFmpeg demux) -> `RemuxSession` (segment plan from key
 - HDR10 (PQ) over HLS is rejected by AVPlayer (CoreMedia -17223) even for FFmpeg's own HLS output; HLG and 10-bit SDR work. Open; needs a real HDR10 clip. Test: `pqKnownIssue`.
 - 27 SDK: `AVPlayerItem` is `@MainActor`; use `outputProvider(for:)`, `reader.start()`, `provider.next()`, `pixelBufferAndDisplayTime(forItemTime:)`, `CVPixelBufferAttributes()` instead of the deprecated calls.
 - The tool sandbox cannot run Python's `http.server`; `NWListener` works. `leaks`/`vmmap` cannot attach.
+- HLS media segments cannot come from an `AVAssetResourceLoader` ("custom url not redirect", -12881); only a real network URL works, so the loopback server is the transport (RESEARCH.md section 16).
 - AVFoundation's audio menu shows language names, not track titles (E3 item for same-language tracks).

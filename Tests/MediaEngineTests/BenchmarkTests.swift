@@ -58,7 +58,8 @@ struct BenchmarkTests {
         let info = try await source.probe()
         let probeMs = milliseconds(clock.now - probeStart)
         let sessionStart = clock.now
-        let session = try RemuxSession(source: source.byteSource, info: info, cancellation: CancellationFlag())
+        let segmentBytes = ProcessInfo.processInfo.environment["MEDIAENGINE_BENCH_SEGMENT_BYTES"].flatMap { Int64($0) } ?? SegmentPlan.defaultMaxSegmentBytes
+        let session = try RemuxSession(source: source.byteSource, info: info, cancellation: CancellationFlag(), maxSegmentBytes: segmentBytes)
         defer { session.close() }
         let sessionMs = milliseconds(clock.now - sessionStart)
         sample()

@@ -158,7 +158,7 @@ struct RemuxTests {
         #expect(data.range(of: Data("hev1".utf8)) == nil)
     }
 
-    @Test("every packet lands in exactly one fragment, with continuous timestamps", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes"])
+    @Test("every packet lands in exactly one fragment, with continuous timestamps", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-ts"])
     func fragmentsAreComplete(name: String) async throws {
         let session = try await makeSession(name)
         let expected = try packetCounts(name)
@@ -276,7 +276,7 @@ struct RemuxTests {
 
     #if os(macOS)
     /// The strongest check available: AVFoundation itself reads the assembled stream.
-    @Test("AVFoundation decodes the assembled video and audio", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes"])
+    @Test("AVFoundation decodes the assembled video and audio", arguments: ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-ts"])
     func avfoundationDecodes(name: String) async throws {
         let session = try await makeSession(name)
         let expected = try packetCounts(name)

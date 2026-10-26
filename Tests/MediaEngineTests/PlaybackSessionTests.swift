@@ -181,7 +181,7 @@ struct PlaybackSessionTests {
 @MainActor
 @Suite("AVPlayer end to end", .serialized)
 struct AVPlayerEndToEndTests {
-    @Test("plays, seeks and finishes", arguments: [("fixture-basic", 640, 360), ("fixture-hevc", 640, 360), ("fixture-hlg", 640, 360)])
+    @Test("plays, seeks and finishes", arguments: [("fixture-basic", 640, 360), ("fixture-hevc", 640, 360), ("fixture-hlg", 640, 360), ("fixture-ts", 640, 360)])
     func plays(name: String, width: Int, height: Int) async throws {
         try await verifyPlayback(name: name, width: width, height: height)
     }

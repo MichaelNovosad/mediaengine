@@ -223,7 +223,7 @@ public final class PlaybackSession: @unchecked Sendable {
 
     // MARK: Internals
 
-    private func startRemux() async throws -> RemuxSession {
+    func startRemux() async throws -> RemuxSession {
         let existing = try state.withLock { state -> RemuxSession? in
             if state.isClosed { throw MediaError.cancelled }
             return state.remux
@@ -260,7 +260,7 @@ public final class PlaybackSession: @unchecked Sendable {
         return outcome.0
     }
 
-    private func startServer(for remux: RemuxSession) async throws -> LoopbackServer {
+    func startServer(for remux: RemuxSession) async throws -> LoopbackServer {
         let existing = try state.withLock { state -> LoopbackServer? in
             if state.isClosed { throw MediaError.cancelled }
             return state.server
@@ -306,7 +306,7 @@ public final class PlaybackSession: @unchecked Sendable {
 
     /// Ties this session's lifetime to the item, so the server lives exactly as long as the item does.
     @MainActor
-    private func attach(_ item: AVPlayerItem) -> AVPlayerItem {
+    func attach(_ item: AVPlayerItem) -> AVPlayerItem {
         objc_setAssociatedObject(item, &Self.associationKey, self, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         return item
     }

@@ -22,3 +22,11 @@ Never commit large or real media; real test files go in a gitignored `TestMedia/
 - Picture subtitles (PGS, VobSub, DVB): `scripts/make-bitmap-subs.py` writes the `.sup` and `.idx/.sub` by hand; `fixture-bitmap.mkv` holds all three. Needs the rebuilt host tools (see engine-rebuild-ffmpeg) and `-copyts`.
 - Golden frames: `Tests/MediaEngineTests/GoldenFrameTests.swift` (scenes) and `Tests/MediaEngineTests/Golden/*.png`; re-record with `MEDIAENGINE_RECORD_GOLDEN=1` and look at every picture.
 - A recipe that changes the ordered-chapter fixtures changes their ground truth: regenerate `Fixtures/ground-truth/*.json` for them and rerun `OrderedChapters|TimelineReader|PlayListSession|PlayListPlayback`.
+
+## Legacy-container fixtures
+
+`scripts/make-fixtures.sh` has the recipes (AVI/Xvid and AVI/H.264, FLV, RealMedia with RealVideo 2, WMV, MPEG-2 program stream, MPEG-TS, and OGM written by `scripts/make-ogm.py`). `Fixture.url(_:)` finds a fixture by name with any known extension; `Fixture.legacyNames` lists them; `Fixture.probeable` is what the running build can read completely (RealMedia only in the extended build, Flash video size needs its decoder). Ground truth works for every `fixture-*.*` file.
+
+## Interlaced and anamorphic fixtures
+
+`fixture-interlaced-tff.mpg`, `fixture-interlaced-bff.mpg` (MPEG-2, two fields from a 50 Hz source woven into 25 Hz pictures with `scale=...,weave=first_field=top|bottom`) and `fixture-anamorphic.mkv` (MPEG-4 with `setsar=16/11`) come from the last recipe block of `scripts/make-fixtures.sh`. Official codec test vectors are not fixtures: `scripts/fetch-conformance.sh` downloads them into the git-ignored `build/conformance`.

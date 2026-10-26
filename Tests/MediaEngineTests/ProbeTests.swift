@@ -154,6 +154,25 @@ struct ProbeTests {
         }
     }
 
+    @Test("a download that was cut off is flagged, with a note, while the whole file is not")
+    func incompleteDownload() async throws {
+        let data = try Fixture.data("fixture-basic")
+        let whole = try await MediaSource(byteSource: DataByteSource(data)).probe()
+        #expect(!whole.isIncomplete && !whole.playbackPlan.notes.contains { $0.contains("incomplete") })
+
+        // The header (and with it the segment size) is there; the end of the file is not.
+        var flagged = 0
+        for cut in [data.count * 3 / 4, data.count / 2, data.count - 40] {
+            guard let info = try? await MediaSource(byteSource: DataByteSource(data.prefix(cut))).probe() else { continue }
+            #expect(info.isIncomplete, "cut at \(cut) of \(data.count)")
+            #expect(info.playbackPlan.notes.contains { $0.contains("incomplete") && $0.contains("%") }, "\(info.playbackPlan.notes)")
+            flagged += 1
+        }
+        #expect(flagged >= 1, "no truncated copy could be probed at all")
+        // A recording that does not know its own size (live) is never called incomplete.
+        #expect(MatroskaChapters.declaredEnd(of: DataByteSource(Data([0x1A, 0x45, 0xDF, 0xA3, 0x80, 0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))) == nil)
+    }
+
     @Test("a source that throws surfaces its own error")
     func sourceFailure() async {
         struct Broken: ByteSource {

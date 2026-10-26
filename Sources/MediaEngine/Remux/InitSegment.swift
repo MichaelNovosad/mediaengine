@@ -55,7 +55,7 @@ enum InitSegmentBuilder {
         let header = avformat_write_header(context, &options)
         guard header >= 0 else {
             _ = finish()
-            throw MediaError.engine(detail: "mp4 header failed: \(AVError.describe(header))")
+            throw MediaError.engine(detail: "mp4 header failed for \(String(cString: avcodec_get_name(parameters.pointee.codec_id))): \(AVError.describe(header))")
         }
 
         guard let packet = av_packet_alloc() else { _ = finish(); throw MediaError.engine(detail: "no packet") }

@@ -3,6 +3,16 @@
 # Written for macOS /bin/bash 3.2: no associative arrays, no mapfile.
 set -euo pipefail
 
+# The owner works on this Mac (video calls, audio) while checks run: every script re-runs itself at background priority
+# (`taskpolicy -b`: efficiency cores, lowest CPU and disk priority, throttled) and `nice` 19, once. Children inherit it.
+# MEDIAENGINE_FULL_SPEED=1 turns this off (a quiet machine, or timing measurements that must not be slowed).
+if [ -z "${MEDIAENGINE_LOW_PRIORITY:-}" ] && [ -z "${MEDIAENGINE_FULL_SPEED:-}" ] && [ -f "$0" ] && command -v taskpolicy >/dev/null 2>&1; then
+  export MEDIAENGINE_LOW_PRIORITY=1
+  # Slower machine time: the tests that wait for real-time playback wait longer and do not assert speed (testPatience in the tests).
+  export MEDIAENGINE_TEST_PATIENCE="${MEDIAENGINE_TEST_PATIENCE:-4}"
+  exec taskpolicy -b nice -n 19 bash "$0" "$@"
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build"
 MIN_OS="27.0"
@@ -38,4 +48,5 @@ slice_sysroot() { xcrun --sdk "$(slice_sdk "$1")" --show-sdk-path; }
 lock_field() {
   awk -F'\t' -v n="$1" -v c="$2" '$1==n { print $c }' "$ROOT/third_party/sources.lock"
 }
-jobs_count() { sysctl -n hw.logicalcpu; }
+# At most half of the cores, never fewer than two: a build must leave the machine usable.
+jobs_count() { local n; n="$(( $(sysctl -n hw.logicalcpu) / 2 ))"; [ "$n" -ge 2 ] && echo "$n" || echo 2; }

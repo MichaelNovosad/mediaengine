@@ -9,7 +9,7 @@
 #   isolated  timing, memory and descriptor measurements (ExclusiveTests), which need the process to themselves
 # A suite that waits for AVPlayer belongs in PLAYBACK_SUITES (match the Swift type name).
 
-PLAYBACK_SUITES='AVPlayerEndToEndTests|ExternalAudioPlaybackTests|ExternalSubtitlePlayerTests|PlayListPlaybackTests|TrackSelectionTests'
+PLAYBACK_SUITES='AVPlayerEndToEndTests|SoftwareControllerPlaybackTests|SoftwarePipelineTests|InterlacedPlaybackTests|LegacyContainerPlaybackTests|ExternalAudioPlaybackTests|ExternalSubtitlePlayerTests|PlayListPlaybackTests|TrackSelectionTests'
 
 # Warnings that come from Xcode's own tooling, not from our code.
 IGNORABLE_WARNINGS='Metadata extraction skipped'
@@ -32,7 +32,10 @@ swift_pass() {
 }
 
 unit_pass()     { local logfile="$1"; shift; swift_pass "unit tests" "$logfile" --skip "$PLAYBACK_SUITES" "$@"; }
-playback_pass() { local logfile="$1"; shift; swift_pass "playback tests" "$logfile" --filter "$PLAYBACK_SUITES" "$@"; }
+# --no-parallel: the suites run one after another. Left to themselves they overlap (each suite is serial inside, but nine of them start
+# together), two AVPlayers and the software player then starve each other and seeks fail now and then; one after another the play-list
+# suite takes 12 s instead of 100 and nothing fails.
+playback_pass() { local logfile="$1"; shift; swift_pass "playback tests" "$logfile" --no-parallel --filter "$PLAYBACK_SUITES" "$@"; }
 isolated_pass() { local logfile="$1"; shift; MEDIAENGINE_EXCLUSIVE=1 swift_pass "resource checks" "$logfile" --filter ExclusiveTests "$@"; }
 
 # build_tests <logfile> [swift build arguments...]: compiles package and tests, fails on warnings in our code.

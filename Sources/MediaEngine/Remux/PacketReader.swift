@@ -66,12 +66,22 @@ final class PacketReader: PacketSource {
     private var untimedIndex: [Int: [(ticks: Int64, position: Int64)]] = [:]
     private var onlyStreams: Set<Int>?
 
+    /// H.264 and HEVC in Annex B form (MPEG-TS, AVI): converted to length-prefixed NAL units, with the parameter sets found
+    /// at the start of the stream put into the codec parameters (see ``AnnexB``).
+    private var annexB: [Int: AnnexB.Codec] = [:]
+    private var parameterSets: [Int: [Int: [Data]]] = [:]
+    /// AAC with ADTS headers and container timestamps (MPEG-TS): the header is cut off and its content goes into the
+    /// codec parameters. Raw `.aac` files have no timestamps at all and are handled below with `untimedStreams`.
+    private var adtsStreams: Set<Int> = []
+    private var adtsConfigurations: [Int: ADTSFrame] = [:]
+
     init(source: any ByteSource, cancellation: CancellationFlag) throws {
         self.source = source
         self.cancellation = cancellation
         context = try FormatContext.open(source: source, cancellation: cancellation)
         guard let packet = av_packet_alloc() else { throw MediaError.engine(detail: "could not allocate packet") }
         self.packet = packet
+        try prepareStreams()
     }
 
     deinit {
@@ -83,7 +93,26 @@ final class PacketReader: PacketSource {
     var streamCount: Int { Int(format.pointee.nb_streams) }
 
     func stream(_ index: Int) -> UnsafeMutablePointer<AVStream> { format.pointee.streams[index]! }
-    func parameters(_ index: Int) -> UnsafeMutablePointer<AVCodecParameters> { stream(index).pointee.codecpar }
+    /// Where the file's timeline starts, when it does not start at zero (MPEG-TS recordings begin at 1.4 s or later; Matroska
+    /// files cut from a longer one at wherever the cut was). Every timestamp the reader hands out has this taken off, so the
+    /// engine sees a timeline from zero; seeks and the keyframe list add and take it off the same way.
+    private func originTicks(_ index: Int) -> Int64 {
+        let start = format.pointee.start_time
+        guard start != Int64.min, start > 1_000 else { return 0 }          // under a millisecond, or unknown (and negative leads are handled by the shift)
+        return timeBase(index).ticks(seconds: Double(start) / 1_000_000)
+    }
+
+    private func codecParameters(_ index: Int) -> UnsafeMutablePointer<AVCodecParameters> { stream(index).pointee.codecpar }
+
+    /// The codec parameters of a stream. For AAC from MPEG-TS the demuxer's parser overwrites the sample rate and channels
+    /// with "unknown" as it reads packets, so what the ADTS header said is put back whenever it is asked for.
+    func parameters(_ index: Int) -> UnsafeMutablePointer<AVCodecParameters> {
+        let parameters = codecParameters(index)
+        if let frame = adtsConfigurations[index], parameters.pointee.sample_rate == 0 || parameters.pointee.ch_layout.nb_channels == 0 {
+            prepareADTS(stream: index, frame: frame)
+        }
+        return parameters
+    }
     func timeBase(_ index: Int) -> Rational { Rational(stream(index).pointee.time_base) }
 
     /// Timestamps of the keyframes listed in the file's index (Matroska Cues, MP4 sync table), in the stream's time base.
@@ -103,10 +132,11 @@ final class PacketReader: PacketSource {
         let count = avformat_index_get_entries_count(st)
         var result: [(timestamp: Int64, position: Int64?)] = []
         result.reserveCapacity(Int(count))
+        let origin = originTicks(index)
         for entry in 0..<count {
             guard let item = avformat_index_get_entry(st, entry) else { continue }
             if item.pointee.flags & Int32(AVINDEX_KEYFRAME) != 0 {
-                result.append((item.pointee.timestamp, item.pointee.pos >= 0 ? item.pointee.pos : nil))
+                result.append((item.pointee.timestamp - origin, item.pointee.pos >= 0 ? item.pointee.pos : nil))
             }
         }
         return result.sorted { $0.timestamp < $1.timestamp }
@@ -128,13 +158,14 @@ final class PacketReader: PacketSource {
         context = try FormatContext.open(source: source, cancellation: cancellation)
         clock = [:]
         applyStreamLimit()
-        // The new context knows nothing of the extradata made for ADTS; it is made again on the first frame.
+        applyPreparedParameters()
+        // The new context knows nothing of the extradata made for raw ADTS files; it is made again on the first frame.
     }
 
     /// Positions the reader at the last keyframe at or before `timestamp` of the given stream.
     func seek(stream index: Int, to timestamp: Int64) throws {
         if untimedStreams.contains(index) { return try seekUntimed(stream: index, to: timestamp) }
-        let result = av_seek_frame(format, Int32(index), timestamp, AVSEEK_FLAG_BACKWARD)
+        let result = av_seek_frame(format, Int32(index), timestamp + originTicks(index), AVSEEK_FLAG_BACKWARD)
         if result < 0 { throw FormatContext.openError(result, context.bridge) }
     }
 
@@ -155,11 +186,18 @@ final class PacketReader: PacketSource {
             var duration = max(packet.pointee.duration, 0)
             if pts == Int64.min { pts = dts }
             if dts == Int64.min { dts = pts }
+            if pts != Int64.min {
+                let origin = originTicks(Int(packet.pointee.stream_index))
+                pts -= origin
+                if dts != Int64.min { dts -= origin }
+            }
             var payloadOffset = 0
             let streamIndex = Int(packet.pointee.stream_index)
             // Raw AAC: number the frames ourselves. (After a seek FFmpeg invents timestamps for the file, so a stream known
             // to be untimed keeps using ours.)
-            if pts == Int64.min || untimedStreams.contains(streamIndex), let frame = adtsFrame() {
+            if adtsStreams.contains(streamIndex), pts != Int64.min, !untimedStreams.contains(streamIndex), let frame = adtsFrame() {
+                payloadOffset = frame.headerLength                  // the container gave the timestamps: only the header goes
+            } else if pts == Int64.min || untimedStreams.contains(streamIndex), let frame = adtsFrame() {
                 let index = streamIndex
                 let base = stream(index).pointee.time_base
                 let rate = Int64(frame.sampleRate)
@@ -181,7 +219,8 @@ final class PacketReader: PacketSource {
             if pts == Int64.min { continue }                       // no usable timestamp: skip
 
             let size = Int(packet.pointee.size) - payloadOffset
-            let data = size > 0 ? Data(bytes: packet.pointee.data + payloadOffset, count: size) : Data()
+            var data = size > 0 ? Data(bytes: packet.pointee.data + payloadOffset, count: size) : Data()
+            if let codec = annexB[streamIndex] { data = AnnexB.convert(data, codec: codec, sets: &parameterSets[streamIndex, default: [:]]) }
             var skipStart = 0, skipEnd = 0
             var sideSize = 0
             if let side = av_packet_get_side_data(packet, AV_PKT_DATA_SKIP_SAMPLES, &sideSize), sideSize >= 8 {
@@ -195,6 +234,62 @@ final class PacketReader: PacketSource {
                 isKeyframe: packet.pointee.flags & AV_PKT_FLAG_KEY != 0, skipStart: skipStart, skipEnd: skipEnd,
                 position: packet.pointee.pos)
         }
+    }
+
+    // MARK: Streams that need preparing (Annex B video, ADTS audio in MPEG-TS)
+
+    /// Looks at the start of the file for what MP4 needs and these streams do not carry: the parameter sets of Annex B
+    /// video and the ADTS configuration of AAC, then reopens the file. Without it the init segment would have no decoder
+    /// configuration.
+    private func prepareStreams() throws {
+        var needsSets = Set<Int>(), needsADTS = Set<Int>()
+        for index in 0..<streamCount {
+            let parameters = codecParameters(index)
+            if let codec = AnnexB.codec(for: parameters) {
+                annexB[index] = codec
+                if parameters.pointee.extradata_size == 0 { needsSets.insert(index) }
+            } else if parameters.pointee.codec_id == AV_CODEC_ID_AAC, parameters.pointee.extradata_size == 0 {
+                needsADTS.insert(index)
+            }
+        }
+        guard !needsSets.isEmpty || !needsADTS.isEmpty else { return }
+        var scanned = 0
+        while scanned < 600, !(needsSets.isEmpty && needsADTS.isEmpty) {
+            if av_read_frame(format, packet) < 0 { break }
+            defer { av_packet_unref(packet) }
+            scanned += 1
+            let index = Int(packet.pointee.stream_index)
+            if needsSets.contains(index), let codec = annexB[index], let data = packet.pointee.data {
+                let buffer = UnsafeBufferPointer(start: data, count: Int(packet.pointee.size))
+                for range in AnnexB.units(in: buffer) {
+                    let type = AnnexB.nalType(buffer[range.lowerBound], codec)
+                    guard AnnexB.isParameterSet(type, codec) else { continue }
+                    let unit = Data(buffer[range])
+                    if !(parameterSets[index]?[type] ?? []).contains(unit) { parameterSets[index, default: [:]][type, default: []].append(unit) }
+                }
+                if AnnexB.extradata(from: parameterSets[index] ?? [:], codec: codec) != nil { needsSets.remove(index) }
+            }
+            if needsADTS.contains(index), let frame = adtsFrame() {
+                adtsStreams.insert(index)
+                adtsConfigurations[index] = frame
+                needsADTS.remove(index)
+            }
+        }
+        try rewind()                                                   // back to the first packet, with the parameters applied
+    }
+
+    /// Puts what was found at the start into the codec parameters of the (re)opened file.
+    private func applyPreparedParameters() {
+        for (index, codec) in annexB {
+            let parameters = codecParameters(index)
+            guard parameters.pointee.extradata_size == 0, let sets = parameterSets[index],
+                  let configuration = AnnexB.extradata(from: sets, codec: codec),
+                  let buffer = av_mallocz(configuration.count + Int(AV_INPUT_BUFFER_PADDING_SIZE)) else { continue }
+            configuration.copyBytes(to: buffer.assumingMemoryBound(to: UInt8.self), count: configuration.count)
+            parameters.pointee.extradata = buffer.assumingMemoryBound(to: UInt8.self)
+            parameters.pointee.extradata_size = Int32(configuration.count)
+        }
+        for (index, frame) in adtsConfigurations { prepareADTS(stream: index, frame: frame) }
     }
 
     // MARK: Raw AAC (ADTS)
@@ -221,7 +316,7 @@ final class PacketReader: PacketSource {
     /// Fills in what the ADTS header says and the demuxer could not work out without a decoder: the AudioSpecificConfig
     /// (which the MP4 muxer needs for raw frames), the sample rate, the channels and the frame size.
     private func prepareADTS(stream index: Int, frame: ADTSFrame) {
-        let parameters = parameters(index)
+        let parameters = codecParameters(index)
         if parameters.pointee.sample_rate == 0 { parameters.pointee.sample_rate = Int32(frame.sampleRate) }
         if parameters.pointee.ch_layout.nb_channels == 0 {
             let channels: Int32 = [0, 1, 2, 3, 4, 5, 6, 8][min(max(frame.channelConfiguration, 0), 7)]

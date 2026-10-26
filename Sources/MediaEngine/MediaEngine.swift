@@ -13,9 +13,20 @@ public enum MediaEngine {
         public let ffmpegLicense: String
     }
 
-    /// The codec profiles compiled into this build. Today only `.core`: optional modules arrive with the
-    /// packaging decision D-E11, and until then nothing outside `.core` is ever reported as available.
-    public static var availableProfiles: CodecProfile { .core }
+    /// The codec profiles this build contains, found by asking the linked FFmpeg which decoders it has: `.core` always,
+    /// `.extended` in the extended variant (legacy containers and software decoders), `.licensedAudio` in a build
+    /// with the DTS and TrueHD decoders. Which binary an app links is decided when it picks the package variant
+    /// (`docs/RESEARCH.md` section 24); a host that gates features by profile reads ``MediaInfo/requiredProfile``.
+    public static var availableProfiles: CodecProfile { detectedProfiles }
+
+    private static let detectedProfiles: CodecProfile = {
+        var profiles: CodecProfile = .core
+        if avcodec_find_decoder_by_name("mpeg4") != nil, avcodec_find_decoder_by_name("vp9") != nil, av_find_input_format("rm") != nil {
+            profiles.insert(.extended)
+        }
+        if avcodec_find_decoder_by_name("dca") != nil, avcodec_find_decoder_by_name("truehd") != nil { profiles.insert(.licensedAudio) }
+        return profiles
+    }()
 
     /// Package traits that were enabled when this build was made (see `Package.swift`).
     public static var enabledTraits: [String] {

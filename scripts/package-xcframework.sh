@@ -1,20 +1,23 @@
 #!/bin/bash
 # Links the static FFmpeg libraries of every slice into ONE dynamic framework (FFmpegLGPL),
 # then bundles the five slices into build/FFmpegLGPL.xcframework.
-# usage: scripts/package-xcframework.sh [profile]      (default: core)
+# usage: scripts/package-xcframework.sh [profiles joined by +]      (default: core; "core+extended" makes the extended variant)
+# The extended variant becomes build/FFmpegLGPL-extended.xcframework (same framework and module name inside, so Swift code
+# does not change; Package.swift picks it with MEDIAENGINE_PROFILE=extended, see RESEARCH.md section 24).
 # Dynamic linking keeps the LGPL promise: a customer can swap the framework for their own build.
 # FFMPEG_SANITIZE=address packages the instrumented macOS slice (from build-ffmpeg.sh) as a separate
 # build/FFmpegLGPL-address.xcframework for the sanitizer pass; it never touches the normal outputs.
 source "$(dirname "$0")/lib/common.sh"
 
 profile="${1:-core}"
+variant=""; [ "$profile" = core ] || variant="-$(echo "$profile" | sed 's/^core+//')"
 version="$(lock_field ffmpeg 2)"
 FW="FFmpegLGPL"
 BUNDLE_ID="dev.mediaengine.FFmpegLGPL"   # placeholder until the product name is chosen (D-E6)
 san="${FFMPEG_SANITIZE:-}"; san_flags=""; suffix=""
 if [ -n "$san" ]; then SLICES="macos"; san_flags="-fsanitize=$san"; suffix="-$san"; fi
-out="$BUILD/frameworks$suffix"
-rm -rf "$out" "$BUILD/dsyms$suffix" "$BUILD/$FW$suffix.xcframework"; mkdir -p "$out" "$BUILD/dsyms$suffix"
+out="$BUILD/frameworks$variant$suffix"
+rm -rf "$out" "$BUILD/dsyms$variant$suffix" "$BUILD/$FW$variant$suffix.xcframework"; mkdir -p "$out" "$BUILD/dsyms$variant$suffix"
 
 plist() { # <slice> <min key/value lines> → Info.plist on stdout
   local platform minkey
@@ -75,12 +78,18 @@ make_framework() {
   local exports="$BUILD/work/exports.txt"
   mkdir -p "$BUILD/work"; printf '_av*\n_swr*\n_swresample*\n' > "$exports"
 
+  # The extended variant carries dav1d (AV1): linked in statically, BSD-2-Clause text shipped inside the framework.
+  local extra_link=""
+  if python3 -I "$ROOT/scripts/gen-config.py" flags $(echo "$profile" | tr '+' ' ') | grep -qx -e '--enable-libdav1d'; then
+    extra_link="-Wl,-force_load,$BUILD/install/dav1d-$slice/lib/libdav1d.a"
+  fi
+
   log "link $FW for $slice"
   "$cc" -dynamiclib $san_flags -target "$target" -isysroot "$sysroot" \
     -install_name "$install_name" -compatibility_version 1.0.0 -current_version "$version" \
     -Wl,-force_load,"$inst/lib/libavformat.a" -Wl,-force_load,"$inst/lib/libavcodec.a" \
     -Wl,-force_load,"$inst/lib/libavutil.a" -Wl,-force_load,"$inst/lib/libswresample.a" \
-    -Wl,-exported_symbols_list,"$exports" \
+    $extra_link -Wl,-exported_symbols_list,"$exports" \
     -framework AudioToolbox -framework CoreFoundation -lz -lbz2 \
     -o "$content/$FW"
 
@@ -103,6 +112,9 @@ framework module $FW {
 EOF
   plist "$slice" > "$res/Info.plist"
   privacy > "$res/PrivacyInfo.xcprivacy"
+  if [ -n "$extra_link" ]; then
+    mkdir -p "$res/licenses"; cp "$BUILD/install/dav1d-$slice/licenses/dav1d-BSD-2-Clause.txt" "$res/licenses/"
+  fi
 
   if [ "$slice" = "macos" ]; then
     ln -sfn A "$fwdir/Versions/Current"
@@ -110,8 +122,8 @@ EOF
     for d in Headers Modules Resources; do ln -sfn "Versions/Current/$d" "$fwdir/$d"; done
   fi
 
-  mkdir -p "$BUILD/dsyms$suffix/$slice"
-  dsymutil "$content/$FW" -o "$BUILD/dsyms$suffix/$slice/$FW.framework.dSYM" 2>/dev/null || true
+  mkdir -p "$BUILD/dsyms$variant$suffix/$slice"
+  dsymutil "$content/$FW" -o "$BUILD/dsyms$variant$suffix/$slice/$FW.framework.dSYM" 2>/dev/null || true
   [ -n "$san" ] || strip -x "$content/$FW"
   codesign --force --sign - --timestamp=none "$fwdir" >/dev/null
 }
@@ -127,5 +139,5 @@ log "create xcframework"
 args=""
 for s in $SLICES; do args="$args -framework $out/$s/$FW.framework"; done
 # shellcheck disable=SC2086
-xcodebuild -create-xcframework $args -output "$BUILD/$FW$suffix.xcframework" | tail -2
-log "done: $BUILD/$FW$suffix.xcframework"
+xcodebuild -create-xcframework $args -output "$BUILD/$FW$variant$suffix.xcframework" | tail -2
+log "done: $BUILD/$FW$variant$suffix.xcframework"

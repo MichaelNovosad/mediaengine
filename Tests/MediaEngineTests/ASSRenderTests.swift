@@ -136,6 +136,16 @@ struct ASSRenderTests {
         #expect(without.fill < 0.7, "fill \(without.fill)")
     }
 
+    @Test("a long Japanese line without spaces wraps inside the picture (line breaking by libunibreak)")
+    func cjkWraps() throws {
+        let text = "日本語の字幕は空白がないので、行を折り返すには行分割の規則が必要です。これは画面の幅をはるかに超える長い文章の例です。"
+        let script = assScript([line("{\\pos(0,0)}\(text)")], font: "PingFang SC", size: 40)
+        let result = try shot(script, at: 2, fonts: [])
+        let box = try #require(result.bounds(threshold: 32))
+        #expect(box.maxX < 640 - 1, "the text runs off the picture: \(box)")
+        #expect(box.maxY - box.minY > 60, "one line only (a line is about 40 px): \(box)")
+    }
+
     @Test("libass says which font it picked for the style")
     func fontSelection() throws {
         let core = try #require(ASSRenderCore(fonts: try blockFont(), storageSize: nil))

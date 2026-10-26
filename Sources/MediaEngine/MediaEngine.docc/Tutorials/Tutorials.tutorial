@@ -1,0 +1,10 @@
+@Tutorials(name: "MediaEngine") {
+    @Intro(title: "Play an MKV in five minutes") {
+        Open a Matroska file with the engine and play it with the system player, with its audio and subtitle menus.
+    }
+
+    @Chapter(name: "Your first MKV") {
+        @Image(source: "chapter-1.png", alt: "A play button on a dark background")
+        @TutorialReference(tutorial: "doc:PlayAnMKV")
+    }
+}

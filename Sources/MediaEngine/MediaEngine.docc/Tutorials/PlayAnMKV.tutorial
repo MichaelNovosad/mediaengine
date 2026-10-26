@@ -1,0 +1,32 @@
+@Tutorial(time: 5) {
+    @Intro(title: "Play an MKV in five minutes") {
+        A SwiftUI view that lets the person pick a video file and plays it, MKV and WebM included.
+    }
+
+    @Section(title: "Add the package and build the view") {
+        @ContentAndMedia {
+            Add MediaEngine in Xcode with File, Add Package Dependencies. Nothing else has to be set up: no bridging header, no build phase,
+            no framework to embed by hand.
+        }
+
+        @Steps {
+            @Step {
+                Make a view with an `AVPlayer` and the system's `VideoPlayer`.
+                @Code(name: "PlayerScreen.swift", file: "play-1.swift")
+            }
+            @Step {
+                Open the file: the session reads the headers and decides how the file can be played.
+                @Code(name: "PlayerScreen.swift", file: "play-2.swift")
+            }
+            @Step {
+                Ask for the player item and give it to the player. The item is an ordinary `AVPlayerItem`: AirPlay, Picture in Picture and the
+                subtitle and audio menus work as they do for any video.
+                @Code(name: "PlayerScreen.swift", file: "play-3.swift")
+            }
+            @Step {
+                Prefer Japanese audio with English subtitles, if the file has them.
+                @Code(name: "PlayerScreen.swift", file: "play-4.swift")
+            }
+        }
+    }
+}

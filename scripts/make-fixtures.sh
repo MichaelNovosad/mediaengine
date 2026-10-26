@@ -199,10 +199,37 @@ python3 -I ../scripts/make-bitmap-subs.py src >/dev/null
   -metadata:s:s:2 language=fre -metadata:s:s:2 title="DVB" \
   -f matroska fixture-bitmap.mkv
 
+log "legacy containers (extended profile): AVI/Xvid, AVI/H.264, FLV, RealMedia, WMV, MPEG-2, OGM"
+LEGACY_SRC=(-f lavfi -i "testsrc2=size=640x360:rate=25:duration=3" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=3")
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v mpeg4 -vtag XVID -qscale:v 4 -g 25 -c:a ac3 -b:a 96k -metadata:s:a:0 language=eng -f avi fixture-avi-xvid.avi
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -f avi fixture-avi-h264.avi
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v flv -qscale:v 4 -g 25 -c:a aac_at -b:a 64k -f flv fixture-flv.flv
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v rv20 -b:v 400k -g 25 -c:a ac3 -b:a 96k -f rm fixture-realmedia.rm
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v wmv2 -b:v 400k -g 25 -c:a wmav2 -b:a 64k -f asf fixture-wmv.wmv
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v mpeg2video -b:v 800k -g 12 -c:a mp2 -b:a 128k -f mpeg fixture-mpeg2.mpg
+python3 -I ../scripts/make-ogm.py fixture-avi-xvid.avi fixture-ogm.ogm
+# 14 s of small video and three audio tracks in legacy audio codecs (WMA, MP2, MS ADPCM), for the segment-by-segment audio tests
+"$FF" -v error -y -f lavfi -i "testsrc2=size=160x90:rate=10:duration=14" -f lavfi -i "sine=frequency=330:sample_rate=44100:duration=14" \
+  -f lavfi -i "sine=frequency=550:sample_rate=44100:duration=14" -f lavfi -i "sine=frequency=770:sample_rate=44100:duration=14" \
+  -filter_complex "[1:a]aformat=channel_layouts=stereo[a1];[2:a]aformat=channel_layouts=stereo[a2];[3:a]aformat=channel_layouts=stereo[a3]" \
+  -map 0:v -map "[a1]" -map "[a2]" -map "[a3]" -c:v mpeg4 -qscale:v 8 -g 10 -c:a:0 wmav2 -b:a:0 96k -c:a:1 mp2 -b:a:1 128k -c:a:2 adpcm_ms \
+  -metadata:s:a:0 title="WMA" -metadata:s:a:1 title="MP2" -metadata:s:a:2 title="ADPCM" -f avi fixture-avi-audio.avi
+"$FF" -v error -y "${LEGACY_SRC[@]}" -c:v h264_videotoolbox -b:v 300k -g 25 -pix_fmt yuv420p -c:a aac_at -b:a 64k -f mpegts fixture-ts.ts   # core container: H.264 in Annex B form, AAC with ADTS headers
+
+# Interlaced pictures (two fields captured 1/50 s apart, woven into one frame) and a non-square pixel aspect ratio (ANM-7).
+# `weave` is an LGPL filter; the GPL-only `interlace` and `tinterlace` filters are not in our host tools.
+log "interlaced MPEG-2 (top field first and bottom field first) and an anamorphic MPEG-4 file in Matroska"
+for order in top bottom; do
+  "$FF" -v error -y -f lavfi -i "testsrc2=size=320x240:rate=50:duration=1.5" -vf "scale=320:120:flags=bilinear,weave=first_field=$order,setsar=1" \
+    -c:v mpeg2video -flags +ildct+ilme -b:v 900k -g 12 -f mpeg "fixture-interlaced-$([ $order = top ] && echo tff || echo bff).mpg"
+done
+"$FF" -v error -y -f lavfi -i "testsrc2=size=360x288:rate=25:duration=2" -vf "setsar=16/11" -c:v mpeg4 -qscale:v 5 -g 25 -f matroska fixture-anamorphic.mkv
+
 log "ground truth (ffprobe JSON, committed next to the fixtures)"
 mkdir -p ground-truth
-for f in fixture-*.mkv; do
-  "$BUILD/tools/bin/ffprobe" -v error -show_format -show_streams -show_chapters -of json "$f" > "ground-truth/${f%.mkv}.json"
+for f in fixture-*.*; do
+  case "$f" in *.json) continue ;; esac
+  "$BUILD/tools/bin/ffprobe" -v error -show_format -show_streams -show_chapters -of json "$f" > "ground-truth/${f%.*}.json"
 done
 
 ls -l *.mkv

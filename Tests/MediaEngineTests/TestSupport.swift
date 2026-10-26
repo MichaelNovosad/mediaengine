@@ -45,9 +45,27 @@ enum Fixture {
     static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-    static let names = ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-subs-long", "fixture-multi", "fixture-ordered", "fixture-ordered-missing", "fixture-linked-opening", "fixture-licensed-audio", "fixture-anime", "fixture-ass-fx", "fixture-bitmap"]
+    static let names = ["fixture-basic", "fixture-hevc", "fixture-hdr10", "fixture-hlg", "fixture-flac24", "fixture-opus-vorbis", "fixture-bframes", "fixture-subs-long", "fixture-multi", "fixture-ordered", "fixture-ordered-missing", "fixture-linked-opening", "fixture-licensed-audio", "fixture-anime", "fixture-ass-fx", "fixture-bitmap", "fixture-ts"]
 
-    static func url(_ name: String) -> URL { root.appendingPathComponent("Fixtures/\(name).mkv") }
+    /// Legacy containers (extended profile, ANM-8). RealMedia can only be opened by the extended build; the others are
+    /// demuxed by every build, but their plan says they need the extended module.
+    static let legacyNames = ["fixture-avi-xvid", "fixture-avi-h264", "fixture-flv", "fixture-realmedia", "fixture-wmv", "fixture-mpeg2", "fixture-ogm", "fixture-avi-audio", "fixture-interlaced-tff", "fixture-interlaced-bff", "fixture-anamorphic"]
+    private static let extensions = ["mkv", "ts", "avi", "flv", "rm", "wmv", "mpg", "ogm"]
+    /// The fixtures whose details this build can read completely: all of them in the extended build. The core build cannot
+    /// open RealMedia, and cannot tell the picture size of Flash video (it is only in the bitstream, so it takes the decoder).
+    static var probeable: [String] {
+        let extended = MediaEngine.availableProfiles.contains(.extended)
+        return names + legacyNames.filter { extended || !["fixture-realmedia", "fixture-flv"].contains($0) }
+    }
+
+    static func url(_ name: String) -> URL {
+        let directory = root.appendingPathComponent("Fixtures")
+        for ext in extensions {
+            let candidate = directory.appendingPathComponent("\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return directory.appendingPathComponent("\(name).mkv")
+    }
     static func data(_ name: String) throws -> Data { try Data(contentsOf: url(name)) }
     static func groundTruth(_ name: String) throws -> [String: Any] {
         let data = try Data(contentsOf: root.appendingPathComponent("Fixtures/ground-truth/\(name).json"))

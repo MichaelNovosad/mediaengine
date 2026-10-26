@@ -74,7 +74,7 @@ make_framework() {
   "$cc" -dynamiclib -target "$target" -isysroot "$sysroot" \
     -install_name "$install_name" -compatibility_version 1.0.0 -current_version "$version" \
     -Wl,-force_load,"$inst/lib/libass.a" -Wl,-force_load,"$inst/lib/libfreetype.a" \
-    -Wl,-force_load,"$inst/lib/libharfbuzz.a" -Wl,-force_load,"$inst/lib/libfribidi.a" \
+    -Wl,-force_load,"$inst/lib/libharfbuzz.a" -Wl,-force_load,"$inst/lib/libfribidi.a" -Wl,-force_load,"$inst/lib/libunibreak.a" \
     -Wl,-exported_symbols_list,"$exports" \
     -framework CoreText -framework CoreFoundation -framework CoreGraphics -lc++ -liconv \
     -o "$content/$FW"

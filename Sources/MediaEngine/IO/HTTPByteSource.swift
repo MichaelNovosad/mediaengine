@@ -51,6 +51,8 @@ public final class HTTPByteSource: ByteSource {
     /// Contacts the server and checks that it supports range requests.
     ///
     /// - Parameters:
+    ///   - url: The address of the file.
+    ///   - headers: Extra request headers, for example an authorization token.
     ///   - configuration: Customize timeouts, caching or authentication.
     ///   - chunkSize: Bytes fetched per request. Larger chunks mean fewer requests.
     ///   - maxCachedChunks: How many chunks stay in memory.

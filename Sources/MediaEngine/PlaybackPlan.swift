@@ -95,7 +95,10 @@ struct DeviceCapabilities: Sendable {
 
     static var current: DeviceCapabilities {
         DeviceCapabilities(
-            hardwareAV1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1),
+            // `MEDIAENGINE_DISABLE_HARDWARE_AV1=1` makes the engine decode AV1 in software on Macs and iPhones that have a
+            // hardware decoder (tests, and a way to compare the two when a picture looks wrong).
+            hardwareAV1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+                && ProcessInfo.processInfo.environment["MEDIAENGINE_DISABLE_HARDWARE_AV1"] == nil,
             availableProfiles: MediaEngine.availableProfiles)
     }
 }
@@ -125,7 +128,16 @@ enum PlaybackPlanner {
             }
         }
 
-        let required = plans.reduce(into: CodecProfile()) { $0.formUnion($1.requiredProfile) }
+        // Legacy containers are grouped with the extended module (RESEARCH.md section 24): the host gates them like its codecs.
+        let containerNeeds = legacyContainerProfile(container, tracks)
+        var required = plans.reduce(into: CodecProfile()) { $0.formUnion($1.requiredProfile) }
+        required.formUnion(containerNeeds)
+        if !containerNeeds.isEmpty, !capabilities.availableProfiles.isSuperset(of: containerNeeds) {
+            let reason = UnavailableReason(code: .needsCodecProfile,
+                                           detail: "\(containerName(container)) files need an optional module that this build does not include.",
+                                           requires: containerNeeds)
+            return PlaybackPlan(path: .unsupported, tracks: plans, requiredProfile: required, blockingReason: reason, notes: notes)
+        }
         let primaryVideo = tracks.first { $0.kind == .video }
         let videoPlan = primaryVideo.flatMap { video in plans.first { $0.trackID == video.id } }
 
@@ -153,6 +165,26 @@ enum PlaybackPlanner {
     }
 
     // MARK: Decisions
+
+    /// AVI, Flash video, RealMedia and ASF, and Ogg with a video track (OGM, Ogg Theora), need the extended module.
+    private static func legacyContainerProfile(_ container: Container, _ tracks: [Track]) -> CodecProfile {
+        switch container.kind {
+        case .avi, .asf, .flv, .realMedia: .extended
+        case .ogg: tracks.contains { $0.kind == .video } ? .extended : []
+        default: []
+        }
+    }
+
+    private static func containerName(_ container: Container) -> String {
+        switch container.kind {
+        case .avi: "AVI"
+        case .asf: "Windows Media (ASF)"
+        case .flv: "Flash video (FLV)"
+        case .realMedia: "RealMedia"
+        case .ogg: "Ogg video (OGM)"
+        default: container.formatName
+        }
+    }
 
     private static func isUnavailable(_ treatment: TrackTreatment) -> Bool {
         if case .unavailable = treatment { true } else { false }
@@ -196,7 +228,7 @@ enum PlaybackPlanner {
         case "prores":
             return Decision(treatment: .passthrough)
         case "vp9", "vp8", "mpeg1video", "mpeg2video", "mpeg4", "msmpeg4v1", "msmpeg4v2", "msmpeg4v3",
-             "wmv1", "wmv2", "theora":
+             "wmv1", "wmv2", "theora", "h263", "h263i", "h263p", "flv1", "vp6", "vp6f", "vp6a", "rv10", "rv20", "rv30", "rv40":
             return Decision(treatment: .software(.extended), needs: .extended)
         case "vc1", "wmv3":
             return unavailable(.pendingLegalClearance, "\(track.codec.displayName) video is held back until its licensing is cleared.")
@@ -207,7 +239,7 @@ enum PlaybackPlanner {
 
     private static func decideAudio(_ track: Track, _ name: String) -> Decision {
         switch name {
-        case "aac", "ac3", "eac3", "alac", "mp3", "mp2":
+        case "aac", "ac3", "eac3", "alac", "mp3":
             return Decision(treatment: .passthrough)
         case "flac":
             return Decision(treatment: .transcodeAudio(.alac))
@@ -219,8 +251,12 @@ enum PlaybackPlanner {
             return Decision(treatment: .transcodeAudio(.alac), needs: .licensedAudio)
         case "truehd", "mlp":
             return Decision(treatment: .transcodeAudio(.alac), needs: .licensedAudio)
-        case "wmav1", "wmav2":
+        // AVPlayer does not play MPEG audio layer II in the engine's HLS stream; the extended build decodes it.
+        case "mp2", "adpcm_ms", "adpcm_ima_wav":
             return Decision(treatment: .transcodeAudio(.alac), needs: .extended)
+        // The conversion works a segment at a time, which these codecs' frames (spanning packets) do not allow yet.
+        case "wmav1", "wmav2", "cook", "ra_144", "ra_288":
+            return unavailable(.unknownCodec, "The audio format \(track.codec.displayName) is not supported by this version.")
         default:
             return unavailable(.unknownCodec, "The audio format \(name) is not supported.")
         }

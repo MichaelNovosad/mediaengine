@@ -16,7 +16,8 @@ struct OverlayChoiceTests {
         #expect(overlay.map(\.title) == session.subtitleChoices.map(\.title) && overlay.count == 2 && overlay.allSatisfy { !$0.isBitmap })
         let multi = try await PlaybackSession(url: Fixture.url("fixture-multi"))
         defer { multi.close() }
-        #expect(multi.subtitleChoices.count == 3 && multi.overlayChoices.isEmpty, "SubRip is plain text: the player shows it")
+        #expect(multi.subtitleChoices.count == 3 && multi.overlayChoices.map(\.title) == multi.subtitleChoices.map(\.title),
+                "SubRip is shown by the player, and the engine can draw it too (the software path has no system subtitles)")
     }
 
     @Test("picture tracks are offered for the overlay only; the player's menu does not list them")
@@ -30,21 +31,21 @@ struct OverlayChoiceTests {
         #expect(overlay[1].language?.languageCode?.identifier == "ja")
     }
 
-    @Test("a track that is not an overlay track is refused")
+    @Test("a track that cannot be drawn (an audio track) is refused")
     func refused() async throws {
         let session = try await PlaybackSession(url: Fixture.url("fixture-multi"))
         defer { session.close() }
-        await #expect(throws: MediaError.self) { _ = try await session.makeSubtitleRenderer(for: session.subtitleChoices[0]) }
+        await #expect(throws: MediaError.self) { _ = try await session.makeSubtitleRenderer(for: session.audioChoices[0]) }
     }
 
-    @Test("external ASS files join the overlay choices, other formats do not")
+    @Test("external subtitle files of every text format join the overlay choices")
     func externalChoices() async throws {
         let session = try await PlaybackSession(url: Fixture.url("fixture-ass-fx"))
         defer { session.close() }
         try session.add(SubtitleTrack(data: Data(assScript(["Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,x"]).utf8), name: "Film.en.ass"))
         try session.add(SubtitleTrack(data: Data("1\n00:00:01,000 --> 00:00:02,000\nplain\n".utf8), name: "Film.de.srt"))
         let overlay = session.overlayChoices
-        #expect(overlay.count == 2 && overlay[1].isExternal && overlay[1].id == ServedTracks.externalSubtitleBase, "\(overlay)")
+        #expect(overlay.count == 3 && overlay[1].isExternal && overlay[1].id == ServedTracks.externalSubtitleBase && overlay[2].isExternal, "\(overlay)")
         #expect(session.subtitleChoices.count == 3, "all three are text for the player")
     }
 }
@@ -278,5 +279,39 @@ struct PlayListOverlayTests {
         // Second half 0-2 s on the shorter timeline: 0.5-1.5; first half 2-4 s: 2.5-3.5.
         let result = try await shown(renderer, [0.2, 1.0, 1.8, 2.2, 3.0, 3.8])
         #expect(result == [false, true, false, false, true, false], "\(result)")
+    }
+}
+
+@Suite("Overlay renderer: SubRip and WebVTT")
+struct TextOverlayTests {
+    @Test("an external SRT file is drawn at the bottom centre, with the cues' times and its delay")
+    func external() async throws {
+        let session = try await PlaybackSession(url: Fixture.url("fixture-basic"))
+        defer { session.close() }
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n<i>Hello</i> & {goodbye}\n\n2\n00:00:03,000 --> 00:00:04,000\nSecond\nline\n"
+        try session.add(SubtitleTrack(data: Data(srt.utf8), name: "Film.en.srt", delay: 0.5))
+        let choice = try #require(session.overlayChoices.first { $0.isExternal })
+        let renderer = try await session.makeSubtitleRenderer(for: choice)
+        defer { renderer.close() }
+        #expect(renderer.frame(at: 1.2, size: size).images.isEmpty, "the delay moves the first cue to 1.5 s")
+        let shown = Shot(renderer.frame(at: 1.8, size: size))
+        let b = try #require(shown.bounds(threshold: 32))
+        #expect(abs((b.minX + b.maxX) / 2 - 320) < 40 && b.minY > 250, "bottom centre: \(b)")
+        #expect(renderer.frame(at: 2.8, size: size).images.isEmpty)
+        let second = Shot(renderer.frame(at: 3.8, size: size))
+        let two = try #require(second.bounds(threshold: 32))
+        #expect(two.maxY - two.minY > b.maxY - b.minY, "two lines are taller than one")
+    }
+
+    @Test("a SubRip track inside the file is drawn with its own times")
+    func embedded() async throws {
+        let session = try await PlaybackSession(url: Fixture.url("fixture-basic"))
+        defer { session.close() }
+        let choice = try #require(session.overlayChoices.first { $0.codec == "SubRip" })
+        let renderer = try await session.makeSubtitleRenderer(for: choice)
+        defer { renderer.close() }
+        try await renderer.prepare(at: 0.5)
+        #expect(!renderer.frame(at: 0.5, size: size).images.isEmpty && renderer.frame(at: 0.1, size: size).images.isEmpty)
+        #expect(!renderer.frame(at: 2.0, size: size).images.isEmpty && renderer.frame(at: 1.5, size: size).images.isEmpty, "between the cues")
     }
 }

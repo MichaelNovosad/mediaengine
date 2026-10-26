@@ -1,0 +1,86 @@
+[
+  {
+    "id": "ffmpeg",
+    "lock": "ffmpeg",
+    "name": "FFmpeg (libavutil, libavcodec, libavformat, libswresample)",
+    "usedFor": "Reading containers and decoding audio and video.",
+    "license": "LGPL-2.1-or-later",
+    "licenseFile": "COPYING.LGPLv2.1",
+    "copyright": "Copyright (c) the FFmpeg developers (see the CREDITS file in the source archive)",
+    "notice": "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project. The libraries are linked dynamically (FFmpegLGPL.framework) and may be replaced by your own build.",
+    "replaceable": true,
+    "profile": "core"
+  },
+  {
+    "id": "dav1d",
+    "lock": "dav1d",
+    "name": "dav1d",
+    "usedFor": "AV1 video decoding in software (extended build only).",
+    "license": "BSD-2-Clause",
+    "licenseFile": "COPYING",
+    "copyright": "Copyright © 2018-2025, VideoLAN and dav1d authors",
+    "notice": null,
+    "replaceable": false,
+    "profile": "extended"
+  },
+  {
+    "id": "libass",
+    "lock": "libass",
+    "name": "libass",
+    "usedFor": "Drawing ASS/SSA subtitles.",
+    "license": "ISC",
+    "licenseFile": "COPYING",
+    "copyright": "Copyright © 2006-2016 libass contributors",
+    "notice": null,
+    "replaceable": false,
+    "profile": "core"
+  },
+  {
+    "id": "freetype",
+    "lock": "freetype",
+    "name": "FreeType",
+    "usedFor": "Rasterising subtitle fonts.",
+    "license": "FTL",
+    "licenseFile": "docs/FTL.TXT",
+    "copyright": "Copyright © 1996-2026 The FreeType Project (www.freetype.org). All rights reserved.",
+    "notice": "Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved.",
+    "replaceable": false,
+    "profile": "core"
+  },
+  {
+    "id": "harfbuzz",
+    "lock": "harfbuzz",
+    "name": "HarfBuzz",
+    "usedFor": "Shaping subtitle text.",
+    "license": "MIT",
+    "licenseFile": "COPYING",
+    "copyright": "Copyright © the HarfBuzz authors",
+    "notice": null,
+    "replaceable": false,
+    "profile": "core"
+  },
+  {
+    "id": "fribidi",
+    "lock": "fribidi",
+    "name": "GNU FriBidi",
+    "usedFor": "Bidirectional text in subtitles.",
+    "license": "LGPL-2.1-or-later",
+    "licenseFile": "COPYING",
+    "copyright": "Copyright © the FriBidi authors",
+    "notice": "FriBidi is linked into LibASS.framework (a dynamic framework); you may replace that framework with your own build of these libraries (same exported ass_* API).",
+    "replaceable": true,
+    "profile": "core"
+  },
+  {
+    "id": "libunibreak",
+    "lock": "libunibreak",
+    "name": "libunibreak",
+    "usedFor": "Finding where subtitle lines may break (Unicode line breaking), so Japanese, Chinese and Korean subtitles wrap.",
+    "license": "Zlib",
+    "licenseFile": "LICENCE",
+    "copyright": "Copyright (C) Wu Yongwei, Tom Hacohen, Petr Filipsky and Andreas Röver",
+    "notice": null,
+    "replaceable": false,
+    "profile": "core"
+  }
+]

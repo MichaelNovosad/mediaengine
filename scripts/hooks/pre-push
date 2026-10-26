@@ -1,9 +1,10 @@
 #!/bin/bash
-# Runs scripts/verify.sh --quick (about 2 minutes) before anything leaves the machine.
+# Runs scripts/check.sh (build with zero warnings and the unit tests, under a minute, background priority, silent) before anything
+# leaves the machine. The heavier checks (scripts/verify.sh) are run on request, not on every push.
 # Skip with MEDIAENGINE_SKIP_HOOKS=1 git push ...
 [ "${MEDIAENGINE_SKIP_HOOKS:-}" = 1 ] && exit 0
 cd "$(git rev-parse --show-toplevel)" || exit 1
 mkdir -p build
-echo "pre-push: scripts/verify.sh --quick"
-scripts/verify.sh --quick >/dev/null 2>build/prepush.err || { tail -30 build/prepush.err >&2; echo "pre-push: verify --quick failed" >&2; exit 1; }
+echo "pre-push: scripts/check.sh"
+scripts/check.sh >/dev/null 2>build/prepush.err || { tail -30 build/prepush.err >&2; echo "pre-push: check failed" >&2; exit 1; }
 exit 0

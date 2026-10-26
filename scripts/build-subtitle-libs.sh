@@ -3,14 +3,14 @@
 # usage: scripts/build-subtitle-libs.sh <slice>
 #   slices: macos ios ios-simulator xros xros-simulator   (all arm64)
 # Everything goes to build/install/subs-<slice>; scripts/package-subtitle-xcframework.sh links it into LibASS.framework.
-# Licences: libass ISC, FreeType under the FreeType License (FTL option), HarfBuzz MIT, FriBidi LGPL-2.1 (it stays in a
+# Licences: libass ISC, FreeType under the FreeType License (FTL option), HarfBuzz MIT, libunibreak zlib, FriBidi LGPL-2.1 (it stays in a
 # dynamic framework, so it can be replaced). No GPL component is involved.
 # Out-of-tree: nothing is built inside the downloaded source directories.
 source "$(dirname "$0")/lib/common.sh"
 
 slice="${1:?usage: build-subtitle-libs.sh <slice>}"
-ft_v="$(lock_field freetype 2)"; hb_v="$(lock_field harfbuzz 2)"; fb_v="$(lock_field fribidi 2)"; as_v="$(lock_field libass 2)"
-for d in freetype-$ft_v harfbuzz-$hb_v fribidi-$fb_v libass-$as_v; do
+ft_v="$(lock_field freetype 2)"; hb_v="$(lock_field harfbuzz 2)"; fb_v="$(lock_field fribidi 2)"; as_v="$(lock_field libass 2)"; ub_v="$(lock_field libunibreak 2)"
+for d in freetype-$ft_v harfbuzz-$hb_v fribidi-$fb_v libass-$as_v libunibreak-$ub_v; do
   [ -d "$BUILD/src/$d" ] || die "source $d missing; run scripts/fetch-sources.sh first"
 done
 
@@ -67,18 +67,29 @@ run "fribidi make" make.log make -j"$(jobs_count)" -C gen.tab
 run "fribidi make lib" make-lib.log make -j"$(jobs_count)" -C lib
 run "fribidi install" install.log make -C lib install
 
-# 4. libass: CoreText font provider, no Fontconfig, no assembly (it would need nasm), no libunibreak.
+# 4. libunibreak (zlib licence): where a line may break (Unicode UAX #14). Without it libass wraps only at spaces, so a long
+# Japanese, Chinese or Korean line would never wrap and run off the picture.
+log "libunibreak $ub_v for $tag"
+mkdir -p "$work/libunibreak"; cd "$work/libunibreak"
+run "libunibreak configure" configure.log "$BUILD/src/libunibreak-$ub_v/configure" --prefix="$prefix" --host="$host" --build="$build_triple" \
+  --enable-static --disable-shared --with-pic CC="$cc" CFLAGS="$cflags" LDFLAGS="$ldflags"
+run "libunibreak make" make.log make -j"$(jobs_count)"
+run "libunibreak install" install.log make install
+
+# 5. libass: CoreText font provider, no Fontconfig, no assembly (it would need nasm), line breaking by libunibreak.
 log "libass $as_v for $tag"
 mkdir -p "$work/libass"; cd "$work/libass"
 run "libass configure" configure.log "$BUILD/src/libass-$as_v/configure" --prefix="$prefix" --host="$host" --build="$build_triple" \
-  --enable-static --disable-shared --with-pic --disable-fontconfig --enable-coretext --disable-libunibreak --disable-asm \
+  --enable-static --disable-shared --with-pic --disable-fontconfig --enable-coretext --enable-libunibreak --disable-asm \
   --disable-require-system-font-provider --disable-test --disable-compare --disable-profile --disable-fuzz \
   CC="$cc" CFLAGS="$cflags" LDFLAGS="$ldflags" \
   FREETYPE_CFLAGS="-I$prefix/include/freetype2" FREETYPE_LIBS="-L$prefix/lib -lfreetype" \
   FRIBIDI_CFLAGS="-I$prefix/include/fribidi" FRIBIDI_LIBS="-L$prefix/lib -lfribidi" \
-  HARFBUZZ_CFLAGS="-I$prefix/include/harfbuzz" HARFBUZZ_LIBS="-L$prefix/lib -lharfbuzz -lc++"
+  HARFBUZZ_CFLAGS="-I$prefix/include/harfbuzz" HARFBUZZ_LIBS="-L$prefix/lib -lharfbuzz -lc++" \
+  LIBUNIBREAK_CFLAGS="-I$prefix/include" LIBUNIBREAK_LIBS="-L$prefix/lib -lunibreak"
 run "libass make" make.log make -j"$(jobs_count)"
 run "libass install" install.log make install
+grep -q 'define CONFIG_UNIBREAK 1' config.h || die "libass was configured without libunibreak ($work/libass/config.h)"
 grep -q 'define CONFIG_CORETEXT 1' config.h || die "libass was configured without the CoreText font provider ($work/libass/config.h)"
 
 # Notices travel with the binaries.
@@ -87,4 +98,5 @@ cp "$BUILD/src/libass-$as_v/COPYING" "$prefix/licenses/libass-ISC.txt"
 cp "$BUILD/src/freetype-$ft_v/docs/FTL.TXT" "$prefix/licenses/freetype-FTL.txt"
 cp "$BUILD/src/harfbuzz-$hb_v/COPYING" "$prefix/licenses/harfbuzz-MIT.txt"
 cp "$BUILD/src/fribidi-$fb_v/COPYING" "$prefix/licenses/fribidi-LGPL-2.1.txt"
+cp "$BUILD/src/libunibreak-$ub_v/LICENCE" "$prefix/licenses/libunibreak-zlib.txt"
 log "built $tag → $prefix"

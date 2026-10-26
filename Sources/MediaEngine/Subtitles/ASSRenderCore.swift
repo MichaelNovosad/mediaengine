@@ -87,6 +87,7 @@ final class ASSRenderCore {
         }
         // The engine removes repeated blocks itself (see ASSBackend): ReadOrder numbers restart in every file of a play list.
         ass_set_check_readorder(track, 0)
+        enableUnicodeLineBreaking(track)
         self.track = track
         cache = nil
         return true
@@ -100,9 +101,16 @@ final class ASSRenderCore {
             return ass_read_memory(library, base, raw.count, nil)
         }
         guard let track else { return false }
+        enableUnicodeLineBreaking(track)
         self.track = track
         cache = nil
         return true
+    }
+
+    /// Lines may break where Unicode allows (libunibreak): without it libass breaks only at spaces and a long Japanese,
+    /// Chinese or Korean line never wraps. Latin text wraps at the same places either way.
+    private func enableUnicodeLineBreaking(_ track: UnsafeMutablePointer<ASS_Track>) {
+        _ = ass_track_set_feature(track, ASS_FEATURE_WRAP_UNICODE, 1)
     }
 
     /// One Matroska block (`ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text`).

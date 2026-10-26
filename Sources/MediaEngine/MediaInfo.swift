@@ -22,6 +22,10 @@ public struct MediaInfo: Sendable, Equatable, Codable {
     public var segmentUID: String?
     /// The play list of a file with an ordered edition (see ``OrderedChapters``), `nil` for ordinary files.
     public var orderedChapters: OrderedChapters?
+    /// The file is shorter than its header says: a download that was cut off, or a copy that stopped half way. ``duration``
+    /// is what the header claims, not what is there; playback ends where the data does. Show it to the person ("the file
+    /// is incomplete") instead of a duration that will not be reached. Detected for Matroska and WebM.
+    public var isIncomplete: Bool = false
 
     public var videoTracks: [Track] { tracks.filter { $0.kind == .video } }
     public var audioTracks: [Track] { tracks.filter { $0.kind == .audio } }
@@ -33,7 +37,7 @@ public struct MediaInfo: Sendable, Equatable, Codable {
 /// The container format of a file.
 public struct Container: Sendable, Equatable, Codable {
     public enum Kind: String, Sendable, Codable {
-        case matroska, webm, mp4, mpegTS, mpegPS, avi, asf, flv, ogg, wav, flac, mp3, aac, ac3, eac3, other
+        case matroska, webm, mp4, mpegTS, mpegPS, avi, asf, flv, realMedia, ogg, wav, flac, mp3, aac, ac3, eac3, other
     }
 
     public var kind: Kind

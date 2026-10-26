@@ -47,6 +47,7 @@ extension PlaybackSession {
         let linked = state.withLock { $0.linkedSources }
         let streamIndex = track.id
         let isBitmap = track.subtitle?.format == .bitmap
+        let codecName = track.codec.name
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(with: Result {
@@ -65,15 +66,22 @@ extension PlaybackSession {
                             throw MediaError.unsupported(detail: "no decoder for this picture subtitle format")
                         }
                         backend = bitmap
-                    } else {
+                    } else if ["ass", "ssa"].contains(codecName) {
                         let extradata = source.parameters(streamIndex).pointee
                         let header = extradata.extradata.map { Data(bytes: $0, count: Int(extradata.extradata_size)) } ?? Data()
                         guard let ass = ASSBackend(header: header, fonts: fonts, videoSize: videoSize) else {
                             throw MediaError.engine(detail: "libass could not read the script header")
                         }
                         backend = ass
+                    } else {
+                        // SubRip, WebVTT and Timed Text: drawn in a plain default style through the same renderer.
+                        guard let ass = ASSBackend(header: Data(CueScript.header.utf8), fonts: fonts, videoSize: videoSize) else {
+                            throw MediaError.engine(detail: "libass could not start")
+                        }
+                        backend = ass
                     }
-                    let loader = OverlayEventLoader(source: source, stream: streamIndex, anchor: anchor, marker: marker, cancellation: cancellation)
+                    var loader: any OverlayEventSource = OverlayEventLoader(source: source, stream: streamIndex, anchor: anchor, marker: marker, cancellation: cancellation)
+                    if !isBitmap, !["ass", "ssa"].contains(codecName) { loader = CueScriptEventSource(base: loader, codec: codecName) }
                     return SubtitleRenderer(backend: backend, loader: loader, cancellation: cancellation, offset: shift)
                 })
             }
@@ -81,6 +89,9 @@ extension PlaybackSession {
     }
 
     // MARK: Internals
+
+    /// Text formats the overlay can draw: ASS/SSA with their own styling, the others in a plain default style.
+    static let overlayTextCodecs: Set<String> = ["ass", "ssa", "subrip", "srt", "webvtt", "mov_text", "text"]
 
     private func overlayTracks() -> (tracks: [Track], titles: [Int: String], served: ServedTracks) {
         let served = ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: externalAudio)
@@ -91,7 +102,7 @@ extension PlaybackSession {
                 let index = track.id - ServedTracks.externalSubtitleBase
                 return files.indices.contains(index) && files[index].assScript != nil
             }
-            return ["ass", "ssa"].contains(track.codec.name)
+            return Self.overlayTextCodecs.contains(track.codec.name)
         }
         let bitmaps = info.subtitleTracks.filter { $0.subtitle?.format == .bitmap && treatments[$0.id] == .bitmapOverlay }
         // Names are made unique over the text tracks the player lists plus the picture tracks, so a track has the same

@@ -33,6 +33,14 @@ python3 -I "$ROOT/scripts/gen-config.py" report "$@" > "$prefix/LICENSE-REPORT.m
 cross=""
 if [ "$slice" != "macos" ]; then cross="--enable-cross-compile"; fi
 
+# Profiles that enable libdav1d link the dav1d built by scripts/build-dav1d.sh (found through pkg-config, nothing else).
+if grep -qx -e '--enable-libdav1d' "$flags_file"; then
+  dav1d="$BUILD/install/dav1d-$slice"
+  [ -f "$dav1d/lib/libdav1d.a" ] || die "dav1d missing for $slice (run scripts/build-dav1d.sh $slice)"
+  export PKG_CONFIG_LIBDIR="$dav1d/lib/pkgconfig" PKG_CONFIG_PATH=""
+  cross="$cross --pkg-config-flags=--static"
+fi
+
 log "configure ffmpeg $version for $tag"
 cd "$work"
 # shellcheck disable=SC2046

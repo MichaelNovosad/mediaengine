@@ -4,7 +4,7 @@ import Testing
 @testable import MediaEngine
 
 /// Decodes packets with FFmpeg and returns 32-bit interleaved samples (planar or packed input, any bit depth).
-private func decodeToS32(_ parameters: UnsafePointer<AVCodecParameters>, packets: [MediaPacket]) throws -> (samples: [Int32], channels: Int) {
+func decodeToS32(_ parameters: UnsafePointer<AVCodecParameters>, packets: [MediaPacket]) throws -> (samples: [Int32], channels: Int) {
     let codec = try #require(avcodec_find_decoder(parameters.pointee.codec_id))
     let created = try #require(avcodec_alloc_context3(codec))
     var context: UnsafeMutablePointer<AVCodecContext>? = created
@@ -62,7 +62,7 @@ private func decodeToS32(_ parameters: UnsafePointer<AVCodecParameters>, packets
     return (samples, channels)
 }
 
-private func allPackets(_ name: String, stream: Int) throws -> (reader: PacketReader, packets: [MediaPacket]) {
+func allPackets(_ name: String, stream: Int) throws -> (reader: PacketReader, packets: [MediaPacket]) {
     let reader = try PacketReader(source: FileByteSource(url: Fixture.url(name)), cancellation: CancellationFlag())
     var packets: [MediaPacket] = []
     while let packet = try reader.next() { if packet.stream == stream { packets.append(packet) } }

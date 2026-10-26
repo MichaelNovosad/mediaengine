@@ -38,9 +38,12 @@ struct SecurityTests {
         #expect(names.contains("matroska,webm") && names.contains("mov,mp4,m4a,3gp,3g2,mj2"))
     }
 
-    @Test("no decoders for patent-pooled codecs are present in the core build")
+    @Test("no decoders for patent-pooled codecs are present: never in any build for H.264, HEVC, AAC, AC-3, VC-1, DTS, TrueHD; MPEG-2 only in the extended one")
     func noPooledDecoders() {
-        for id in [AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_AAC, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3, AV_CODEC_ID_MPEG2VIDEO, AV_CODEC_ID_VC1, AV_CODEC_ID_DTS, AV_CODEC_ID_TRUEHD] {
+        let extended = MediaEngine.availableProfiles.contains(.extended)
+        var never: [AVCodecID] = [AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_AAC, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3, AV_CODEC_ID_VC1, AV_CODEC_ID_DTS, AV_CODEC_ID_TRUEHD]
+        if !extended { never.append(AV_CODEC_ID_MPEG2VIDEO) }          // expired, and part of the extended profile
+        for id in never {
             #expect(avcodec_find_decoder(id) == nil, "decoder present for \(String(cString: avcodec_get_name(id)))")
         }
         for id in [AV_CODEC_ID_FLAC, AV_CODEC_ID_VORBIS, AV_CODEC_ID_OPUS] {

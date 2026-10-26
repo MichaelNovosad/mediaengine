@@ -8,7 +8,7 @@ extension PlaybackSession {
     public var audioChoices: [TrackChoice] { served.choices().audio }
 
     /// The text subtitle tracks the player can show: the ones inside the file in file order, then the files added with
-    /// ``add(_:)``.
+    /// ``add(_:)-(SubtitleTrack)``.
     public var subtitleChoices: [TrackChoice] { served.choices().subtitles }
 
     private var served: ServedTracks { ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: externalAudio) }

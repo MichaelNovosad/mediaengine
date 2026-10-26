@@ -40,6 +40,18 @@ enum MatroskaChapters {
         var editions: [MatroskaEdition]
     }
 
+    /// Where the segment says it ends (the offset after its last byte), or `nil` when its size is not stated (live recordings)
+    /// or the header cannot be read. A file shorter than that is a download that was cut off.
+    static func declaredEnd(of source: any ByteSource) -> Int64? {
+        let reader = EBMLReader(source: source)
+        guard let ebml = reader.header(at: 0), ebml.id == ID.ebml, let ebmlSize = ebml.size else { return nil }
+        let segmentOffset = Int64(ebml.headerLength).addingReportingOverflow(ebmlSize)
+        guard !segmentOffset.overflow, let segment = reader.header(at: segmentOffset.partialValue), segment.id == ID.segment,
+              let size = segment.size else { return nil }
+        let end = segmentOffset.partialValue.addingReportingOverflow(Int64(segment.headerLength)).partialValue.addingReportingOverflow(size)
+        return end.overflow ? nil : end.partialValue
+    }
+
     /// The segment identifier and the chapter editions of a Matroska file, or `nil` if the structure cannot be read.
     static func read(from source: any ByteSource) -> Result? {
         let reader = EBMLReader(source: source)

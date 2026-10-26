@@ -37,3 +37,16 @@ libass, FreeType, HarfBuzz and FriBidi are a second binary, `build/LibASS.xcfram
 - Never build with `-fvisibility=hidden`: the framework's export list (`_ass_*`) then matches nothing. Only libass's `ass_*` leaves the framework; `scripts/check-licenses.sh` checks that, the linked libraries and the four licence texts.
 - Licences: libass ISC, FreeType under the FTL (an app must show the credit line in `third_party/NOTICES.md`), HarfBuzz MIT, FriBidi LGPL-2.1 (the framework is dynamic so it can be replaced).
 - The host `ffmpeg` also has the `sup`, `vobsub`, `mpegps` demuxers, the `dvdsub`, `pgssub`, `dvbsub` decoders and the `dvdsub`, `dvbsub` encoders, for the picture-subtitle fixtures (`scripts/make-bitmap-subs.py`; give `-copyts` when muxing a `.sup`).
+
+## Variants (extended profile)
+
+- The extended variant is a second FFmpeg binary with the same module name: `scripts/build-ffmpeg.sh <slice> core extended` for each slice (the five can run in parallel), then `scripts/package-xcframework.sh core+extended` makes `build/FFmpegLGPL-extended.xcframework`. `scripts/build-all.sh` does both variants. `Package.swift` picks it with `MEDIAENGINE_PROFILE=extended`; give it its own scratch path (`swift test --scratch-path .build-extended`) so the two variants do not rebuild each other. `scripts/verify.sh` tests it automatically.
+- What is in a profile is data (`profiles/*.json`: demuxers, parsers, decoders, `codecStatus`). Containers that need no codec licence (AVI, FLV, ASF, MPEG ES) are demuxed by core; the plan, not the binary, says they need the extended module (`PlaybackPlanner.legacyContainerProfile`).
+- A new fixture of a legacy format needs its muxer and encoder in `profiles/host-tools.json` (rebuild with `scripts/build-host-tools.sh`); a demuxer missing from a profile makes FFmpeg's raw audio demuxers misread the file as audio (see `LegacyContainer`).
+
+## dav1d, libunibreak and the extended variant (E4.3, 2026-10-26)
+
+- dav1d (AV1, BSD-2-Clause) is pinned in `sources.lock` with the VideoLAN signature (key fingerprint `65F7C6B4206BD057A7EB73787180713BE58D1ADC`; the keyserver download is the full key, the videolan.org one was truncated). `scripts/build-dav1d.sh <slice>` builds it (meson, static) into `build/install/dav1d-<slice>`; it must exist before `scripts/build-ffmpeg.sh <slice> core extended`, which finds it through `PKG_CONFIG_LIBDIR`; `scripts/package-xcframework.sh core+extended` links it in and puts its licence into the framework. Order: `build-dav1d.sh` for five slices, `build-ffmpeg.sh <slice> core extended` for five slices, `package-xcframework.sh core+extended`, then `check-licenses.sh`. `build-all.sh` does it all.
+- libunibreak (zlib, SHA-256 pin only) is built by `scripts/build-subtitle-libs.sh` before libass and linked into `LibASS.framework`; libass only uses it when `ass_track_set_feature(ASS_FEATURE_WRAP_UNICODE)` is on (`ASSRenderCore` does that).
+- After changing a pin or a profile: `python3 -I scripts/gen-acknowledgements.py` and `python3 -I scripts/gen-patent-profiles.py`, then `scripts/check-source-pack.sh`.
+- Host tools: the GPL-gated filters `interlace` and `tinterlace` cannot be built (`--disable-gpl`); interlaced test files are made with `scale` + `weave` (see `scripts/make-fixtures.sh`). IVF demuxer/muxer and the VP8 parser are in for the conformance vectors.

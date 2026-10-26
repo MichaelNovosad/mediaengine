@@ -4,8 +4,12 @@ import PackageDescription
 // Local development manifest: the FFmpeg framework is the artifact built by scripts/package-xcframework.sh.
 // Release manifests point `FFmpegLGPL` at a versioned, checksummed download instead.
 // MEDIAENGINE_SANITIZED_FFMPEG=1 swaps in the AddressSanitizer-instrumented macOS framework (scripts/check-sanitized.sh).
+// MEDIAENGINE_PROFILE=extended builds against the variant that also contains the legacy containers and software decoders
+// (scripts/package-xcframework.sh core+extended); the default is the core binary. Release manifests do the same per product.
+let profile = Context.environment["MEDIAENGINE_PROFILE"] ?? "core"
 let ffmpegFramework = Context.environment["MEDIAENGINE_SANITIZED_FFMPEG"] == "1"
-    ? "build/FFmpegLGPL-address.xcframework" : "build/FFmpegLGPL.xcframework"
+    ? "build/FFmpegLGPL-address.xcframework"
+    : (profile == "core" ? "build/FFmpegLGPL.xcframework" : "build/FFmpegLGPL-\(profile).xcframework")
 
 let package = Package(
     name: "MediaEngine",

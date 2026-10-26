@@ -1,0 +1,16 @@
+{
+  "MacBookPro18,2 / Apple M1 Max / 34359738368": {
+    "metrics": {
+      "AVPlayer seek to playing (median)": 385.2,
+      "AVPlayer time to playing": 549.0,
+      "first requests": 4.8,
+      "memory growth": 64.0,
+      "probe": 17.0,
+      "seek video segment (median)": 4.4,
+      "sequential per segment (median)": 4.3,
+      "session plan": 2.7
+    },
+    "note": "synthetic 2-minute 1080p file, see scripts/bench.sh",
+    "runs": 3
+  }
+}

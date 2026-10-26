@@ -30,7 +30,11 @@ run_sanitizer() { # <name> <sanitize flag> <scratch dir> <patience>
 }
 
 if [ "$mode" = address ] || [ "$mode" = all ]; then
-  if [ "$rebuild" = "--rebuild" ] || [ ! -d "$BUILD/FFmpegLGPL-address.xcframework" ]; then
+  # The instrumented FFmpeg is a build product: it is rebuilt when missing, on --rebuild, and when the core profile or the
+  # build scripts are newer than it (a stale one lacks new demuxers and decoders and fails the tests for the wrong reason).
+  if [ "$rebuild" = "--rebuild" ] || [ ! -d "$BUILD/FFmpegLGPL-address.xcframework" ] \
+     || [ "$ROOT/profiles/core.json" -nt "$BUILD/FFmpegLGPL-address.xcframework" ] \
+     || [ "$ROOT/scripts/build-ffmpeg.sh" -nt "$BUILD/FFmpegLGPL-address.xcframework" ]; then
     FFMPEG_SANITIZE=address ./scripts/build-ffmpeg.sh macos core
     FFMPEG_SANITIZE=address ./scripts/package-xcframework.sh core
   fi

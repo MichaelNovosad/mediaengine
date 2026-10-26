@@ -2,33 +2,164 @@
   "name": "core",
   "description": "Demuxing, remuxing, probing, royalty-free or expired audio, subtitle decoding. No software decoders for patent-pooled video or audio codecs: Apple's decoders play H.264, HEVC, AAC, AC-3 and E-AC-3.",
   "ffmpeg": {
-    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
-    "demuxers": ["matroska", "mov", "mpegts", "mpegps", "avi", "asf", "flv", "ogg", "wav", "flac", "mp3", "aac", "ac3", "eac3", "truehd", "dts", "srt", "ass", "webvtt"],
-    "muxers": ["mp4", "mov", "webvtt", "null"],
-    "parsers": ["h264", "hevc", "av1", "aac", "aac_latm", "ac3", "flac", "mpegaudio", "opus", "vorbis", "vp9", "mpeg4video", "mpegvideo", "dca", "mlp"],
-    "bsfs": ["aac_adtstoasc", "extract_extradata", "null"],
-    "decoders": ["flac", "vorbis", "opus", "mp3float", "alac", "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be", "pcm_f32le", "pcm_f32be", "pcm_u8", "pcm_bluray", "pcm_dvd", "subrip", "ass", "ssa", "webvtt", "mov_text", "dvdsub", "pgssub", "dvbsub"],
-    "encoders": ["alac", "aac_at", "webvtt", "mov_text"],
+    "libraries": [
+      "avutil",
+      "avcodec",
+      "avformat",
+      "swresample"
+    ],
+    "demuxers": [
+      "matroska",
+      "mov",
+      "mpegts",
+      "mpegps",
+      "avi",
+      "asf",
+      "flv",
+      "ogg",
+      "wav",
+      "flac",
+      "mp3",
+      "aac",
+      "ac3",
+      "eac3",
+      "truehd",
+      "dts",
+      "srt",
+      "ass",
+      "webvtt",
+      "mpegvideo"
+    ],
+    "muxers": [
+      "mp4",
+      "mov",
+      "webvtt",
+      "null"
+    ],
+    "parsers": [
+      "h264",
+      "hevc",
+      "av1",
+      "aac",
+      "aac_latm",
+      "ac3",
+      "flac",
+      "mpegaudio",
+      "opus",
+      "vorbis",
+      "vp9",
+      "mpeg4video",
+      "mpegvideo",
+      "dca",
+      "mlp"
+    ],
+    "bsfs": [
+      "aac_adtstoasc",
+      "extract_extradata",
+      "null"
+    ],
+    "decoders": [
+      "flac",
+      "vorbis",
+      "opus",
+      "mp3float",
+      "alac",
+      "pcm_s16le",
+      "pcm_s16be",
+      "pcm_s24le",
+      "pcm_s24be",
+      "pcm_s32le",
+      "pcm_s32be",
+      "pcm_f32le",
+      "pcm_f32be",
+      "pcm_u8",
+      "pcm_bluray",
+      "pcm_dvd",
+      "subrip",
+      "ass",
+      "ssa",
+      "webvtt",
+      "mov_text",
+      "dvdsub",
+      "pgssub",
+      "dvbsub"
+    ],
+    "encoders": [
+      "alac",
+      "aac_at",
+      "webvtt",
+      "mov_text"
+    ],
     "protocols": [],
-    "extra": ["--enable-audiotoolbox", "--enable-zlib", "--enable-bzlib"]
+    "extra": [
+      "--enable-audiotoolbox",
+      "--enable-zlib",
+      "--enable-bzlib"
+    ]
   },
   "components": [
-    {"name": "FFmpeg", "license": "LGPL-2.1-or-later", "note": "built without --enable-gpl and --enable-nonfree; dynamically linked"}
+    {
+      "name": "FFmpeg",
+      "license": "LGPL-2.1-or-later",
+      "note": "built without --enable-gpl and --enable-nonfree; dynamically linked"
+    }
   ],
   "codecStatus": {
-    "flac": {"status": "royalty-free", "note": "open format"},
-    "vorbis": {"status": "royalty-free", "note": "open format"},
-    "opus": {"status": "royalty-free", "note": "open format; pool claims reported, see RESEARCH.md"},
-    "mp3": {"status": "expired", "note": "patents reported expired in 2017"},
-    "alac": {"status": "open", "note": "Apple open-sourced under Apache-2.0"},
-    "pcm": {"status": "no-patents", "note": ""},
-    "aac_at": {"status": "apple-licensed", "note": "encoding done by Apple's AudioToolbox (not used by the remuxer yet)"},
-    "alac_enc": {"status": "open", "note": "native ALAC encoder; Apple released ALAC under Apache-2.0 with a patent grant"},
-    "h264": {"status": "apple-decoder", "note": "no software decoder shipped; AVPlayer decodes. Parser only."},
-    "hevc": {"status": "apple-decoder", "note": "no software decoder shipped; AVPlayer decodes. Parser only."},
-    "ac3": {"status": "apple-decoder", "note": "no software decoder shipped; AVPlayer decodes."},
-    "eac3": {"status": "apple-decoder", "note": "no software decoder shipped; AVPlayer decodes."},
-    "aac": {"status": "apple-decoder", "note": "no software decoder shipped; AVPlayer decodes."},
-    "subtitles": {"status": "n/a", "note": "text and bitmap subtitle decoders"}
+    "flac": {
+      "status": "royalty-free",
+      "note": "open format"
+    },
+    "vorbis": {
+      "status": "royalty-free",
+      "note": "open format"
+    },
+    "opus": {
+      "status": "royalty-free",
+      "note": "open format; pool claims reported, see RESEARCH.md"
+    },
+    "mp3": {
+      "status": "expired",
+      "note": "patents reported expired in 2017"
+    },
+    "alac": {
+      "status": "open",
+      "note": "Apple open-sourced under Apache-2.0"
+    },
+    "pcm": {
+      "status": "no-patents",
+      "note": ""
+    },
+    "aac_at": {
+      "status": "apple-licensed",
+      "note": "encoding done by Apple's AudioToolbox (not used by the remuxer yet)"
+    },
+    "alac_enc": {
+      "status": "open",
+      "note": "native ALAC encoder; Apple released ALAC under Apache-2.0 with a patent grant"
+    },
+    "h264": {
+      "status": "apple-decoder",
+      "note": "no software decoder shipped; AVPlayer decodes. Parser only."
+    },
+    "hevc": {
+      "status": "apple-decoder",
+      "note": "no software decoder shipped; AVPlayer decodes. Parser only."
+    },
+    "ac3": {
+      "status": "apple-decoder",
+      "note": "no software decoder shipped; AVPlayer decodes."
+    },
+    "eac3": {
+      "status": "apple-decoder",
+      "note": "no software decoder shipped; AVPlayer decodes."
+    },
+    "aac": {
+      "status": "apple-decoder",
+      "note": "no software decoder shipped; AVPlayer decodes."
+    },
+    "subtitles": {
+      "status": "n/a",
+      "note": "text and bitmap subtitle decoders"
+    }
   }
 }

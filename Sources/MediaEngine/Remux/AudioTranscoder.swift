@@ -11,7 +11,7 @@ import Foundation
 final class AudioTranscoder: @unchecked Sendable {
     /// Codecs whose decoder keeps no state between packets, so a segment can be decoded from its first packet.
     static func canTranscodeStatelessly(_ codecName: String) -> Bool {
-        codecName == "flac" || codecName.hasPrefix("pcm_")
+        codecName == "flac" || codecName.hasPrefix("pcm_") || codecName == "adpcm_ms" || codecName == "adpcm_ima_wav"
     }
 
     /// Seconds of audio that must be decoded (and thrown away) before a segment so the decoder is in the right
@@ -20,6 +20,8 @@ final class AudioTranscoder: @unchecked Sendable {
         switch codecName {
         case "opus": 0.5        // measured: 0.2 s still left differences of up to -82 dBFS for about 0.35 s
         case "vorbis": 0.2      // one overlapping window; sample-exact after this (tested)
+        // Legacy audio of the extended profile (MPEG audio layer II: one frame of filter-bank history).
+        case "mp2": 0.1
         default: 0
         }
     }

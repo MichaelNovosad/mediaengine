@@ -34,9 +34,13 @@ public struct SubtitleTrack: Sendable, Equatable {
 
     /// Reads and parses a subtitle file.
     /// - Parameters:
-    ///   - encoding: The text encoding, when detection gets it wrong.
+    ///   - url: The subtitle file (SubRip, WebVTT, ASS or SSA; picture subtitle files are not read here).
     ///   - language: Overrides the language taken from the file name.
     ///   - title: Overrides the name made from the language.
+    ///   - encoding: The text encoding, when detection gets it wrong.
+    ///   - delay: Seconds to shift every cue by (positive: later).
+    ///   - forced: Marks the track as forced (or not); `nil` reads it from the file name.
+    ///   - hearingImpaired: Marks the track as for the deaf and hard of hearing (or not); `nil` reads it from the file name.
     public init(url: URL, language: Locale.Language? = nil, title: String? = nil, encoding: TextEncoding? = nil,
                 delay: TimeInterval = 0, forced: Bool? = nil, hearingImpaired: Bool? = nil) async throws {
         let data = try await Self.read(url)
@@ -67,7 +71,8 @@ public struct SubtitleTrack: Sendable, Equatable {
         self.encoding = used
         self.format = ["subRip": "SubRip", "webVTT": "WebVTT", "ass": "ASS"][parsed.format.rawValue] ?? parsed.format.rawValue
         self.cues = parsed.cues
-        self.assScript = self.format == "ASS" ? Data(text.utf8) : nil
+        // The overlay renderer draws every text format; the cues of the others become a plain ASS script.
+        self.assScript = self.format == "ASS" ? Data(text.utf8) : Data(CueScript.script(cues: parsed.cues).utf8)
     }
 
     /// The cues with the delay applied; cues that end before the start are dropped, the rest start no earlier than 0.

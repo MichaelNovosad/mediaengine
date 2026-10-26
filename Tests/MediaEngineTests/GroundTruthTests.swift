@@ -25,7 +25,7 @@ struct GroundTruthTests {
         return 8
     }
 
-    @Test("every fixture matches ffprobe", arguments: Fixture.names)
+    @Test("every fixture matches ffprobe", arguments: Fixture.probeable)
     func matches(name: String) async throws {
         let truth = try Fixture.groundTruth(name)
         let info = try await Fixture.probe(name)

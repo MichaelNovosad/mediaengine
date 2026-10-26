@@ -30,3 +30,9 @@ Pipeline: `PacketReader` (FFmpeg demux) -> `RemuxSession` (segment plan from key
 - Raw ADTS AAC has no timestamps and no durations without a decoder; `PacketReader` numbers the frames itself.
 - `AVPlayerItem.externalMetadata` lives in AVKit and crashes ("unrecognized selector") if AVKit is not loaded; chapter markers for the system player are tvOS-only (RESEARCH.md section 19).
 - AVFoundation's audio menu shows language names, not track titles (E3 item for same-language tracks).
+
+## Streams that are not stored the MP4 way (found 2026-10-26)
+
+- CoreMedia -19602 on the first segment of an MPEG-TS or AVI file with H.264: the samples are still in Annex B form. `PacketReader` converts them (`AnnexB.swift`) and puts the parameter sets into the codec parameters at open; AAC with ADTS headers is handled there too. If a new container fails the same way, check `extradata` (avcC/hvcC start with byte 1) and the first bytes of a packet (`00 00 01` = Annex B).
+- A file that starts at 1.4 s instead of 0: the reader takes `format.start_time` off every timestamp (`originTicks`); look there before touching the session's shift.
+- FFmpeg's parser may overwrite `sample_rate`/`ch_layout` of codec parameters while packets are read; read parameters through `PacketReader.parameters(_:)`.

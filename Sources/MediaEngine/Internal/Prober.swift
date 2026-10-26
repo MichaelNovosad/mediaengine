@@ -8,7 +8,13 @@ enum Prober {
     static func probe(source: any ByteSource, cancellation: CancellationFlag,
                       capabilities: DeviceCapabilities = .current) throws -> MediaInfo {
         let docType = sniffMatroskaDocType(source)
+        // A legacy container this build has no demuxer for must be recognised before FFmpeg is asked: its raw audio
+        // demuxers (AC-3, MP3, AAC) would otherwise "find" the audio stream inside the file and report a bogus audio file.
+        if let name = LegacyContainer.name(of: source) {
+            throw MediaError.unsupported(detail: "\(name) files need the extended module, which this build does not include.")
+        }
         let context = try FormatContext.open(source: source, cancellation: cancellation)
+        fillADTSParameters(context.format)
         return build(context.format, source: source, docType: docType, capabilities: capabilities)
     }
 
@@ -61,7 +67,7 @@ enum Prober {
                 track.video = details
             case .audio:
                 track.codec = codecInfo(par: par, extra: nil)
-                track.audio = audioInfo(par: par, codecName: track.codec.name)
+                track.audio = audioInfo(par: par, codecName: track.codec.name, container: container.kind)
             case .subtitle:
                 track.codec = codecInfo(par: par, extra: nil)
                 let bitmap = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"].contains(track.codec.name)
@@ -95,11 +101,17 @@ enum Prober {
                 plan.notes.append("This file plays parts of \(ordered.segments.count) other file(s); they are looked for next to it.")
             }
         }
+        var incomplete = false
+        if container.isMatroskaFamily, let length = source.length, let end = MatroskaChapters.declaredEnd(of: source), end > length {
+            incomplete = true
+            let percent = max(0, min(99, Int(Double(length) / Double(end) * 100)))
+            plan.notes.append("This file is incomplete: about \(percent) % of it is there. The duration shown is the one its header claims.")
+        }
         return MediaInfo(
             container: container, duration: duration, title: tags["title"], tags: tags,
             bitrate: format.pointee.bit_rate > 0 ? format.pointee.bit_rate : nil,
             fileSize: source.length, tracks: tracks, chapters: chapters, attachments: attachments,
-            playbackPlan: plan, segmentUID: segmentUID, orderedChapters: ordered)
+            playbackPlan: plan, segmentUID: segmentUID, orderedChapters: ordered, isIncomplete: incomplete)
     }
 
     private static func containerKind(_ name: String, docType: String?) -> Container.Kind {
@@ -111,6 +123,7 @@ enum Prober {
         case "avi": return .avi
         case "asf": return .asf
         case "flv": return .flv
+        case "rm": return .realMedia
         case "ogg": return .ogg
         case "wav": return .wav
         case "flac": return .flac
@@ -151,7 +164,10 @@ enum Prober {
         "h264": "H.264", "hevc": "HEVC", "av1": "AV1", "vp9": "VP9", "vp8": "VP8", "mpeg1video": "MPEG-1",
         "mpeg2video": "MPEG-2", "mpeg4": "MPEG-4 Part 2", "msmpeg4v1": "MS MPEG-4 v1", "msmpeg4v2": "MS MPEG-4 v2",
         "msmpeg4v3": "MS MPEG-4 v3", "vc1": "VC-1", "wmv1": "WMV 7", "wmv2": "WMV 8", "wmv3": "WMV 9",
-        "theora": "Theora", "prores": "ProRes", "mjpeg": "Motion JPEG",
+        "theora": "Theora", "prores": "ProRes", "mjpeg": "Motion JPEG", "flv1": "Sorenson Spark", "h263": "H.263",
+        "h263p": "H.263+", "h263i": "H.263", "vp6": "VP6", "vp6f": "VP6 (Flash)", "rv10": "RealVideo 1.0", "rv20": "RealVideo 2.0",
+        "rv30": "RealVideo 3.0", "rv40": "RealVideo 4.0", "cook": "RealAudio Cook", "ra_144": "RealAudio 1.0", "ra_288": "RealAudio 2.0",
+        "adpcm_ms": "MS ADPCM", "adpcm_ima_wav": "IMA ADPCM",
         "aac": "AAC", "ac3": "AC-3", "eac3": "E-AC-3", "dts": "DTS", "truehd": "Dolby TrueHD", "mlp": "MLP",
         "flac": "FLAC", "alac": "Apple Lossless", "opus": "Opus", "vorbis": "Vorbis", "mp3": "MP3", "mp2": "MP2",
         "wmav1": "WMA", "wmav2": "WMA",
@@ -256,8 +272,55 @@ enum Prober {
         return ((clockwise % 360) + 360) % 360
     }
 
-    private static func audioInfo(par: UnsafeMutablePointer<AVCodecParameters>, codecName: String) -> AudioDetails {
+    /// AAC in MPEG-TS carries ADTS headers and no configuration record, and with no AAC decoder compiled in FFmpeg does
+    /// not read the sample rate and channel count from them. The first frame of each such stream says it.
+    private static func fillADTSParameters(_ format: UnsafeMutablePointer<AVFormatContext>) {
+        var pending = Set<Int>()
+        for index in 0..<Int(format.pointee.nb_streams) {
+            guard let par = format.pointee.streams[index]?.pointee.codecpar, par.pointee.codec_id == AV_CODEC_ID_AAC,
+                  par.pointee.sample_rate == 0 || par.pointee.ch_layout.nb_channels == 0 else { continue }
+            pending.insert(index)
+        }
+        guard !pending.isEmpty, let packet = av_packet_alloc() else { return }
+        defer { var pointer: UnsafeMutablePointer<AVPacket>? = packet; av_packet_free(&pointer) }
+        let rates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+        var scanned = 0
+        while !pending.isEmpty, scanned < 300, av_read_frame(format, packet) >= 0 {
+            defer { av_packet_unref(packet) }
+            scanned += 1
+            let index = Int(packet.pointee.stream_index)
+            guard pending.contains(index), packet.pointee.size >= 7, let bytes = packet.pointee.data,
+                  bytes[0] == 0xFF, bytes[1] & 0xF0 == 0xF0, let par = format.pointee.streams[index]?.pointee.codecpar else { continue }
+            let rate = Int((bytes[2] >> 2) & 0x0F)
+            let configuration = Int(((bytes[2] & 0x01) << 2) | (bytes[3] >> 6))
+            let channels = [0, 1, 2, 3, 4, 5, 6, 8][min(configuration, 7)]
+            guard rate < rates.count, channels > 0 else { continue }
+            par.pointee.sample_rate = Int32(rates[rate])
+            av_channel_layout_default(&par.pointee.ch_layout, Int32(channels))
+            pending.remove(index)
+        }
+    }
+
+    /// Sample rate and channel count from an AAC AudioSpecificConfig. FLV tags always claim 44.1 kHz stereo for AAC; the
+    /// configuration in the stream header is the truth (and no AAC decoder is compiled in to find it out).
+    private static func aacConfiguration(_ par: UnsafeMutablePointer<AVCodecParameters>) -> (sampleRate: Int, channels: Int)? {
+        guard par.pointee.extradata_size >= 2, let data = par.pointee.extradata else { return nil }
+        let rates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+        let objectType = Int(data[0] >> 3)
+        let index = Int(((data[0] & 7) << 1) | (data[1] >> 7))
+        guard objectType != 31, index < rates.count else { return nil }
+        let channelConfiguration = Int((data[1] >> 3) & 0xF)
+        let channels = [0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 8][channelConfiguration] ?? 0
+        return channels > 0 ? (rates[index], channels) : nil
+    }
+
+    private static func audioInfo(par: UnsafeMutablePointer<AVCodecParameters>, codecName: String, container: Container.Kind) -> AudioDetails {
         var layout = par.pointee.ch_layout
+        var sampleRate = Int(par.pointee.sample_rate)
+        if container == .flv, codecName == "aac", let configuration = aacConfiguration(par) {
+            sampleRate = configuration.sampleRate
+            av_channel_layout_default(&layout, Int32(configuration.channels))
+        }
         if layout.order == AV_CHANNEL_ORDER_UNSPEC, layout.nb_channels > 0 {
             // Without a decoder FFmpeg cannot name the layout; use the standard one for this channel count.
             av_channel_layout_default(&layout, layout.nb_channels)
@@ -272,8 +335,8 @@ enum Prober {
         let objectBased = (codecName == "eac3" && profile == AV_PROFILE_EAC3_DDP_ATMOS)
             || (codecName == "truehd" && profile == AV_PROFILE_TRUEHD_ATMOS)
         return AudioDetails(
-            channels: Int(par.pointee.ch_layout.nb_channels), channelLayout: description,
-            sampleRate: par.pointee.sample_rate > 0 ? Int(par.pointee.sample_rate) : nil,
+            channels: Int(layout.nb_channels), channelLayout: description,
+            sampleRate: sampleRate > 0 ? sampleRate : nil,
             bitDepth: depth > 0 ? Int(depth) : nil, isLossless: lossless, isObjectBased: objectBased)
     }
 

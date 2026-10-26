@@ -31,7 +31,12 @@
       "ffmetadata",
       "sup",
       "vobsub",
-      "mpegps"
+      "mpegps",
+      "flv",
+      "rm",
+      "asf",
+      "mpegvideo",
+      "ivf"
     ],
     "muxers": [
       "matroska",
@@ -50,7 +55,13 @@
       "null",
       "ac3",
       "eac3",
-      "adts"
+      "adts",
+      "flv",
+      "rm",
+      "asf",
+      "mpeg1system",
+      "ogg",
+      "ivf"
     ],
     "parsers": [
       "h264",
@@ -65,7 +76,9 @@
       "vorbis",
       "vp9",
       "mpeg4video",
-      "mpegvideo"
+      "mpegvideo",
+      "h263",
+      "vp8"
     ],
     "bsfs": [
       "aac_adtstoasc",
@@ -93,7 +106,14 @@
       "hevc",
       "dvdsub",
       "pgssub",
-      "dvbsub"
+      "dvbsub",
+      "mpeg4",
+      "mpeg2video",
+      "flv",
+      "rv20",
+      "wmv2",
+      "mp2",
+      "vp9"
     ],
     "encoders": [
       "h264_videotoolbox",
@@ -116,7 +136,17 @@
       "webvtt",
       "mov_text",
       "dvdsub",
-      "dvbsub"
+      "dvbsub",
+      "mpeg2video",
+      "mpeg1video",
+      "flv",
+      "rv20",
+      "wmv2",
+      "msmpeg4v3",
+      "mp2",
+      "adpcm_ms",
+      "wmav2",
+      "h263"
     ],
     "protocols": [
       "file",
@@ -147,7 +177,11 @@
       "interlace",
       "tinterlace",
       "fieldorder",
-      "pad"
+      "pad",
+      "weave",
+      "separatefields",
+      "telecine",
+      "setfield"
     ],
     "extra": [
       "--enable-videotoolbox",

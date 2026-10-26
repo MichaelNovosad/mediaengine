@@ -261,15 +261,6 @@ struct ExternalSubtitlePlayerTests {
         }
     }
 
-    private func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while ContinuousClock.now < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(40))
-        }
-        return condition()
-    }
-
     @Test("a Windows-1251 Russian file is detected, offered, selected and shown on time, with a delay")
     func shows() async throws {
         let session = try await PlaybackSession(url: Fixture.url("fixture-hevc"))

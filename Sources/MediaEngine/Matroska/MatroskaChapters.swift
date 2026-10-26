@@ -60,7 +60,10 @@ enum MatroskaChapters {
                     for field in reader.children(from: entry.offset + Int64(entry.header.headerLength), size: entrySize) {
                         let at = field.offset + Int64(field.header.headerLength), length = Int(field.header.size ?? 0)
                         if field.header.id == ID.seekID, let raw = reader.bytes(at: at, count: length) { target = raw.reduce(UInt32(0)) { $0 << 8 | UInt32($1) } }
-                        if field.header.id == ID.seekPosition, let value = reader.uint(at: at, size: length) { position = dataStart + Int64(value) }
+                        if field.header.id == ID.seekPosition, let value = reader.uint(at: at, size: length) {
+                            // The value comes from the file: it can be any 64-bit number.
+                            if let relative = Int64(exactly: value), case let (sum, overflow) = dataStart.addingReportingOverflow(relative), !overflow { position = sum }
+                        }
                     }
                     if let target, let position, positions[target] == nil { positions[target] = position }
                 }

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Runs the quick check (scripts/check.sh, about 15 s) when the commit touches code, tests, scripts or fixtures.
+# Skip with MEDIAENGINE_SKIP_HOOKS=1 git commit ... (documentation-only commits skip it on their own).
+[ "${MEDIAENGINE_SKIP_HOOKS:-}" = 1 ] && exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 1
+mkdir -p build
+if git diff --cached --name-only | grep -E '^(Sources|Tests|scripts|profiles|Fixtures)/|^Package\.swift$|^third_party/sources\.lock$' >/dev/null; then
+  echo "pre-commit: scripts/check.sh"
+  scripts/check.sh >/dev/null 2>build/precommit.err || { cat build/precommit.err >&2; echo "pre-commit: scripts/check.sh failed; fix it or commit with MEDIAENGINE_SKIP_HOOKS=1" >&2; exit 1; }
+fi
+exit 0

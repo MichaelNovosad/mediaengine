@@ -30,17 +30,32 @@ struct EBMLTests {
         #expect(EBMLReader(source: DataByteSource(Data([1, 2, 3]))).uint(at: 0, size: 0) == nil)
     }
 
-    @Test("unreadable or damaged files never crash the reader")
-    func damaged() throws {
-        let data = try Fixture.data("fixture-ordered")
+    @Test("unreadable or damaged files never crash the reader", arguments: ["fixture-ordered", "fixture-linked-opening", "fixture-basic", "fixture-anime"])
+    func damaged(name: String) throws {
+        let data = try Fixture.data(name)
         for cut in stride(from: 0, to: data.count, by: 997) { _ = MatroskaChapters.read(from: DataByteSource(data.prefix(cut))) }
-        var generator = SystemRandomNumberGenerator()
-        for _ in 0..<200 {
+        // The structure lives in the first few kilobytes: damage that area a lot, with a fixed seed.
+        var generator = SplitMix64(state: 7)
+        for _ in 0..<4_000 {
             var copy = data
-            for _ in 0..<8 { copy[Int.random(in: 0..<2_000, using: &generator)] = UInt8.random(in: 0...255, using: &generator) }
+            for _ in 0..<Int.random(in: 1...12, using: &generator) {
+                copy[Int.random(in: 0..<min(4_000, data.count), using: &generator)] = UInt8.random(in: 0...255, using: &generator)
+            }
             _ = MatroskaChapters.read(from: DataByteSource(copy))
         }
         #expect(MatroskaChapters.read(from: DataByteSource(Data("not matroska".utf8))) == nil)
+    }
+
+    @Test("numbers that cannot be positions or sizes in a SeekHead and elsewhere do not trap", arguments: [UInt64.max, UInt64(Int64.max), UInt64(Int64.max) + 1, 1 << 62, 1 << 56])
+    func hugeNumbers(value: UInt64) {
+        let ebml = element([0x1A, 0x45, 0xDF, 0xA3], [])
+        let big = (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64(56 - 8 * $0)) }
+        let seek = element([0x4D, 0xBB], element([0x53, 0xAB], [0x15, 0x49, 0xA9, 0x66]) + element([0x53, 0xAC], big))
+        let seekHead = element([0x11, 0x4D, 0x9B, 0x74], seek + seek)
+        for payload in [seekHead, seekHead + seekHead] {
+            let file = Data(ebml + [0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF] + payload)     // unknown segment size
+            _ = MatroskaChapters.read(from: DataByteSource(file))
+        }
     }
 
     /// An element: identifier, a one-byte size and the payload.

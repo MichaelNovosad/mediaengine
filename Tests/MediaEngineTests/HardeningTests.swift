@@ -5,18 +5,6 @@ import Synchronization
 import Testing
 @testable import MediaEngine
 
-/// Small, deterministic pseudo-random generator so a failing mutation can be reproduced from its seed.
-private struct SplitMix64: RandomNumberGenerator {
-    var state: UInt64
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
-
 /// Everything a player would ask of a damaged file: probe, open a session, fetch every playlist and segment.
 /// The only acceptable outcomes are results or errors, never a crash or a hang.
 @discardableResult

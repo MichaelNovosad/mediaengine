@@ -123,15 +123,6 @@ struct TrackPreferenceTests {
 @MainActor
 @Suite("Track selection in AVPlayer", .serialized)
 struct TrackSelectionTests {
-    private func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while ContinuousClock.now < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(40))
-        }
-        return condition()
-    }
-
     private func open() async throws -> (PlaybackSession, AVPlayerItem, AVPlayer) {
         let session = try await PlaybackSession(url: Fixture.url("fixture-multi"))
         let item = try await session.makePlayerItem()

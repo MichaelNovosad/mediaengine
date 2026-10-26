@@ -8,4 +8,4 @@ DerivedData/
 xcuserdata/
 TestMedia/
 Config/Local.xcconfig
-.build-sanitized/
+.build-*/

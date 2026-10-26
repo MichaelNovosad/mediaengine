@@ -9,9 +9,11 @@ Status: milestones E0 to E3 are done (an MKV plays through AVPlayer with tracks,
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 scripts/build-all.sh      # fetch + verify sources, build 5 slices, package build/FFmpegLGPL.xcframework and build/LibASS.xcframework (about 4 minutes)
-scripts/verify.sh         # license check + tests on macOS, iPhone, iPad, iPhone Duo, visionOS simulators
-scripts/verify.sh --quick # macOS only
-scripts/check-sanitized.sh # whole suite under AddressSanitizer with an instrumented FFmpeg (builds it once, about 2 minutes)
+scripts/check.sh          # the quick loop: build with zero warnings + unit tests (about 15 s)
+scripts/verify.sh --quick # sources, licenses, API hygiene, ground truth, all macOS test passes (about 2 minutes)
+scripts/verify.sh         # + package traits and the iPhone, iPad, iPhone Duo and visionOS simulators (about 4 minutes)
+scripts/verify.sh --deep  # + AddressSanitizer (instrumented FFmpeg), ThreadSanitizer and UBSan (about 10 minutes)
+scripts/install-hooks.sh  # git hooks: quick check on commit, verify --quick on push
 MEDIAENGINE_BENCH_FILE=/path/movie.mkv swift test --filter BenchmarkTests   # open time, seeks, memory, A/V continuity on a real file
 MEDIAENGINE_EXCLUSIVE=1 swift test --filter ExclusiveTests                  # timing, leak and CPU checks that need the process to themselves
 ```

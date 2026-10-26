@@ -181,15 +181,6 @@ struct PlaybackSessionTests {
 @MainActor
 @Suite("AVPlayer end to end", .serialized)
 struct AVPlayerEndToEndTests {
-    private func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while ContinuousClock.now < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(40))
-        }
-        return condition()
-    }
-
     @Test("plays, seeks and finishes", arguments: [("fixture-basic", 640, 360), ("fixture-hevc", 640, 360), ("fixture-hlg", 640, 360)])
     func plays(name: String, width: Int, height: Int) async throws {
         try await verifyPlayback(name: name, width: width, height: height)

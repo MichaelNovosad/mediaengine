@@ -42,8 +42,9 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 
 ## Working rules
 
-- Run the verify script before reporting done, tick the acceptance boxes with evidence, and list what is unverified.
+- Run `scripts/check.sh` after every change (about 15 s), `scripts/verify.sh --quick` before reporting a step done, `scripts/verify.sh` before a commit and `scripts/verify.sh --deep` (sanitizers) when memory, threads or C interop changed; tick the acceptance boxes with evidence and list what is unverified. The git hooks (`scripts/install-hooks.sh`) run the quick check on commit and `verify --quick` on push. Details: skill `engine-verify`.
 - Hardware-only items are tagged `[device]`; write a short device test script for the owner. visionOS items stay `[sim]` until someone with a headset tests.
+- **Work only inside this project folder** (owner, 2026-10-26): no system changes, no installs, no git configuration, nothing written outside the folder (temporary files and logs go to `build/`, which is git-ignored, never to `/tmp` or a scratchpad), no memory notes, no edits to the PlayerApp project or any other folder, unless the owner asks for it.
 - Ask the owner before: installing tools, downloading simulator runtimes, spending money, touching Apple accounts, publishing anything.
 - Anything legal (EULA, patents, selling) is a draft for a lawyer, never a conclusion.
 

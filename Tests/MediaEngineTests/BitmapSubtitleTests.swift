@@ -83,9 +83,14 @@ struct BitmapSubtitleTests {
 
     @Test("damaged picture blocks do not crash the decoder", arguments: [2, 3, 4])
     func damaged(stream: Int) throws {
+        // Many rounds with a fixed seed: the same damage every run, so a crash can be reproduced.
+        for round in 0..<60 { try damage(stream: stream, seed: UInt64(round) &* 31 &+ UInt64(stream)) }
+    }
+
+    private func damage(stream: Int, seed: UInt64) throws {
         let reader = try PacketReader(source: FileByteSource(url: Fixture.url("fixture-bitmap")), cancellation: CancellationFlag())
         let backend = try #require(BitmapBackend(parameters: reader.parameters(stream), videoSize: size))
-        var generator = SystemRandomNumberGenerator()
+        var generator = SplitMix64(state: seed)
         var events: [OverlayEvent] = []
         while let packet = try reader.next() {
             guard packet.stream == stream else { continue }

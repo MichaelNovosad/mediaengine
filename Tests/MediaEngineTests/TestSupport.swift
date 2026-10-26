@@ -4,6 +4,42 @@ import Synchronization
 import Testing
 @testable import MediaEngine
 
+/// AddressSanitizer keeps freed memory in quarantine, so footprints are meaningless under it.
+let underAddressSanitizer = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "__asan_init") != nil
+let underThreadSanitizer = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "__tsan_init") != nil
+
+/// How much longer than on a plain build the tests that play in real time may wait. Sanitizers slow the engine down by
+/// a factor of three or more; `scripts/` set `MEDIAENGINE_TEST_PATIENCE` for them, and the sanitizers are detected as a
+/// fallback. The waits state what must happen, not how fast, so scaling them loses nothing.
+let testPatience: Double = {
+    if let text = ProcessInfo.processInfo.environment["MEDIAENGINE_TEST_PATIENCE"], let value = Double(text), value > 0 { return value }
+    return underAddressSanitizer || underThreadSanitizer ? 4 : 1
+}()
+
+/// Polls `condition` every 40 ms until it holds or `seconds` (times the patience factor) have passed.
+func waitUntil(_ seconds: Double, isolation: isolated (any Actor)? = #isolation, _ condition: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(seconds * testPatience)
+    while ContinuousClock.now < deadline {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(40))
+    }
+    return condition()
+}
+
+/// Small, deterministic pseudo-random generator, so a failing mutation can be reproduced from its seed. Fuzz tests use
+/// this and never the system generator: a crash that depends on luck cannot be fixed or kept fixed.
+struct SplitMix64: RandomNumberGenerator {
+    var state: UInt64
+    init(state: UInt64) { self.state = state }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
 enum Fixture {
     /// Repository root, found from this file's location (works for macOS and simulator runs alike).
     static let root = URL(fileURLWithPath: #filePath)

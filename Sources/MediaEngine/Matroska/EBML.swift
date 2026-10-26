@@ -66,11 +66,15 @@ struct EBMLReader {
     func children(from start: Int64, size: Int64?, limit: Int = 10_000, until stop: Int64? = nil) -> [(header: EBMLHeader, offset: Int64)] {
         var result: [(EBMLHeader, Int64)] = []
         var offset = start
-        let end = size.map { start + $0 } ?? stop ?? source.length ?? Int64.max
+        let end = size.map { start.addingReportingOverflow($0).partialValue } ?? stop ?? source.length ?? Int64.max
         while offset < end, result.count < limit, let header = header(at: offset) {
             result.append((header, offset))
             guard let childSize = header.size else { break }            // unknown size: cannot skip it
-            offset += Int64(header.headerLength) + childSize
+            // Sizes come from the file and add up over thousands of elements: never let the sum wrap or trap.
+            let step = Int64(header.headerLength).addingReportingOverflow(childSize)
+            let next = offset.addingReportingOverflow(step.partialValue)
+            if step.overflow || next.overflow || next.partialValue <= offset { break }
+            offset = next.partialValue
         }
         return result
     }

@@ -230,15 +230,6 @@ struct ExternalAudioPlaybackTests {
         // (AVAssetReader on the bare file does not show the 7 s gap; the fragment's own timestamps do, see `delay` above.)
     }
 
-    private func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while ContinuousClock.now < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(40))
-        }
-        return condition()
-    }
-
     @Test("AVPlayer can switch to the external audio and plays on")
     func switching() async throws {
         let session = try await PlaybackSession(url: Fixture.url("fixture-opus-vorbis"))

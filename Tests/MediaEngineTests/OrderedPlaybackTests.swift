@@ -250,16 +250,6 @@ struct PlayListSessionTests {
 #if os(macOS)
 @Suite("Play lists in AVPlayer", .serialized)
 struct PlayListPlaybackTests {
-    /// These tests check that playback works, not how fast: the bounds are generous so a sanitizer run with the whole suite in parallel passes.
-    private func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while ContinuousClock.now < deadline {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(40))
-        }
-        return condition()
-    }
-
     private func play(_ session: PlaybackSession, duration expected: Double, seeks: [Double]) async throws {
         defer { session.close() }
         let item = try await session.makePlayerItem()

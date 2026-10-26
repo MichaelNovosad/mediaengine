@@ -1,0 +1,9 @@
+#!/bin/bash
+# Runs scripts/verify.sh --quick (about 2 minutes) before anything leaves the machine.
+# Skip with MEDIAENGINE_SKIP_HOOKS=1 git push ...
+[ "${MEDIAENGINE_SKIP_HOOKS:-}" = 1 ] && exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 1
+mkdir -p build
+echo "pre-push: scripts/verify.sh --quick"
+scripts/verify.sh --quick >/dev/null 2>build/prepush.err || { tail -30 build/prepush.err >&2; echo "pre-push: verify --quick failed" >&2; exit 1; }
+exit 0

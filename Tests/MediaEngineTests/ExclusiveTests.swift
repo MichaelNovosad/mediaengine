@@ -16,9 +16,6 @@ private func openDescriptors() -> Int { (try? FileManager.default.contentsOfDire
 
 private let exclusive = ProcessInfo.processInfo.environment["MEDIAENGINE_EXCLUSIVE"] == "1"
 
-/// AddressSanitizer keeps freed memory in quarantine, so footprints are meaningless under it.
-private let underAddressSanitizer = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "__asan_init") != nil
-
 private func cpuSeconds() -> Double {
     var usage = rusage()
     getrusage(RUSAGE_SELF, &usage)

@@ -105,7 +105,10 @@ public final class AVPlayerController: PlaybackController {
 
     @ObservationIgnored private var ticker: Task<Void, Never>?
     @ObservationIgnored private var overlay: SubtitleRenderer?
+    /// 0 while the person has paused, otherwise the speed that is playing.
     @ObservationIgnored private var wantedRate: Float = 1
+    /// The speed chosen with `setRate` (0.5 to 2), applied whenever playback starts.
+    @ObservationIgnored private var speed: Float = 1
 
     init(session: PlaybackSession, item: AVPlayerItem, path: PlaybackPath) {
         self.session = session
@@ -143,9 +146,9 @@ public final class AVPlayerController: PlaybackController {
     public func play() {
         guard state != .failed else { return }
         if state == .ended { Task { await seek(to: 0); play() }; return }
-        wantedRate = max(wantedRate, 0.5)
-        player.rate = wantedRate == 0 ? 1 : wantedRate
-        wantedRate = player.rate
+        // The speed the person chose (1 unless `setRate` said otherwise), also after a pause: `wantedRate` is 0 while paused.
+        wantedRate = speed
+        player.rate = speed
         state = .playing
     }
 
@@ -157,8 +160,8 @@ public final class AVPlayerController: PlaybackController {
 
     public func setRate(_ rate: Float) {
         if rate == 0 { pause(); return }
-        wantedRate = min(max(rate, 0.5), 2)
-        if state == .playing { player.rate = wantedRate }
+        speed = min(max(rate, 0.5), 2)
+        if state == .playing { wantedRate = speed; player.rate = speed }
     }
 
     public func seek(to time: TimeInterval) async {

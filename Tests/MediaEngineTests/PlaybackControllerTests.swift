@@ -174,6 +174,33 @@ struct SoftwareControllerPlaybackTests {
         #expect(updates >= 1, "the time stream gives the time")
     }
 
+    @Test("playing again after a pause goes on at the chosen speed, not at half speed")
+    func resumeKeepsSpeed() async throws {
+        let session = try await PlaybackSession(url: Fixture.url("fixture-basic"))
+        let made = try await session.makeController()
+        made.isMuted = true
+        let player = try #require(made as? AVPlayerController)
+        defer { player.close() }
+        #expect(await waitUntil(10) { player.state == .ready })
+        player.play()
+        #expect(player.player.rate == 1)
+        player.pause()
+        player.play()
+        #expect(player.player.rate == 1, "resumed at \(player.player.rate)")
+        player.setRate(1.5)
+        #expect(player.player.rate == 1.5)
+        player.pause()
+        #expect(player.player.rate == 0)
+        player.play()
+        #expect(player.player.rate == 1.5, "the chosen speed is kept over a pause: \(player.player.rate)")
+        player.setRate(1)
+        player.pause()
+        player.setRate(2)
+        #expect(player.player.rate == 0, "choosing a speed while paused does not start playing")
+        player.play()
+        #expect(player.player.rate == 2)
+    }
+
     @Test("a file that cannot be played gives no controller")
     func unsupported() async throws {
         let session = try await PlaybackSession(url: Fixture.url("fixture-licensed-audio"))

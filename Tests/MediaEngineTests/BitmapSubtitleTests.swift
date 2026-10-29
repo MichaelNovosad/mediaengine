@@ -11,7 +11,7 @@ private let size = CGSize(width: 640, height: 360)
 struct BitmapSubtitleTests {
     private func renderer(_ track: String) async throws -> (PlaybackSession, SubtitleRenderer) {
         let session = try await PlaybackSession(url: Fixture.url("fixture-bitmap"))
-        let choice = try #require(session.overlayChoices.first { $0.title == track })
+        let choice = try #require(session.overlayChoices.first { $0.title.hasPrefix(track) })
         return (session, try await session.makeSubtitleRenderer(for: choice))
     }
 

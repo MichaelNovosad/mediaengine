@@ -19,20 +19,20 @@ struct TrackChoiceTests {
         }
         let titles = ServedTracks.titles(for: [track(1, "Main", "en"), track(2, "Main", "en"), track(3, "Main", "en"), track(4, nil, "ja"),
                                                track(5, nil, "ja"), track(6, "  ", nil), track(7, "Commentary", "en")], fallback: "Audio")
-        #expect(titles[1] == "Main" && titles[2] == "Main (2)" && titles[3] == "Main (3)")
+        #expect(titles[1] == "Main - [English]" && titles[2] == "Main (2) - [English]" && titles[3] == "Main (3) - [English]")
         #expect(titles[4] == Locale.current.localizedString(forIdentifier: "ja") && titles[5] == "\(titles[4]!) (2)")
-        #expect(titles[6] == "Audio 6" && titles[7] == "Commentary")
+        #expect(titles[6] == "Audio 6" && titles[7] == "Commentary - [English]")
         #expect(Set(titles.values).count == titles.count)
     }
 
     @Test("the multi-track fixture lists what the player can play, with flags and unique names")
     func fixture() async throws {
         let (audio, subtitles) = try await choices("fixture-multi")
-        #expect(audio.map(\.id) == [1, 2, 3, 4] && audio.map(\.title) == ["Main", "Director commentary", "Japanese", "Main (2)"])
+        #expect(audio.map(\.id) == [1, 2, 3, 4] && audio.map(\.title) == ["Main - [English]", "Director commentary - [English]", "Japanese", "Main (2) - [English]"])
         #expect(audio.map { $0.language?.languageCode?.identifier } == ["en", "en", "ja", "en"])
         #expect(audio.map(\.isDefault) == [true, false, false, false] && audio.map(\.isCommentary) == [false, true, false, false])
         #expect(audio.allSatisfy { $0.kind == .audio && $0.codec == "AAC" })
-        #expect(subtitles.map(\.id) == [5, 6, 7] && subtitles.map(\.title) == ["English", "English SDH", "Signs"])
+        #expect(subtitles.map(\.id) == [5, 6, 7] && subtitles.map(\.title) == ["English", "English SDH", "Signs - [Japanese]"])
         #expect(subtitles.map(\.isHearingImpaired) == [false, true, false] && subtitles.map(\.isForced) == [false, false, true])
         #expect(subtitles.allSatisfy { $0.kind == .subtitle && $0.codec == "SubRip" })
     }
@@ -173,7 +173,7 @@ struct TrackSelectionTests {
         #expect(await session.selectedChoice(of: .audio, on: item)?.title == "Japanese")
         #expect(await session.selectedChoice(of: .subtitle, on: item)?.title == "English")
         try await session.apply(TrackPreferences(audioLanguages: ["en"], subtitles: .off), to: item)
-        #expect(await session.selectedChoice(of: .audio, on: item)?.title == "Main")
+        #expect(await session.selectedChoice(of: .audio, on: item)?.title == "Main - [English]")
         #expect(await session.selectedChoice(of: .subtitle, on: item) == nil)
     }
 

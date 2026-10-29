@@ -14,7 +14,8 @@ public struct TrackChoice: Sendable, Equatable, Hashable, Identifiable, Codable 
     public var id: Int
     public var kind: Kind
     /// The name to show: the track's own title, else its language, made unique among the choices of its kind
-    /// ("Commentary", "Commentary (2)").
+    /// ("Commentary", "Commentary (2)"), and followed by the language when the title does not say it
+    /// ("LostFilm - [Russian]"). The system player's own menus show the same name.
     public var title: String
     public var language: Locale.Language?
     /// Name of the codec, for example "FLAC" or "ASS".
@@ -143,7 +144,8 @@ struct ServedTracks {
         }
     }
 
-    /// Names that are unique among the given tracks (an HLS requirement and what selection relies on).
+    /// Names that are unique among the given tracks (an HLS requirement and what selection relies on), each with its language after it
+    /// when the name does not say it ("LostFilm - [Russian]"): the system's own menus show these names too.
     static func titles(for tracks: [Track], fallback: String) -> [Int: String] {
         var seen: [String: Int] = [:]
         var result: [Int: String] = [:]
@@ -154,7 +156,15 @@ struct ServedTracks {
                 ?? "\(fallback) \(track.id)"
             let count = (seen[base] ?? 0) + 1
             seen[base] = count
-            result[track.id] = count == 1 ? base : "\(base) (\(count))"
+            result[track.id] = TrackTitle.withLanguage(count == 1 ? base : "\(base) (\(count))", language: track.language)
+        }
+        // Two different names can end up the same once the language is added; the second gets a number, as before.
+        var used: [String: Int] = [:]
+        for track in tracks {
+            guard let name = result[track.id] else { continue }
+            let count = (used[name] ?? 0) + 1
+            used[name] = count
+            if count > 1 { result[track.id] = "\(name) (\(count))" }
         }
         return result
     }

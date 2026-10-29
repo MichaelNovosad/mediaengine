@@ -56,7 +56,7 @@ struct ExternalAudioSessionTests {
         try session.add(await AudioTrack(url: audioURL("ext-opus.mka")))
         let audio = session.audioChoices
         #expect(audio.count == 6 && audio.prefix(4).allSatisfy { !$0.isExternal } && audio.suffix(2).allSatisfy(\.isExternal))
-        #expect(audio.suffix(2).map(\.id) == [20_000, 20_001] && audio[4].title == "Main (3)" && audio[5].title == "Japanese dub")
+        #expect(audio.suffix(2).map(\.id) == [20_000, 20_001] && audio[4].title == "Main (3) - [English]" && audio[5].title == "Japanese dub")
         #expect(Set(audio.map(\.title)).count == audio.count)
         #expect(session.subtitleChoices.allSatisfy { !$0.isExternal })
         let late = try await AudioTrack(url: audioURL("ext-ac3.ac3"))

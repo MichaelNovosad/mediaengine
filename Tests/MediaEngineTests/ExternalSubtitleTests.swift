@@ -199,7 +199,7 @@ struct ExternalSubtitleSessionTests {
         let after = session.subtitleChoices
         #expect(Array(after.prefix(before.count)) == before)
         #expect(after.map(\.isExternal) == [false, false, false, true, true])
-        #expect(after.prefix(4).map(\.title) == ["English", "English SDH", "Signs", "English (2)"])
+        #expect(after.prefix(4).map(\.title) == ["English", "English SDH", "Signs - [Japanese]", "English (2) - [Russian]"])
         #expect(after[4].isForced && after[4].language?.languageCode?.identifier == "ja" && after[4].title.hasSuffix("(forced)"))
         #expect(after[3].id == 10_000 && after[4].id == 10_001)
         #expect(Set(after.map(\.title)).count == after.count)

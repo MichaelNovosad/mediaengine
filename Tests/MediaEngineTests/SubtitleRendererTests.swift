@@ -26,7 +26,7 @@ struct OverlayChoiceTests {
         defer { session.close() }
         #expect(session.subtitleChoices.isEmpty)
         let overlay = session.overlayChoices
-        #expect(overlay.map(\.title) == ["PGS", "VobSub", "DVB"] && overlay.allSatisfy(\.isBitmap))
+        #expect(overlay.map { $0.title.components(separatedBy: " - [").first ?? $0.title } == ["PGS", "VobSub", "DVB"] && overlay.allSatisfy(\.isBitmap), "\(overlay.map(\.title))")
         #expect(overlay.map(\.codec) == ["PGS", "VobSub", "DVB subtitles"], "\(overlay.map(\.codec))")
         #expect(overlay[1].language?.languageCode?.identifier == "ja")
     }

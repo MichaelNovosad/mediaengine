@@ -16,6 +16,12 @@ protocol OverlayBackend: AnyObject {
     /// The pictures to draw `time` seconds into the file, at the position and size they take in a frame of `size`.
     /// `changed` is false when they are exactly those returned last time.
     func render(at time: Double, size: CGSize) -> (images: [SubtitleImage], changed: Bool)
+    /// The viewer's size and colour for text; picture subtitles ignore it.
+    func setAppearance(_ appearance: SubtitleAppearance)
+}
+
+extension OverlayBackend {
+    func setAppearance(_ appearance: SubtitleAppearance) {}
 }
 
 /// ASS and SSA through libass.
@@ -42,6 +48,8 @@ final class ASSBackend: OverlayBackend {
         var data: Data
     }
     private var seen = Set<Seen>()
+
+    func setAppearance(_ appearance: SubtitleAppearance) { core.setAppearance(appearance) }
 
     func add(_ events: [OverlayEvent]) {
         for event in events {

@@ -39,6 +39,8 @@ public final class SoftwareController: PlaybackController {
     @ObservationIgnored private let audio: (player: AVPlayer, item: AVPlayerItem)?
     @ObservationIgnored private var ticker: Task<Void, Never>?
     @ObservationIgnored private var overlay: SubtitleRenderer?
+    public var subtitleAppearance = SubtitleAppearance.standard { didSet { overlay?.appearance = subtitleAppearance } }
+    public var subtitleDelay: TimeInterval = 0 { didSet { overlay?.delay = subtitleDelay } }
     @ObservationIgnored private var wantedRate: Float = 1
     @ObservationIgnored private let videoEnded = LockedFlag()
     @ObservationIgnored private var audioFinished = false
@@ -221,6 +223,8 @@ public final class SoftwareController: PlaybackController {
         overlay?.close(); overlay = nil
         let renderer = try await session.makeSubtitleRenderer(for: choice)
         try? await renderer.prepare(at: currentTime)
+        renderer.appearance = subtitleAppearance
+        renderer.delay = subtitleDelay
         overlay = renderer
     }
 

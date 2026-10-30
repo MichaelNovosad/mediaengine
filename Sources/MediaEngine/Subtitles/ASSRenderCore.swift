@@ -122,6 +122,29 @@ final class ASSRenderCore {
         cache = nil
     }
 
+    /// The viewer's size and colour over the file's styling (see ``SubtitleAppearance``). The next frame is drawn again.
+    func setAppearance(_ appearance: SubtitleAppearance) {
+        ass_set_font_scale(renderer, appearance.scale)
+        if let color = appearance.color {
+            // libass colours are 0xRRGGBBAA with the last byte the transparency: 0 is opaque. The outline stays black and the shadow half clear,
+            // like the style the engine gives plain text cues.
+            var style = ASS_Style()
+            style.Name = strdup("")
+            style.FontName = strdup("")
+            style.PrimaryColour = color << 8
+            style.SecondaryColour = color << 8
+            style.OutlineColour = 0x0000_0000
+            style.BackColour = 0x0000_0080
+            ass_set_selective_style_override(renderer, &style)       // copies the strings
+            free(style.Name)
+            free(style.FontName)
+            ass_set_selective_style_override_enabled(renderer, Int32(ASS_OVERRIDE_BIT_COLORS.rawValue))
+        } else {
+            ass_set_selective_style_override_enabled(renderer, 0)
+        }
+        cache = nil
+    }
+
     /// Draws the subtitles shown at `milliseconds` into one picture of `width` x `height` pixels, or `nil` when
     /// nothing is shown. `changed` is false when the result is exactly what the previous call at the same size returned.
     func render(atMilliseconds milliseconds: Int64, width: Int, height: Int) -> (rendered: Rendered?, changed: Bool) {

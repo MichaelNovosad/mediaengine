@@ -34,11 +34,14 @@ public struct AudioTrack: Sendable {
     }
 
     /// Probes audio from any ``MediaSource``. `name` is the file name, which gives the language when it ends in one
-    /// (`Film.ru.mka`).
+    /// (`Film.ru.mka`). `stream` names the audio track to play by its ``TrackChoice/id`` (the first one when `nil`): with the video
+    /// file's own source it makes a copy of one of the video's tracks that can start earlier or later than the original
+    /// (see ``PlaybackSession/audioTrack(like:delay:title:)``).
     public init(source: MediaSource, name: String, language: Locale.Language? = nil, title: String? = nil,
-                delay: TimeInterval = 0) async throws {
+                delay: TimeInterval = 0, stream: Int? = nil) async throws {
         let info = try await source.probe()
-        guard let track = ServedTracks(info: info).audio.first else {
+        let audio = ServedTracks(info: info).audio
+        guard let track = stream.map({ id in audio.first { $0.id == id } }) ?? audio.first else {
             let reason = info.playbackPlan.notes.first ?? "the file has no audio the player can play"
             throw MediaError.unsupported(detail: reason)
         }

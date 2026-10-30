@@ -21,6 +21,16 @@ log "fixture-basic.mkv  (H.264 + AAC + FLAC + SRT + 2 chapters)"
   -metadata title="MediaEngine fixture basic" \
   -f matroska fixture-basic.mkv
 
+log "fixture-speech.mkv  (a spoken sentence as FLAC sound, made silently with the Mac's say command, for the subtitles-from-speech tests)"
+speech_dir="$(mktemp -d)"
+say -v Samantha -o "$speech_dir/speech.wav" --data-format=LEI16@22050 \
+  "Good evening. This movie has subtitles that were made on this device. They are automatic and may contain mistakes."
+"$FF" -v error -y -stream_loop -1 -i fixture-basic.mkv -i "$speech_dir/speech.wav" -map 0:v:0 -map 1:a:0 -c:v copy -c:a flac -shortest -f matroska fixture-speech.mkv
+rm -rf "$speech_dir"
+
+log "fixture-native.mp4  (the same picture and AAC sound in an MP4, which the system plays by itself)"
+"$FF" -v error -y -i fixture-basic.mkv -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart fixture-native.mp4
+
 log "fixture-hevc.mkv  (HEVC + AC-3 stereo)"
 "$FF" -v error -y \
   -f lavfi -i "testsrc2=size=640x360:rate=25:duration=3" \

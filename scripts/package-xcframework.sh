@@ -54,7 +54,12 @@ privacy() {
   <key>NSPrivacyTracking</key><false/>
   <key>NSPrivacyTrackingDomains</key><array/>
   <key>NSPrivacyCollectedDataTypes</key><array/>
-  <key>NSPrivacyAccessedAPITypes</key><array/>
+  <key>NSPrivacyAccessedAPITypes</key><array>
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key><array><string>3B52.1</string></array>
+    </dict>
+  </array>
 </dict></plist>
 EOF
 }

@@ -62,6 +62,12 @@ public protocol PlaybackController: AnyObject, Observable {
     /// What to draw over the video for subtitles the engine renders itself (`nil` when none is selected or the system
     /// player shows them). `size` is the video area on screen, in pixels.
     func subtitleFrame(size: CGSize) -> SubtitleFrame?
+    /// The size and text colour the viewer wants for the subtitles the engine draws (see ``SubtitleAppearance``); it holds for every track
+    /// that is chosen later too.
+    var subtitleAppearance: SubtitleAppearance { get set }
+    /// Seconds by which the viewer wants the subtitles that the engine draws later (negative: earlier); it holds for every track that is
+    /// chosen later too. Subtitles that the system player draws itself (a plain MP4's own) are not moved.
+    var subtitleDelay: TimeInterval { get set }
 
     /// Stops playback and releases the file.
     func close()
@@ -102,6 +108,8 @@ public final class AVPlayerController: PlaybackController {
     /// ASS tracks play through the system player as plain WebVTT text. Turn this on to have the engine draw them with
     /// their full styling instead (see ``subtitleFrame(size:)``).
     public var drawsASSItself = false
+    public var subtitleAppearance = SubtitleAppearance.standard { didSet { overlay?.appearance = subtitleAppearance } }
+    public var subtitleDelay: TimeInterval = 0 { didSet { overlay?.delay = subtitleDelay } }
 
     @ObservationIgnored private var ticker: Task<Void, Never>?
     @ObservationIgnored private var overlay: SubtitleRenderer?
@@ -189,6 +197,8 @@ public final class AVPlayerController: PlaybackController {
             try await session.deselectSubtitles(on: item)
             let renderer = try await session.makeSubtitleRenderer(for: choice)
             try? await renderer.prepare(at: currentTime)
+            renderer.appearance = subtitleAppearance
+            renderer.delay = subtitleDelay
             overlay = renderer
         } else if systemIDs.contains(choice.id) {
             try await session.select(choice, on: item)

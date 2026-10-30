@@ -99,6 +99,28 @@ struct ExternalAudioSessionTests {
         #expect(abs(length - 3) < 0.15, "lasts \(length) s")
     }
 
+    @Test("a copy of the video's own sound track can start later or earlier than the original, and only a track of the video can be copied")
+    func copyOfOwnTrack() async throws {
+        let playback = try await PlaybackSession(url: Fixture.url("fixture-opus-vorbis"))
+        defer { playback.close() }
+        let own = playback.audioChoices[0]
+        let copy = try await playback.audioTrack(like: own, delay: 7, title: "Copy")
+        #expect(copy.delay == 7 && copy.title == "Copy" && copy.language == own.language)
+        let remux = try await session("fixture-opus-vorbis", [copy])
+        let data = try #require(try remux.resource(path: "audio-20000-1.m4s")).data
+        let facts = try #require(fragmentFacts(data))
+        let start = Double(facts.baseDecodeTime) / Double(remux.timescale(20_000))
+        #expect(abs(start - (7 + remux.mediaShift)) < 0.1 && facts.sampleCount > 20, "starts at \(start), \(facts.sampleCount) samples")
+        let session2 = try await PlaybackSession(url: Fixture.url("fixture-opus-vorbis"))
+        defer { session2.close() }
+        try session2.add(copy)
+        let external = try #require(session2.audioChoices.first { $0.isExternal })
+        await #expect(throws: MediaError.self) { _ = try await session2.audioTrack(like: external, delay: 1) }
+        await #expect(throws: MediaError.self) {
+            _ = try await AudioTrack(source: MediaSource(url: Fixture.url("fixture-opus-vorbis")), name: "x", stream: 999)
+        }
+    }
+
     @Test("segments the file does not reach are marked as gaps, so the player does not wait for them")
     func gaps() async throws {
         func gapFlags(_ delay: Double) async throws -> (flags: [Bool], version: String) {

@@ -122,3 +122,31 @@ extension PlaybackSession {
         return fonts
     }
 }
+
+extension PlaybackSession {
+    /// Whether a sound track can be turned into sound for speech recognition (``extractSpeechAudio(of:to:progress:)``).
+    public func canExtractSpeechAudio(of choice: TrackChoice) -> Bool {
+        guard choice.kind == .audio, !choice.isExternal, let track = info.tracks.first(where: { $0.id == choice.id }) else { return false }
+        return SpeechAudioExtractor.canDecode(track.codec.name)
+    }
+
+    /// Decodes a sound track of the video file to mono 16 kHz 16-bit sound in a CAF file at `url`, which is what the system's speech
+    /// recognition takes. It reads the whole track (a film takes a minute or two); `progress` gets 0 to 1. A surround track is mixed down to
+    /// mono. Cancelling the task stops it.
+    public func extractSpeechAudio(of choice: TrackChoice, to url: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws {
+        guard canExtractSpeechAudio(of: choice), let track = info.tracks.first(where: { $0.id == choice.id }) else {
+            throw MediaError.unsupported(detail: "this sound track cannot be turned into sound for speech recognition")
+        }
+        let byteSource = source.byteSource
+        let name = track.codec.name
+        let stream = choice.id
+        let flag = CancellationFlag()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                DispatchQueue.global(qos: .utility).async {
+                    continuation.resume(with: Result { try SpeechAudioExtractor.extract(from: byteSource, stream: stream, codecName: name, to: url, cancellation: flag, progress: progress) })
+                }
+            }
+        } onCancel: { flag.cancel() }
+    }
+}

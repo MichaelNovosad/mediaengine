@@ -205,6 +205,14 @@ public final class PlaybackSession: @unchecked Sendable {
     /// Adds an audio file that can be played instead of the video's own sound. It appears among ``audioChoices`` (with
     /// ``TrackChoice/isExternal`` set) and in the player's audio menu. The same rule as for subtitle files applies:
     /// add it before the first ``makePlayerItem()``.
+    /// A copy of one of the video file's own sound tracks that starts `delay` seconds later (negative: earlier) than the original, to line up
+    /// sound that is out of step with the picture. Add it with ``add(_:)-(AudioTrack)`` before the first player item, choose it instead of
+    /// the original, and give `title` to name it (it is made unique among the audio choices like any other).
+    public func audioTrack(like choice: TrackChoice, delay: TimeInterval, title: String? = nil) async throws -> AudioTrack {
+        guard choice.kind == .audio, !choice.isExternal else { throw MediaError.unsupported(detail: "only a sound track of the video file can be copied with a delay") }
+        return try await AudioTrack(source: source, name: "audio", language: choice.language, title: title ?? choice.title, delay: delay, stream: choice.id)
+    }
+
     public func add(_ audio: AudioTrack) throws {
         try state.withLock { state in
             if state.isClosed { throw MediaError.cancelled }

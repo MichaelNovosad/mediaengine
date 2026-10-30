@@ -154,8 +154,8 @@ struct SubtitleRenditionTests {
     func ass() async throws {
         let session = try await session("fixture-anime")
         let master = try text(session, "master.m3u8")
-        #expect(master.contains("NAME=\"Dialogue\"") && master.contains("NAME=\"Signs and Songs\""))
-        #expect(master.contains("NAME=\"Signs and Songs\",LANGUAGE=\"en\",DEFAULT=NO,AUTOSELECT=YES,FORCED=YES"))
+        #expect(master.contains("NAME=\"Dialogue - [English]\"") && master.contains("NAME=\"Signs and Songs - [English]\""))
+        #expect(master.contains("NAME=\"Signs and Songs - [English]\",LANGUAGE=\"en\",DEFAULT=NO,AUTOSELECT=YES,FORCED=YES"))
         let dialogue = String(decoding: try #require(try session.resource(path: "subs-3-0.vtt")).data, as: UTF8.self)
         #expect(dialogue.contains("Dialogue one, styled.") && dialogue.contains("<i>Dialogue two</i>, italic."))
         let signs = String(decoding: try #require(try session.resource(path: "subs-4-0.vtt")).data, as: UTF8.self)

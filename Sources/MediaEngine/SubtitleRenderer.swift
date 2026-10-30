@@ -50,6 +50,8 @@ public final class SubtitleRenderer: @unchecked Sendable {
         /// The file times for which every block that starts inside has been loaded.
         var coverage: ClosedRange<Double>?
         var loading = false
+        var appearance = SubtitleAppearance.standard
+        var delay = 0.0
         var closed: Bool { backend == nil }
     }
 
@@ -72,7 +74,7 @@ public final class SubtitleRenderer: @unchecked Sendable {
     /// The pictures to draw at the player's `time` (seconds) in a frame of `size` pixels, origin top left. Pass the size
     /// of the video as it appears on screen, in pixels.
     public func frame(at time: TimeInterval, size: CGSize) -> SubtitleFrame {
-        let fileTime = time - offset()
+        let fileTime = time - offset() - delay
         scheduleLoad(forFileTime: fileTime)
         let result = state.withLock { state in
             state.backend?.render(at: fileTime, size: size) ?? (images: [], changed: false)
@@ -83,7 +85,7 @@ public final class SubtitleRenderer: @unchecked Sendable {
     /// Reads the blocks around `time` now, if they are not loaded yet.
     public func prepare(at time: TimeInterval) async throws {
         guard loader != nil else { return }
-        let fileTime = time - offset()
+        let fileTime = time - offset() - delay
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             queue.async { [self] in
                 continuation.resume(with: Result { try load(forFileTime: fileTime) })
@@ -98,6 +100,23 @@ public final class SubtitleRenderer: @unchecked Sendable {
             return state.backend
         }
         _ = released
+    }
+
+    /// Seconds by which the viewer wants every subtitle of this track later (negative: earlier), on top of the file's own delay.
+    public var delay: TimeInterval {
+        get { state.withLock { $0.delay } }
+        set { state.withLock { $0.delay = newValue.isFinite ? min(max(newValue, -600), 600) : 0 } }
+    }
+
+    /// The size and text colour the viewer chose; the next frame follows it. Picture subtitles do not change.
+    public var appearance: SubtitleAppearance {
+        get { state.withLock { $0.appearance } }
+        set {
+            state.withLock { state in
+                state.appearance = newValue
+                state.backend?.setAppearance(newValue)
+            }
+        }
     }
 
     /// Diagnostic lines libass printed (font selection, script problems); empty for picture subtitles.

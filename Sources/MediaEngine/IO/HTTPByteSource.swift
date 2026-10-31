@@ -54,19 +54,23 @@ public final class HTTPByteSource: ByteSource {
     ///   - url: The address of the file.
     ///   - headers: Extra request headers, for example an authorization token.
     ///   - configuration: Customize timeouts, caching or authentication.
+    ///   - delegate: Answers the session's challenges for every request of this source: a server certificate the host
+    ///     trusts by itself (a home server's own, pinned), or credentials for a sign-in that needs the server's
+    ///     challenge first (HTTP Digest). The session keeps it until the source is released.
     ///   - chunkSize: Bytes fetched per request. Larger chunks mean fewer requests.
     ///   - maxCachedChunks: How many chunks stay in memory.
     public static func open(
         url: URL,
         headers: [String: String] = [:],
         configuration: URLSessionConfiguration = .ephemeral,
+        delegate: (any URLSessionDelegate & Sendable)? = nil,
         chunkSize: Int = 512 * 1024,
         maxCachedChunks: Int = 32
     ) async throws -> HTTPByteSource {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             throw MediaError.network(detail: "not an HTTP(S) URL")
         }
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let length = try await discoverLength(url: url, headers: headers, session: session)
         return HTTPByteSource(url: url, headers: headers, session: session, length: length,
                               chunkSize: chunkSize, maxCachedChunks: maxCachedChunks)

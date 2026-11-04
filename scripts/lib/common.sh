@@ -15,7 +15,7 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build"
-MIN_OS="27.0"
+MIN_OS="26.0"             # the oldest system the libraries run on (26.0 since 2026-11-04, the app's minimum)
 SLICES="macos ios ios-simulator xros xros-simulator"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-27.app/Contents/Developer}"

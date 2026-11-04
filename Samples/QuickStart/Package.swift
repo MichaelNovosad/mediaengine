@@ -6,7 +6,7 @@ import PackageDescription
 // macOS, iOS and visionOS. In your own app, add MediaEngine through File > Add Package Dependencies instead of the path.
 let package = Package(
     name: "QuickStart",
-    platforms: [.iOS("27.0"), .macOS("27.0"), .visionOS("27.0")],
+    platforms: [.iOS("26.0"), .macOS("26.0"), .visionOS("26.0")],
     dependencies: [.package(path: "../..")],
     targets: [
         .executableTarget(name: "QuickStart", dependencies: [.product(name: "MediaEngine", package: "MediaEngine")],

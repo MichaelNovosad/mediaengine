@@ -6,7 +6,7 @@ import PackageDescription
 // needs from the optional codec module, and read the licences. scripts/check-samples.sh builds it for all three platforms.
 let package = Package(
     name: "Player",
-    platforms: [.iOS("27.0"), .macOS("27.0"), .visionOS("27.0")],
+    platforms: [.iOS("26.0"), .macOS("26.0"), .visionOS("26.0")],
     dependencies: [.package(path: "../..")],
     targets: [
         .executableTarget(name: "Player", dependencies: [.product(name: "MediaEngine", package: "MediaEngine")],

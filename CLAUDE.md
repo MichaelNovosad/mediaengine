@@ -12,7 +12,7 @@ Evidence behind the choices: `docs/RESEARCH.md`. Read it before touching licensi
 ## Locked decisions (from the owner)
 
 - Separate package and repository with its own license boundary. No app code, StoreKit, analytics or UI chrome lives here.
-- Platforms: iOS/iPadOS 27.0, macOS 27.0 (Apple silicon only), visionOS 27.0 (the owner has no device, so visionOS is simulator-verified only). **tvOS is excluded for good.** Swift 6.4, Xcode 27.1 SDK.
+- Platforms: iOS/iPadOS 26.0, macOS 26.0 (Apple silicon only), visionOS 26.0 (26.0 since 2026-11-04, the app's minimum; `MIN_OS` in `scripts/lib/common.sh` builds the libraries for it) (the owner has no device, so visionOS is simulator-verified only). **tvOS is excluded for good.** Swift 6.4, Xcode 27.1 SDK.
 - **H.264 Hi10P is out of scope** (owner, 2026-10-24): no software H.264 decoder in the engine.
 - LGPL only: FFmpeg built with `--disable-gpl --disable-nonfree`, dynamic frameworks, pinned versions, exact sources and build configuration shipped with every release.
 - Patent-encumbered software codecs are opt-in modules (profiles `core`, `extended`, `licensedAudio`), never included silently. **Licensing strategy, agreed by the owner on 2026-10-24:** (1) Apple's decoders decode whatever they cover; (2) our own decoders only for royalty-free or expired codecs; (3) container work (demux/remux) is free of codec licences; (4) everything else is isolated in opt-in modules that stay off until a lawyer clears them. Details in `docs/RESEARCH.md` §3.

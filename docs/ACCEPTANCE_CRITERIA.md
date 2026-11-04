@@ -112,7 +112,7 @@ player.replaceCurrentItem(with: item)                    // AVPlayerViewControll
 
 ## PLT: platforms
 
-- [x] PLT-1 `Package.swift` declares iOS 27, macOS 27 and visionOS 27 only. tvOS is never declared. (E0) **Evidence (2026-10-24):** `Package.swift` declares iOS 27, macOS 27, visionOS 27 only.
+- [x] PLT-1 `Package.swift` declares iOS, macOS and visionOS only (26.0 since 2026-11-04, the app's minimum; 27.0 before). tvOS is never declared. (E0) **Evidence (2026-10-24):** `Package.swift` declares iOS 27, macOS 27, visionOS 27 only. **2026-11-04:** lowered to 26.0 with `MIN_OS` (the libraries are built for 26.0).
 - [x] PLT-2 Builds and tests run on iOS and iPadOS simulators (including the iPhone Duo simulators), on macOS, and on the visionOS simulator. The visionOS 27.0 simulator runtime is installed. `[sim]` (E0) **Evidence (2026-10-24):** `scripts/verify.sh`: macOS, iPhone 18 Pro Max, iPad Air 13-inch (M4), iPhone Duo and Apple Vision Pro simulators, 6 tests each, zero warnings (1 min 47 s).
 - [ ] PLT-3 visionOS is simulator-verified only. Release notes and the README state that visionOS has not been verified on hardware until a tester with a headset has run the device script. `[manual]` (E6) **Progress (2026-10-26):** the README and the integration guide state that visionOS is simulator-verified only; the box stays open until a tester with a headset has run the device script.
 - [ ] PLT-4 No code assumes a screen size or idiom; views adapt to containers (iPhone Duo, iPad windows, Mac windows, visionOS windows). `[sim]` (E4)

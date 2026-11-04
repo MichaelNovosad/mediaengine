@@ -6,7 +6,7 @@ import PackageDescription
 // without relinking (LIC-2).
 let package = Package(
     name: "SwapProbe",
-    platforms: [.macOS("27.0")],
+    platforms: [.macOS("26.0")],
     dependencies: [.package(path: "../..")],
     targets: [
         .executableTarget(name: "SwapProbe", dependencies: [.product(name: "MediaEngine", package: "MediaEngine")],

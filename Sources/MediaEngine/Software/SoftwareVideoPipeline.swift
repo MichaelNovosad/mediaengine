@@ -25,12 +25,63 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     /// The clock the pictures follow (set its rate and time to play, pause or seek).
     let synchronizer: AVSampleBufferRenderSynchronizer
 
-    private final class ReceiverBox: @unchecked Sendable {
-        var receiver: AVSampleBufferVideoRenderer.Receiver
-        init(_ receiver: sending AVSampleBufferVideoRenderer.Receiver) { self.receiver = receiver }
+    /// Hands the pictures to the layer's renderer, through the synchronizer. iOS, macOS and visionOS 27 have the synchronizer's Swift
+    /// receiver (it waits until the renderer wants more and says why an enqueue was cancelled); 26, the minimum since 2026-11-04, has
+    /// the classic calls of the same renderer.
+    private final class Sink: @unchecked Sendable {
+        enum Outcome { case enqueued, stop }
+
+        private let renderer: AVSampleBufferVideoRenderer
+        /// `AVSampleBufferVideoRenderer.Receiver` on 27 and newer (a stored property cannot carry an availability of its own).
+        private let receiver: AnyObject?
+
+        @MainActor
+        init(renderer: AVSampleBufferVideoRenderer, synchronizer: AVSampleBufferRenderSynchronizer) {
+            self.renderer = renderer
+            if #available(iOS 27, macOS 27, visionOS 27, *) {
+                receiver = synchronizer.sampleBufferReceiver(adding: renderer)
+            } else {
+                synchronizer.addRenderer(renderer)
+                receiver = nil
+            }
+        }
+
+        func flush(removingDisplayedImage: Bool) async {
+            if #available(iOS 27, macOS 27, visionOS 27, *), let receiver = receiver as? AVSampleBufferVideoRenderer.Receiver {
+                await receiver.flush(removingDisplayedImage: removingDisplayedImage)
+                return
+            }
+            let renderer = renderer
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                renderer.flush(removingDisplayedImage: removingDisplayedImage) { done.resume() }
+            }
+        }
+
+        /// Waits until the renderer wants more, then queues the picture; `.stop` ends the feeding (a flush, an error, a cancel).
+        func enqueue(_ sample: sending CMSampleBuffer) async -> Outcome {
+            if #available(iOS 27, macOS 27, visionOS 27, *), let receiver = receiver as? AVSampleBufferVideoRenderer.Receiver {
+                do {
+                    switch try await receiver.enqueue(CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: sample)) {
+                    case .enqueued, .enqueuedWithDecodeFailures: return .enqueued
+                    case .cancelledDueToFlush, .cancelledDueToFlushRequiredToResume, .cancelledDueToError: return .stop
+                    @unknown default: return .stop
+                    }
+                } catch {
+                    return .stop
+                }
+            }
+            // The classic way: the renderer says when it wants more; asked every 10 ms, as a picture lasts 16 ms or more.
+            while !renderer.isReadyForMoreMediaData {
+                if Task.isCancelled || renderer.status == .failed { return .stop }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            guard !Task.isCancelled else { return .stop }
+            renderer.enqueue(sample)
+            return renderer.status == .failed ? .stop : .enqueued
+        }
     }
 
-    private let box: ReceiverBox
+    private let sink: Sink
     private let reader: PacketReader
     private let decoder: SoftwareVideoDecoder
     private let stream: Int
@@ -44,7 +95,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     init(reader: PacketReader, stream: Int, frameRate: Double?) throws {
         layer = AVSampleBufferDisplayLayer()
         synchronizer = AVSampleBufferRenderSynchronizer()
-        box = ReceiverBox(synchronizer.sampleBufferReceiver(adding: layer.sampleBufferRenderer))
+        sink = Sink(renderer: layer.sampleBufferRenderer, synchronizer: synchronizer)
         layer.videoGravity = .resizeAspect
         self.reader = reader
         self.stream = stream
@@ -68,7 +119,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     /// one at once, so a paused player shows the picture it was moved to). Whatever was queued is thrown away first.
     func start(at time: Double) async {
         await stop()
-        await box.receiver.flush(removingDisplayedImage: false)
+        await sink.flush(removingDisplayedImage: false)
         let discardBefore = max(time, 0)
         decoder.flush()
         if discardBefore <= 0 { try? reader.rewind() } else { try? reader.seek(stream: stream, to: reader.timeBase(stream).ticks(seconds: discardBefore)) }
@@ -87,7 +138,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     /// Stops and forgets what was queued; used before the owner of the pipeline lets it go.
     func close() async {
         await stop()
-        await box.receiver.flush(removingDisplayedImage: true)
+        await sink.flush(removingDisplayedImage: true)
     }
 
     // MARK: The feeding task
@@ -119,20 +170,11 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
             }
             guard let sample = makeSample(frame, formatDescription: &formatDescription, immediately: first) else { continue }
             first = false
-            do {
-                let result = try await box.receiver.enqueue(CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: sample))
-                switch result {
-                case .enqueued, .enqueuedWithDecodeFailures:
-                    statistics.withLock { $0.queued += 1; $0.lastQueuedTime = frame.time }
-                    hook.withLock { $0 }?(frame)
-                case .cancelledDueToFlush:
-                    return
-                case .cancelledDueToFlushRequiredToResume, .cancelledDueToError:
-                    return
-                @unknown default:
-                    return
-                }
-            } catch {
+            switch await sink.enqueue(sample) {
+            case .enqueued:
+                statistics.withLock { $0.queued += 1; $0.lastQueuedTime = frame.time }
+                hook.withLock { $0 }?(frame)
+            case .stop:
                 return
             }
         }

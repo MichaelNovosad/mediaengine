@@ -18,10 +18,14 @@ protocol OverlayBackend: AnyObject {
     func render(at time: Double, size: CGSize) -> (images: [SubtitleImage], changed: Bool)
     /// The viewer's size and colour for text; picture subtitles ignore it.
     func setAppearance(_ appearance: SubtitleAppearance)
+    /// Whether a block can depend on the blocks before it (PGS display sets that reuse an earlier picture), so that blocks given
+    /// out of order should be given again in order.
+    var decodesInOrder: Bool { get }
 }
 
 extension OverlayBackend {
     func setAppearance(_ appearance: SubtitleAppearance) {}
+    var decodesInOrder: Bool { false }
 }
 
 /// ASS and SSA through libass.
@@ -76,7 +80,12 @@ final class BitmapBackend: OverlayBackend {
     private let context: UnsafeMutablePointer<AVCodecContext>
     private let videoSize: CGSize
     private var displays: [Display] = []       // sorted by start
+    /// Displays decoded with pictures, and those decoded empty: a clear, or a display set decoded before the one whose pictures
+    /// it reuses (blocks given out of order), which a later decode in order replaces.
     private var known = Set<Int64>()
+    private var empty = Set<Int64>()
+
+    var decodesInOrder: Bool { true }
     private var lastShown: (start: Double, size: CGSize)?
 
     init?(parameters: UnsafeMutablePointer<AVCodecParameters>, videoSize: CGSize?) {
@@ -128,7 +137,7 @@ final class BitmapBackend: OverlayBackend {
 
         let begin = event.start + Double(subtitle.start_display_time) / 1000
         let key = Int64((begin * 1000).rounded())
-        guard known.insert(key).inserted else { return }
+        guard !known.contains(key) else { return }
         var end: Double?
         if subtitle.end_display_time != 0, subtitle.end_display_time != UInt32.max { end = event.start + Double(subtitle.end_display_time) / 1000 }
         if end == nil, event.duration > 0 { end = begin + event.duration }
@@ -138,6 +147,12 @@ final class BitmapBackend: OverlayBackend {
         for index in 0..<Int(subtitle.num_rects) {
             guard let rect = subtitle.rects[index]?.pointee, rect.type == SUBTITLE_BITMAP, let image = Self.image(of: rect) else { continue }
             pictures.append((image, CGRect(x: Int(rect.x), y: Int(rect.y), width: Int(rect.w), height: Int(rect.h))))
+        }
+        if pictures.isEmpty {
+            guard empty.insert(key).inserted else { return }
+        } else {
+            known.insert(key)
+            if empty.remove(key) != nil { displays.removeAll { Int64(($0.start * 1000).rounded()) == key && $0.pictures.isEmpty } }
         }
         displays.append(Display(start: begin, end: end, pictures: pictures))
     }

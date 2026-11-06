@@ -232,7 +232,12 @@ public final class SoftwareController: PlaybackController {
         overlay?.close(); overlay = nil
     }
 
-    public func subtitleFrame(size: CGSize) -> SubtitleFrame? { overlay?.frame(at: currentTime, size: size) }
+    public func subtitleFrame(size: CGSize) -> SubtitleFrame? {
+        guard let overlay else { return nil }
+        // While playing, the picture clock itself rather than `currentTime`, which is refreshed every 100 ms.
+        let now = state == .playing ? max(pipeline.synchronizer.currentTime().seconds, 0) : currentTime
+        return overlay.frame(at: now.isFinite ? now : currentTime, size: size)
+    }
 
     public func close() {
         guard !closed else { return }

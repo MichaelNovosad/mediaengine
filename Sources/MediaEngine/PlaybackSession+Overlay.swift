@@ -48,6 +48,14 @@ extension PlaybackSession {
         let streamIndex = track.id
         let isBitmap = track.subtitle?.format == .bitmap
         let codecName = track.codec.name
+        let isCueText = !isBitmap && !["ass", "ssa"].contains(codecName)
+        // While the player plays the file through the remuxer, the blocks come from its reading (the file is not read twice:
+        // for a movie on a server that second download made blocks late or lost them). A play list reads its parts itself.
+        let feed: @Sendable () -> (any OverlayFeedSource)? = { [weak self] in
+            guard info.orderedChapters == nil, let shared = self?.state.withLock({ $0.remux?.overlayFeed }),
+                  shared.streams.contains(streamIndex) else { return nil }
+            return OverlayFeedView(feed: shared, stream: streamIndex, cueCodec: isCueText ? codecName : nil)
+        }
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(with: Result {
@@ -81,8 +89,12 @@ extension PlaybackSession {
                         backend = ass
                     }
                     var loader: any OverlayEventSource = OverlayEventLoader(source: source, stream: streamIndex, anchor: anchor, marker: marker, cancellation: cancellation)
-                    if !isBitmap, !["ass", "ssa"].contains(codecName) { loader = CueScriptEventSource(base: loader, codec: codecName) }
-                    return SubtitleRenderer(backend: backend, loader: loader, cancellation: cancellation, offset: shift)
+                    if isCueText { loader = CueScriptEventSource(base: loader, codec: codecName) }
+                    // After a seek the renderer reads what the player did not: on a server that read shares the connection with
+                    // the player, so it reaches back only as far as most lines last.
+                    let local = byteSource is FileByteSource || byteSource is DataByteSource
+                    return SubtitleRenderer(backend: backend, loader: loader, feed: feed, seekLookback: local ? SubtitleRenderer.lookback : 8,
+                                            cancellation: cancellation, offset: shift)
                 })
             }
         }
@@ -92,6 +104,14 @@ extension PlaybackSession {
 
     /// Text formats the overlay can draw: ASS/SSA with their own styling, the others in a plain default style.
     static let overlayTextCodecs: Set<String> = ["ass", "ssa", "subrip", "srt", "webvtt", "mov_text", "text"]
+
+    /// The file's own subtitle streams the overlay can draw, text and picture, whose blocks the remuxer keeps for it.
+    static func overlayStreams(of info: MediaInfo) -> (text: Set<Int>, pictures: Set<Int>) {
+        let treatments = Dictionary(uniqueKeysWithValues: info.playbackPlan.tracks.map { ($0.trackID, $0.treatment) })
+        let pictures = info.subtitleTracks.filter { $0.subtitle?.format == .bitmap && treatments[$0.id] == .bitmapOverlay }
+        let text = info.subtitleTracks.filter { $0.subtitle?.format != .bitmap && overlayTextCodecs.contains($0.codec.name) }
+        return (Set(text.map(\.id)), Set(pictures.map(\.id)))
+    }
 
     private func overlayTracks() -> (tracks: [Track], titles: [Int: String], served: ServedTracks) {
         let served = ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: externalAudio)

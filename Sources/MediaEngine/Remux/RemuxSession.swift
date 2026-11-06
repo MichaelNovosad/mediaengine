@@ -76,6 +76,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var subtitleWindows = Set<Int>()
     /// How far back from a segment a cue may have started and still be shown in it (seconds).
     private static let subtitleLookback = 15.0
+    /// The blocks of the subtitle streams the engine draws itself, kept as the windows are read for the player, so that the
+    /// overlay renderers need not read the file again (`nil` for a play list of several files: those read their parts
+    /// themselves).
+    let overlayFeed: OverlayFeed?
     /// Seconds added to every source time so that nothing starts negative (same for all tracks).
     private(set) var mediaShift = 0.0
     /// Reordering depth of the video, to restore decode timestamps that Matroska does not store.
@@ -174,6 +178,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let averageRate = info.fileSize.map { Double($0) / totalDuration }
         plan = SegmentPlan.make(keyframes: keyframes, positions: positions, duration: totalDuration,
                                 maxSegmentBytes: maxSegmentBytes, averageBytesPerSecond: averageRate)
+        let overlayStreams = PlaybackSession.overlayStreams(of: info)
+        overlayFeed = packetSource == nil && !(overlayStreams.text.isEmpty && overlayStreams.pictures.isEmpty)
+            ? OverlayFeed(textStreams: overlayStreams.text, pictureStreams: overlayStreams.pictures,
+                          windows: plan.segments.map { $0.start..<max($0.start, $0.end) }) : nil
 
         for stream in wanted {
             guard let track = info.tracks.first(where: { $0.id == stream }) else { continue }
@@ -466,6 +474,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
         var packets: [Int: [MediaPacket]] = [:]
         var prerollPackets: [Int: [MediaPacket]] = [:]
+        var overlayEvents: [Int: [OverlayEvent]] = [:]
+        let overlayStreams = overlayFeed?.streams ?? []
         var videoStarted = videoIndex == nil
         var videoDone = videoIndex == nil
         var audioDone = Set<Int>()
@@ -475,6 +485,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         while !(videoDone && audioDone.count == audioIndices.count) {
             if cancellation.isCancelled { throw MediaError.cancelled }
             guard let packet = try reader.next() else { break }
+            if overlayStreams.contains(packet.stream) {
+                let base = reader.timeBase(packet.stream)
+                overlayEvents[packet.stream, default: []].append(
+                    OverlayEvent(data: packet.data, start: base.seconds(packet.pts), duration: base.seconds(max(packet.duration, 0))))
+            }
             if subtitleCodecs[packet.stream] != nil { record(subtitle: packet); continue }
             guard outputs[packet.stream] != nil else { continue }
             let seconds = reader.timeBase(packet.stream).seconds(packet.pts)
@@ -506,6 +521,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         }
 
         subtitleWindows.insert(number)
+        overlayFeed?.record(window: number, events: overlayEvents)
         pendingTranscodes = pendingTranscodes.filter { abs($0.key.segment - number) <= 2 }      // keep only nearby windows
         for (stream, output) in mainOutputs {
             let list = packets[stream] ?? []

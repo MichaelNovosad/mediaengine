@@ -65,7 +65,12 @@ final class CueScriptEventSource: OverlayEventSource {
     init(base: any OverlayEventSource, codec: String) { self.base = base; self.codec = codec }
 
     func events(from: Double, to: Double) throws -> [OverlayEvent] {
-        try base.events(from: from, to: to).compactMap { event in
+        Self.convert(try base.events(from: from, to: to), codec: codec)
+    }
+
+    /// Blocks of a `codec` text track as ASS events (also for the blocks the remuxer hands over, ``OverlayFeedView``).
+    static func convert(_ events: [OverlayEvent], codec: String) -> [OverlayEvent] {
+        events.compactMap { event in
             guard let cue = SubtitleText.cue(codec: codec, data: event.data, start: event.start, duration: event.duration) else { return nil }
             // Blocks are told apart by their content (start, duration, bytes): the ReadOrder is only a tie-break for libass.
             return OverlayEvent(data: CueScript.eventData(text: cue.text, readOrder: Int(event.start * 100)), start: event.start, duration: event.duration)

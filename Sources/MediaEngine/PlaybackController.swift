@@ -212,7 +212,12 @@ public final class AVPlayerController: PlaybackController {
         try await session.deselectSubtitles(on: item)
     }
 
-    public func subtitleFrame(size: CGSize) -> SubtitleFrame? { overlay?.frame(at: currentTime, size: size) }
+    public func subtitleFrame(size: CGSize) -> SubtitleFrame? {
+        guard let overlay else { return nil }
+        // The item's own clock rather than `currentTime`, which is refreshed every 100 ms: lines then start and end on time.
+        let now = item.currentTime().seconds
+        return overlay.frame(at: now.isFinite ? max(now, 0) : currentTime, size: size)
+    }
 
     public func close() {
         ticker?.cancel()

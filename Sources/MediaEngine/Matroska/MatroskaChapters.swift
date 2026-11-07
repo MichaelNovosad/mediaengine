@@ -62,7 +62,7 @@ enum MatroskaChapters {
 
         // The first elements of the segment, up to the first cluster, say where Info and Chapters are.
         var positions: [UInt32: Int64] = [:]
-        for (header, offset) in reader.children(from: dataStart, size: segment.size, limit: 64) {
+        for (header, offset) in reader.children(from: dataStart, size: segment.size, limit: 64, stopAt: ID.cluster) {
             if header.id == ID.cluster { break }
             if positions[header.id] == nil { positions[header.id] = offset }
             if header.id == ID.seekHead, let size = header.size {

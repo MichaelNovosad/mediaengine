@@ -65,6 +65,10 @@ ordered chapters. Full ASS and picture subtitles come from `makeSubtitleRenderer
   HTTP listener (127.0.0.1, random port, random path prefix) for the system player to read the remuxed stream; it needs no entitlement on
   macOS. On iOS the app transport security and the local-network prompt behaviour for this listener are verified in the simulators; the
   AirPlay behaviour on real devices is still to be recorded (`docs/ACCEPTANCE_CRITERIA.md`, E-S4).
+- For a file whose own index is missing or unusable, the engine works one out once and keeps it in the app's Caches folder
+  (`MediaEngine/KeyframeIndexes`: one small file per movie, named by the file's length and a hash of its first 64 KB, holding
+  keyframe times and byte offsets only; 200 at most; the system may clear them). ``PlaybackSession.observePreparation(_:)`` reports
+  the progress of that first opening.
 - The engine reads media files with a hardened parser (fuzzed with mutated corpora under AddressSanitizer, ThreadSanitizer and
   UBSan). Treat files from the network as untrusted all the same, and keep the engine up to date (FFmpeg security fixes ship as patch
   releases).

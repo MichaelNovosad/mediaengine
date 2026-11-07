@@ -28,10 +28,22 @@ public protocol ByteSource: Sendable {
     /// Called when the operation using this source is cancelled. Abort in-flight network requests here so
     /// a blocked `read` returns promptly. The default implementation does nothing.
     func cancelPendingReads()
+
+    /// Reads a few bytes far from where playback reads, for example the headers of a file's clusters while the engine
+    /// builds an index for a file that has none.
+    ///
+    /// A source that fetches and caches large chunks for playback should answer this with a request for just these
+    /// bytes, without caching a chunk or reading ahead: the engine calls it at offsets megabytes apart, thousands of
+    /// times. A short read is allowed. The default implementation calls ``read(at:into:)``.
+    func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int
 }
 
 extension ByteSource {
     public func cancelPendingReads() {}
+
+    public func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
+        try read(at: offset, into: buffer)
+    }
 }
 
 /// A byte source backed by in-memory data. Handy for tests, previews and small files.

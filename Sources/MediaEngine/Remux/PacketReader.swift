@@ -82,6 +82,35 @@ final class PacketReader: PacketSource {
         guard let packet = av_packet_alloc() else { throw MediaError.engine(detail: "could not allocate packet") }
         self.packet = packet
         try prepareStreams()
+        adoptRememberedIndex()
+    }
+
+    /// Whether the file is Matroska or WebM (FFmpeg's demuxer name).
+    var isMatroska: Bool { String(cString: format.pointee.iformat.pointee.name).contains("matroska") }
+
+    /// Where the file's timeline starts, in seconds (see `originTicks`): the engine's timeline is the file's minus this.
+    var originSeconds: Double {
+        let start = format.pointee.start_time
+        guard start != Int64.min, start > 1_000 else { return 0 }
+        return Double(start) / 1_000_000
+    }
+
+    /// Adds keyframes the engine found itself (a Matroska file without usable Cues) to the demuxer's index, so that its
+    /// seeks jump to a cluster instead of reading every cluster up to the target. Times are on the engine's timeline.
+    func addKeyframes(stream index: Int, seconds: [Double], positions: [Int64?]) {
+        guard index < streamCount else { return }
+        let st = stream(index), base = timeBase(index), origin = originTicks(index)
+        for (time, position) in zip(seconds, positions) {
+            guard let position, position >= 0 else { continue }
+            av_add_index_entry(st, position, base.ticks(seconds: time) + origin, 0, 0, Int32(AVINDEX_KEYFRAME))
+        }
+    }
+
+    /// A Matroska file whose keyframes the engine worked out at an earlier opening (``KeyframeIndexStore``): every reader of
+    /// it (the remuxer, the subtitle overlay, the software player) seeks with that list.
+    private func adoptRememberedIndex() {
+        guard isMatroska, let key = KeyframeIndexStore.key(for: source), let entry = KeyframeIndexStore.shared.lookup(key) else { return }
+        addKeyframes(stream: entry.stream, seconds: entry.keyframes, positions: entry.positions)
     }
 
     deinit {

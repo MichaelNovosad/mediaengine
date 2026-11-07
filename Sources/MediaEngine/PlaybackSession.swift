@@ -31,6 +31,8 @@ public final class PlaybackSession: @unchecked Sendable {
         var scopedFolders: [URL] = []
         var incompatible: Set<String> = []
         var isClosed = false
+        /// Told how far a read through the file has got (``observePreparation(_:)``).
+        var preparation: (@Sendable (Double) -> Void)?
     }
     let state = Mutex(State())
 
@@ -93,6 +95,14 @@ public final class PlaybackSession: @unchecked Sendable {
             item.externalMetadata = PlayerItemMetadata.external(title: title, artwork: artwork)
         }
         #endif
+    }
+
+    /// Called with how far the engine has got, from 0 to 1, when it must read through the file before it can play it: a file
+    /// whose own index is missing or unusable, the first time it is opened (the result is kept for the next opening). Not
+    /// called for files that open at once. Called on a background thread. Set it before ``makePlayerItem()`` or
+    /// ``makeController()``; ``close()`` stops the read.
+    public func observePreparation(_ handler: @escaping @Sendable (Double) -> Void) {
+        state.withLock { $0.preparation = handler }
     }
 
     /// Stops the local server and releases the file. The player item stops working.
@@ -241,13 +251,13 @@ public final class PlaybackSession: @unchecked Sendable {
         let byteSource = source.byteSource
         let info = info
         let cancellation = cancellation
-        let (external, externalAudio, linked) = state.withLock { ($0.externalSubtitles, $0.externalAudio, $0.linkedSources) }
+        let (external, externalAudio, linked, preparation) = state.withLock { ($0.externalSubtitles, $0.externalAudio, $0.linkedSources, $0.preparation) }
         let (remux, bad): (RemuxSession, Set<String>) = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(with: Result {
                     guard let ordered = info.orderedChapters else {
                         return (try RemuxSession(source: byteSource, info: info, cancellation: cancellation,
-                                                 externalSubtitles: external, externalAudio: externalAudio), [])
+                                                 externalSubtitles: external, externalAudio: externalAudio, progress: preparation), [])
                     }
                     let built = try Self.makeTimeline(main: byteSource, info: info, ordered: ordered, linked: linked, cancellation: cancellation)
                     var playInfo = info

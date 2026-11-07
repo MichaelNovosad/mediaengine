@@ -1,5 +1,6 @@
 internal import FFmpegLGPL
 import Foundation
+import os
 import Synchronization
 
 /// Turns one file into an HLS presentation of fragmented MP4: a video playlist plus one audio playlist per
@@ -8,6 +9,7 @@ import Synchronization
 /// Segments are cut at video keyframes (from the file's index) and built with ``FragmentWriter``, so any
 /// segment can be requested at any time, in any order.
 final class RemuxSession: @unchecked Sendable, ResourceProvider {
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "index")
     struct Resource: Sendable {
         var data: Data
         var contentType: String
@@ -95,7 +97,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Blocking: reads the start of the file, builds the segment plan and the initialization segments.
     init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024,
-         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes, externalSubtitles: [SubtitleTrack] = [], externalAudio audioFiles: [AudioTrack] = [], packetSource: (any PacketSource)? = nil) throws {
+         maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes, externalSubtitles: [SubtitleTrack] = [], externalAudio audioFiles: [AudioTrack] = [], packetSource: (any PacketSource)? = nil,
+         progress: (@Sendable (Double) -> Void)? = nil) throws {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
@@ -155,22 +158,64 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let shiftSeconds = -earliest
         mediaShift = shiftSeconds
 
-        // Segment plan from the video index; a scan covers files that lack one.
+        // Segment plan from the video index. A file whose index is missing or unusable gets one worked out once and kept
+        // for the next opening (KeyframeIndexStore): Matroska by hopping from cluster to cluster, anything else (or a
+        // Matroska file that cannot be hopped) by reading the file through.
         var keyframes: [Double] = []
         var positions: [Int64?] = []
         var duration = info.duration
-        if let videoIndex {
+        let mainReader = packetSource == nil ? reader as? PacketReader : nil
+        let layout = mainReader?.isMatroska == true ? MatroskaLayout.read(from: source) : nil
+        let fileKey = mainReader != nil ? KeyframeIndexStore.key(for: source) : nil
+        let video = videoIndex
+        let remembered = fileKey.flatMap { KeyframeIndexStore.shared.lookup($0) }.flatMap { $0.stream == video ? $0 : nil }
+        if let remembered {
+            keyframes = remembered.keyframes
+            positions = remembered.positions
+            duration = duration ?? remembered.duration
+        } else if let videoIndex {
             let videoBase = reader.timeBase(videoIndex)
-            let index = reader.keyframeIndex(stream: videoIndex, loadingIndexUpTo: duration)
+            // The seek to the end loads the Cues; without Cues for the video track FFmpeg's seek would read every cluster.
+            let loadUpTo = layout == nil || layout?.cuesListVideo == true ? duration : nil
+            let index = reader.keyframeIndex(stream: videoIndex, loadingIndexUpTo: loadUpTo)
             keyframes = index.map { videoBase.seconds($0.timestamp) }
             positions = index.map(\.position)
         }
-        // An index that is missing, or has gaps far longer than any real GOP, cannot be trusted: read the file once.
-        let indexComplete = Self.looksComplete(keyframes: keyframes, duration: duration)
+        // An index that is missing, or has gaps far longer than any real GOP, cannot be trusted.
+        let indexComplete = remembered != nil || Self.looksComplete(keyframes: keyframes, duration: duration)
         if (videoIndex != nil && !indexComplete) || duration == nil {
-            let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0])
-            if !indexComplete { keyframes = scan.keyframes; positions = scan.positions }
-            if duration == nil { duration = scan.duration }
+            Self.logger.notice("The file's index cannot be used (\(Self.reason(keyframes: keyframes, duration: duration, layout: layout), privacy: .public)); working one out")
+            var built: (keyframes: [Double], positions: [Int64?], duration: Double)?
+            if let layout, let mainReader, let videoIndex, let track = Self.videoTrackNumber(layout: layout, videoIndex: videoIndex, reader: mainReader) {
+                let rate = reader.stream(videoIndex).pointee.avg_frame_rate
+                let frame = rate.num > 0 && rate.den > 0 ? Double(rate.den) / Double(rate.num) : 0.04
+                if let found = try MatroskaClusterIndex.build(source: source, layout: layout, videoTrack: track, frameDuration: frame,
+                                                              cancellation: cancellation, progress: progress) {
+                    let origin = mainReader.originSeconds
+                    let times = found.keyframes.map { $0 - origin }
+                    let total = layout.duration != nil ? found.duration : found.duration - origin
+                    if Self.looksComplete(keyframes: times, duration: duration ?? total) {
+                        built = (times, found.positions.map { Optional($0) }, total)
+                    }
+                }
+            }
+            if let built, let videoIndex, let mainReader {
+                if !indexComplete {
+                    keyframes = built.keyframes
+                    positions = built.positions
+                    mainReader.addKeyframes(stream: videoIndex, seconds: keyframes, positions: positions)
+                }
+                if duration == nil { duration = built.duration }
+                Self.logger.notice("Index worked out from \(built.keyframes.count, privacy: .public) clusters")
+            } else {
+                let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0], length: source.length, progress: progress)
+                if !indexComplete { keyframes = scan.keyframes; positions = scan.positions }
+                if duration == nil { duration = scan.duration }
+                Self.logger.notice("Index worked out by reading the whole file")
+            }
+            if let fileKey, let videoIndex, let duration, Self.looksComplete(keyframes: keyframes, duration: duration) {
+                KeyframeIndexStore.shared.remember(.init(stream: videoIndex, keyframes: keyframes, positions: positions, duration: duration), for: fileKey)
+            }
         }
         guard let totalDuration = duration, totalDuration > 0 else { throw MediaError.unsupported(detail: "unknown duration") }
         videoKeyframes = keyframes.sorted()
@@ -285,12 +330,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         return zip(edges, edges.dropFirst()).allSatisfy { $1 - $0 <= 60 }
     }
 
-    /// Reads the whole file once to find keyframes and the true duration.
-    private static func scan(_ reader: any PacketSource, video: Int?, fallbackStream: Int) throws -> (keyframes: [Double], positions: [Int64?], duration: Double) {
+    /// Reads the whole file once to find keyframes and the true duration, saying how far it got (by byte position).
+    private static func scan(_ reader: any PacketSource, video: Int?, fallbackStream: Int, length: Int64?,
+                             progress: (@Sendable (Double) -> Void)?) throws -> (keyframes: [Double], positions: [Int64?], duration: Double) {
         try reader.rewind()
         var keyframes: [Double] = []
         var positions: [Int64?] = []
         var end = 0.0
+        var count = 0
+        var reported = -1.0
         while let packet = try reader.next() {
             let timeBase = reader.timeBase(packet.stream)
             end = max(end, timeBase.seconds(packet.pts + packet.duration))
@@ -298,8 +346,33 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                 keyframes.append(timeBase.seconds(packet.pts))
                 positions.append(packet.position >= 0 ? packet.position : nil)
             }
+            count += 1
+            if let progress, let length, length > 0, count % 256 == 0, packet.position > 0 {
+                let fraction = min(Double(packet.position) / Double(length), 1)
+                if fraction - reported >= 0.005 { reported = fraction; progress(fraction) }
+            }
         }
         return (keyframes, positions, end)
+    }
+
+    /// The Matroska track number of the demuxer's video stream `videoIndex`: the file's video tracks in order, matched
+    /// with the demuxer's video streams in order (attached pictures are attachments in Matroska, not tracks).
+    private static func videoTrackNumber(layout: MatroskaLayout, videoIndex: Int, reader: PacketReader) -> UInt64? {
+        var ordinal = 0
+        for index in 0..<videoIndex {
+            let stream = reader.stream(index).pointee
+            if stream.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO, stream.disposition & Int32(AV_DISPOSITION_ATTACHED_PIC) == 0 { ordinal += 1 }
+        }
+        return ordinal < layout.videoTracks.count ? layout.videoTracks[ordinal] : nil
+    }
+
+    /// Why an index was not used, for the log (no names or paths).
+    private static func reason(keyframes: [Double], duration: Double?, layout: MatroskaLayout?) -> String {
+        if duration == nil { return "no duration" }
+        if let layout, layout.cuesListVideo == nil { return "no Cues" }
+        if layout?.cuesListVideo == false { return "Cues without the video track" }
+        guard let first = keyframes.first else { return "no keyframes" }
+        return first >= 10 ? "first keyframe after 10 s" : "a gap of more than 60 s"
     }
 
     // MARK: Serving

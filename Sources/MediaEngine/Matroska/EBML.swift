@@ -55,6 +55,13 @@ struct EBMLReader {
         return raw.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
     }
 
+    /// An EBML float: 4 or 8 bytes, big-endian.
+    func float(at offset: Int64, size: Int) -> Double? {
+        guard size == 4 || size == 8, let raw = bytes(at: offset, count: size) else { return nil }
+        let bits = raw.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        return size == 4 ? Double(Float(bitPattern: UInt32(truncatingIfNeeded: bits))) : Double(bitPattern: bits)
+    }
+
     func string(at offset: Int64, size: Int) -> String? {
         guard size >= 0, size <= 4096, let raw = bytes(at: offset, count: size) else { return nil }
         let trimmed = raw.prefix { $0 != 0 }
@@ -62,13 +69,16 @@ struct EBMLReader {
     }
 
     /// The children of the element whose data starts at `start` and lasts `size` bytes (`nil`: until a parent ends or the
-    /// source does), as (header, absolute offset of the element). Stops after `limit` children.
-    func children(from start: Int64, size: Int64?, limit: Int = 10_000, until stop: Int64? = nil) -> [(header: EBMLHeader, offset: Int64)] {
+    /// source does), as (header, absolute offset of the element). Stops after `limit` children, or after the first child
+    /// whose identifier is `stopAt` (it is included): listing a segment's top level must not hop across its clusters, each
+    /// hop a read megabytes further on, which over a network fetches a whole chunk every time.
+    func children(from start: Int64, size: Int64?, limit: Int = 10_000, until stop: Int64? = nil, stopAt: UInt32? = nil) -> [(header: EBMLHeader, offset: Int64)] {
         var result: [(EBMLHeader, Int64)] = []
         var offset = start
         let end = size.map { start.addingReportingOverflow($0).partialValue } ?? stop ?? source.length ?? Int64.max
         while offset < end, result.count < limit, let header = header(at: offset) {
             result.append((header, offset))
+            if let stopAt, header.id == stopAt { break }
             guard let childSize = header.size else { break }            // unknown size: cannot skip it
             // Sizes come from the file and add up over thousands of elements: never let the sum wrap or trap.
             let step = Int64(header.headerLength).addingReportingOverflow(childSize)

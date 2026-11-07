@@ -137,6 +137,35 @@ public final class HTTPByteSource: ByteSource {
         return written
     }
 
+    /// A small request for just these bytes (a chunk already in the cache answers at once); nothing is cached or read ahead.
+    public func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
+        guard offset >= 0 else { throw MediaError.unreadable(detail: "negative offset") }
+        guard let base = buffer.baseAddress, buffer.count > 0 else { return 0 }
+        if let length, offset >= length { return 0 }
+        let end = min(offset + Int64(buffer.count), length ?? Int64.max)
+        let index = offset / chunkSize
+        let cached = state.withLock { $0.cache[index] }
+        if let cached, end <= index * chunkSize + Int64(cached.count) {
+            let within = Int(offset - index * chunkSize), count = Int(end - offset)
+            cached.withUnsafeBytes { base.copyMemory(from: $0.baseAddress! + within, byteCount: count) }
+            return count
+        }
+        let epoch = state.withLock { $0.epoch }
+        var attempt = 0
+        while true {
+            do {
+                let data = try fetchOnce(offset..<end, epoch: epoch)
+                let count = min(data.count, buffer.count)
+                data.withUnsafeBytes { base.copyMemory(from: $0.baseAddress!, byteCount: count) }
+                return count
+            } catch let retry as Retryable {
+                attempt += 1
+                if attempt >= maxAttempts { throw MediaError.network(detail: retry.detail) }
+                try pause(seconds: 0.3 * pow(3, Double(attempt - 1)), epoch: epoch)
+            }
+        }
+    }
+
     public func cancelPendingReads() {
         let tasks = state.withLock { state -> [URLSessionTask] in
             state.epoch += 1

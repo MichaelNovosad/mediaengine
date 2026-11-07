@@ -416,3 +416,34 @@ Result: `fixture-ts` (H.264 + AAC in MPEG-TS, a core container) and `fixture-avi
 **Verified.** `InterlaceTests`: on made-up pictures the kept lines are bit-identical and the combing of a moving block is gone for both field orders (comb measure at least three times lower), a still picture is left untouched, a diagonal edge is interpolated along the edge (90% of pixels), 10-bit and chroma work; on the two real files all 37 pictures are flagged with the right field order, the cleaned ones keep the first field's lines bit-identical to the raw decode and have measurably less combing; progressive Xvid is never touched; the anamorphic file's 16:11 reaches the pixel buffer and the format description; `displayDuration` for 0, 1, 2 repeated fields and with a duration from the file; `InterlacedPlaybackTests` plays the interlaced file to the end through `SoftwareController` (37 of 37 pictures shown).
 
 **Not covered.** How the display looks on a real interlaced broadcast file (the fixtures are synthetic: a test pattern moving at 50 Hz), inverse telecine, motion-compensated deinterlacing at double rate (bob), the PAR on screen (the attachments and the format description are checked, the layer's own scaling is the system's), the cost on a phone, VC-1 interlaced (VC-1 stays off).
+
+## 28. Files without a usable index: an index from the cluster headers, kept per file (2026-11-07)
+
+**Finding (the app's owner, a 19.1 GB MKV on an SMB share of a home router).** Eiga showed its opening screen for over ten minutes. A stack
+sample of the running app put it in `RemuxSession.scan`, and `nettop` showed 2.28 GB received at about 8 MB/s: the engine was reading the
+whole file to find its keyframes, because the file's own index was judged unusable (which of the four reasons was not known: no duration in
+the header, no Cues, a first keyframe after 10 s, a gap of more than a minute). Two code paths read a whole file before the first picture:
+`RemuxSession.scan` (when the keyframe list looks incomplete or the duration is missing), and FFmpeg itself: `PacketReader.keyframeIndex`
+seeks to the end to make FFmpeg load the Cues, and when a Matroska file has no Cues for the video track, FFmpeg 9.0.2's `matroska_read_seek`
+(`matroskadec.c` 4518 to 4527) parses every cluster from its last index entry to the end of the file. Nothing was remembered, so every
+opening repeated it. A smaller cost found on the way: `MatroskaChapters.read` (every probe of a Matroska file) listed up to 64 top-level
+elements, which hops across the first clusters, each hop a whole chunk fetched over the network.
+
+**Change.** (1) `MatroskaLayout` reads what the start of the file says (timestamp scale, duration, video track numbers, first cluster) and
+whether its Cues list a video track; without that, the seek to the end is skipped. (2) `MatroskaClusterIndex` hops from cluster to cluster
+by their sizes and reads only the start of each (its time and its first video block: SimpleBlock flags, or a BlockGroup without
+ReferenceBlock), a window of 8 KB through the new `ByteSource.readSparse(at:into:)`, which `HTTPByteSource` and the app's SMB source answer
+with a request for just those bytes, without caching a chunk or reading ahead. Keyframes that are not a cluster's first video block are not
+found; segments are cut at the ones that are, where muxers start clusters. The duration, when the header has none, is the last cluster's
+latest block plus one frame. The keyframes (cluster positions) go into FFmpeg's index (`av_add_index_entry`), so its seeks jump to a cluster.
+(3) Clusters of unknown size (live recordings) cannot be hopped: the old read-through remains for them and for other containers, now with
+progress. (4) `KeyframeIndexStore` keeps every list worked out this way in Caches (`MediaEngine/KeyframeIndexes`, a file per movie named by
+its length and a hash of its first 64 KB, times and offsets only, 200 at most); every `PacketReader` of such a file adopts it, and the next
+opening skips the work. (5) `PlaybackSession.observePreparation(_:)` reports the fraction done; `close()` stops it. (6) The chapter reader
+stops at the first cluster. The log (subsystem `dev.mediaengine`, category `index`) says why an index was not used and how the new one was
+made.
+
+**Not verified.** Compiled only: no test written or run (the owner's rule), no file without Cues tried, the owner's file not seen. How long
+the hop takes depends on the number of clusters and the round trip per request (about two small requests per cluster); a two-hour film has
+roughly 1,000 to 3,000 clusters. Untested shapes: clusters that do not start with a video keyframe (the list then has gaps, and a gap over a
+minute falls back to the read-through), several video tracks, BlockGroups with lacing, files whose Cues sit before the clusters.

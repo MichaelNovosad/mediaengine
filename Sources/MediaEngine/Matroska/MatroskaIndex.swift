@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Element identifiers for the index work below.
 private enum MKV {
@@ -199,10 +200,16 @@ enum MatroskaClusterIndex {
         var duration: Double
     }
 
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "index")
+
     /// `nil` when it cannot be done this way: no cluster, a cluster of unknown size (a live recording), no keyframe found.
+    /// The log says which.
     static func build(source: any ByteSource, layout: MatroskaLayout, videoTrack: UInt64, frameDuration: Double,
                       cancellation: CancellationFlag, progress: (@Sendable (Double) -> Void)?) throws -> Result? {
-        guard let first = layout.firstCluster, let length = source.length, length > first else { return nil }
+        guard let first = layout.firstCluster, let length = source.length, length > first else {
+            logger.notice("Cluster headers: no first cluster found")
+            return nil
+        }
         let end = min(layout.segmentEnd ?? length, length)
         var reader = SparseEBML(source: source, length: length)
         let scale = layout.timestampScale / 1e9                          // seconds per tick
@@ -211,14 +218,26 @@ enum MatroskaClusterIndex {
         var lastCluster: (offset: Int64, header: EBMLHeader)?
         var offset = first
         var reported = -1.0
+        var clusters = 0, withVideo = 0
         while offset < end {
             if cancellation.isCancelled { throw MediaError.cancelled }
-            guard let header = try reader.header(at: offset) else { break }              // the end of what can be read
-            guard MKV.topLevel.contains(header.id) else { break }                          // not a top-level element: damaged here
-            guard let size = header.size else { return nil }                               // unknown size: the next one cannot be found
+            guard let header = try reader.header(at: offset) else {                        // the end of what can be read
+                logger.notice("Cluster headers: unreadable element at \(offset, privacy: .public) of \(length, privacy: .public)")
+                break
+            }
+            guard MKV.topLevel.contains(header.id) else {                                  // not a top-level element: damaged here
+                logger.notice("Cluster headers: unexpected element \(String(header.id, radix: 16), privacy: .public) at \(offset, privacy: .public)")
+                break
+            }
+            guard let size = header.size else {                                            // unknown size: the next one cannot be found
+                logger.notice("Cluster headers: an element of unknown size at \(offset, privacy: .public) (a live recording); cannot hop")
+                return nil
+            }
             if header.id == MKV.cluster {
+                clusters += 1
                 lastCluster = (offset, header)
                 if let found = try firstVideoBlock(&reader, cluster: offset, header: header, track: videoTrack, scale: scale) {
+                    withVideo += 1
                     latest = max(latest, found.time)
                     if found.isKeyframe, found.time >= (keyframes.last ?? -.infinity) {
                         keyframes.append(found.time)
@@ -235,6 +254,7 @@ enum MatroskaClusterIndex {
                 if fraction - reported >= 0.005 { reported = fraction; progress(fraction) }
             }
         }
+        logger.notice("Cluster headers: \(clusters, privacy: .public) clusters, \(withVideo, privacy: .public) with a video block of track \(videoTrack, privacy: .public), \(keyframes.count, privacy: .public) of them start with a keyframe")
         guard !keyframes.isEmpty else { return nil }
         var duration = layout.duration
         if duration == nil, let last = lastCluster {

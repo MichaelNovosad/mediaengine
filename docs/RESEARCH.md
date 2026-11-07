@@ -447,3 +447,17 @@ made.
 the hop takes depends on the number of clusters and the round trip per request (about two small requests per cluster); a two-hour film has
 roughly 1,000 to 3,000 clusters. Untested shapes: clusters that do not start with a video keyframe (the list then has gaps, and a gap over a
 minute falls back to the read-through), several video tracks, BlockGroups with lacing, files whose Cues sit before the clusters.
+
+**Second round (same day, the owner tried it on the 19.1 GB file from Xcode).** The log showed that the file has Cues that list the video, but
+the engine rejected them for "a gap of more than 60 s" somewhere, and the hop did not help (the read-through began two milliseconds after
+that log line; the hop was not logged then, so why it gave up is not known), so the whole file was read again. The rule itself was the
+mistake: one gap threw away an index that covers nearly everything. **Change:** the file's own index (or a remembered one) is always
+the base; `RemuxSession.gaps(in:duration:)` lists what it leaves out (a first keyframe after 10 s, keyframes more than a minute apart, the
+part after the last keyframe when it is more than a minute before the end or the end is unknown), and `readGaps` reads only those stretches
+(video packets only, each from its last known keyframe to the next one, through the demuxer's own seek), so the work is the size of the
+gaps, at most the whole file as before. The hop now runs only when there are no Cues for the video, as a first list that the gap reading
+completes (clusters that do not start with a keyframe no longer make it useless). What was read is kept even when the video really has such
+gaps, so the next opening reads nothing. The log now gives the index's size, its longest gap and where, the number of gaps over a minute,
+how many stretches and megabytes are read, and, for the hop, why it stopped (no first cluster, an element of unknown size, an unexpected
+element) and how many clusters started with a video keyframe. Compiled only; not run on any file.
+

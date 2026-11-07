@@ -158,9 +158,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let shiftSeconds = -earliest
         mediaShift = shiftSeconds
 
-        // Segment plan from the video index. A file whose index is missing or unusable gets one worked out once and kept
-        // for the next opening (KeyframeIndexStore): Matroska by hopping from cluster to cluster, anything else (or a
-        // Matroska file that cannot be hopped) by reading the file through.
+        // Segment plan from the video index: the file's own (Matroska Cues, an MP4 sync table) or one worked out at an earlier
+        // opening (KeyframeIndexStore). What the index leaves out (a late first keyframe, more than a minute without one, the
+        // part after its last one when that is long or the duration unknown) is read from the file: only those stretches, never
+        // the whole file because of one gap. A Matroska file without Cues for its video first gets a list from its cluster
+        // headers. The result is kept for the next opening.
         var keyframes: [Double] = []
         var positions: [Int64?] = []
         var duration = info.duration
@@ -173,6 +175,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             keyframes = remembered.keyframes
             positions = remembered.positions
             duration = duration ?? remembered.duration
+            Self.logger.notice("Index: \(keyframes.count, privacy: .public) keyframes kept from an earlier opening")
         } else if let videoIndex {
             let videoBase = reader.timeBase(videoIndex)
             // The seek to the end loads the Cues; without Cues for the video track FFmpeg's seek would read every cluster.
@@ -180,42 +183,53 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             let index = reader.keyframeIndex(stream: videoIndex, loadingIndexUpTo: loadUpTo)
             keyframes = index.map { videoBase.seconds($0.timestamp) }
             positions = index.map(\.position)
+            Self.logger.notice("Index: \(keyframes.count, privacy: .public) keyframes from the file; \(Self.describe(layout), privacy: .public); \(Self.describeGaps(keyframes: keyframes, duration: duration), privacy: .public)")
         }
-        // An index that is missing, or has gaps far longer than any real GOP, cannot be trusted.
-        let indexComplete = remembered != nil || Self.looksComplete(keyframes: keyframes, duration: duration)
-        if (videoIndex != nil && !indexComplete) || duration == nil {
-            Self.logger.notice("The file's index cannot be used (\(Self.reason(keyframes: keyframes, duration: duration, layout: layout), privacy: .public)); working one out")
-            var built: (keyframes: [Double], positions: [Int64?], duration: Double)?
-            if let layout, let mainReader, let videoIndex, let track = Self.videoTrackNumber(layout: layout, videoIndex: videoIndex, reader: mainReader) {
+        let complete = duration != nil && (remembered != nil || Self.looksComplete(keyframes: keyframes, duration: duration))
+        if !complete, let videoIndex, let mainReader {
+            Self.logger.notice("The index leaves gaps (\(Self.reason(keyframes: keyframes, duration: duration, layout: layout), privacy: .public)): reading only what it leaves out")
+            var share = 0.0                                                    // of the progress bar, taken by the cluster headers
+            if let layout, layout.cuesListVideo != true, let track = Self.videoTrackNumber(layout: layout, videoIndex: videoIndex, reader: mainReader) {
                 let rate = reader.stream(videoIndex).pointee.avg_frame_rate
                 let frame = rate.num > 0 && rate.den > 0 ? Double(rate.den) / Double(rate.num) : 0.04
+                var hopProgress: (@Sendable (Double) -> Void)?
+                if let progress { hopProgress = { @Sendable fraction in progress(fraction * 0.3) } }
                 if let found = try MatroskaClusterIndex.build(source: source, layout: layout, videoTrack: track, frameDuration: frame,
-                                                              cancellation: cancellation, progress: progress) {
+                                                              cancellation: cancellation, progress: hopProgress) {
                     let origin = mainReader.originSeconds
-                    let times = found.keyframes.map { $0 - origin }
-                    let total = layout.duration != nil ? found.duration : found.duration - origin
-                    if Self.looksComplete(keyframes: times, duration: duration ?? total) {
-                        built = (times, found.positions.map { Optional($0) }, total)
-                    }
-                }
-            }
-            if let built, let videoIndex, let mainReader {
-                if !indexComplete {
-                    keyframes = built.keyframes
-                    positions = built.positions
+                    let list = Self.merged(zip(keyframes, positions).map { ($0, $1) }, zip(found.keyframes, found.positions).map { ($0 - origin, Optional($1)) })
+                    keyframes = list.keyframes
+                    positions = list.positions
+                    if duration == nil { duration = layout.duration != nil ? found.duration : found.duration - origin }
                     mainReader.addKeyframes(stream: videoIndex, seconds: keyframes, positions: positions)
+                    share = 0.3
                 }
-                if duration == nil { duration = built.duration }
-                Self.logger.notice("Index worked out from \(built.keyframes.count, privacy: .public) clusters")
-            } else {
-                let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0], length: source.length, progress: progress)
-                if !indexComplete { keyframes = scan.keyframes; positions = scan.positions }
-                if duration == nil { duration = scan.duration }
-                Self.logger.notice("Index worked out by reading the whole file")
             }
-            if let fileKey, let videoIndex, let duration, Self.looksComplete(keyframes: keyframes, duration: duration) {
+            let gaps = Self.gaps(in: keyframes, duration: duration)
+            if !gaps.isEmpty {
+                let spans = Self.byteSpans(of: gaps, keyframes: keyframes, positions: positions, duration: duration, length: source.length)
+                let total = spans.reduce(Int64(0)) { $0 + ($1.endByte - $1.startByte) }
+                Self.logger.notice("Reading \(gaps.count, privacy: .public) stretches, \(Int(gaps.reduce(0.0) { $0 + (($1.to ?? duration ?? $1.from) - $1.from) }), privacy: .public) s, about \(total / 1_000_000, privacy: .public) MB of \((source.length ?? 0) / 1_000_000, privacy: .public) MB")
+                let offset = share
+                var fillProgress: ((Double) -> Void)?
+                if let progress { fillProgress = { fraction in progress(offset + fraction * (1 - offset)) } }
+                let filled = try Self.readGaps(mainReader, video: videoIndex, spans: spans, cancellation: cancellation, progress: fillProgress)
+                let list = Self.merged(zip(keyframes, positions).map { ($0, $1) }, filled.keyframes)
+                keyframes = list.keyframes
+                positions = list.positions
+                if duration == nil { duration = filled.end }
+            }
+            Self.logger.notice("Index now: \(keyframes.count, privacy: .public) keyframes; \(Self.describeGaps(keyframes: keyframes, duration: duration), privacy: .public)")
+            // Kept even when the video itself has long stretches without a keyframe: what was read is all the file has, and
+            // the next opening must not read it again.
+            if let fileKey, let duration, !keyframes.isEmpty {
                 KeyframeIndexStore.shared.remember(.init(stream: videoIndex, keyframes: keyframes, positions: positions, duration: duration), for: fileKey)
             }
+        } else if !complete {
+            // A play list of several files, or a file without video: read it through, as before.
+            let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0], length: source.length, progress: progress)
+            if videoIndex != nil, !Self.looksComplete(keyframes: keyframes, duration: duration) { keyframes = scan.keyframes; positions = scan.positions }
+            if duration == nil { duration = scan.duration }
         }
         guard let totalDuration = duration, totalDuration > 0 else { throw MediaError.unsupported(detail: "unknown duration") }
         videoKeyframes = keyframes.sorted()
@@ -364,6 +378,103 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             if stream.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO, stream.disposition & Int32(AV_DISPOSITION_ATTACHED_PIC) == 0 { ordinal += 1 }
         }
         return ordinal < layout.videoTracks.count ? layout.videoTracks[ordinal] : nil
+    }
+
+    /// The stretches a keyframe list leaves out: before its first keyframe when that comes after 10 s, between keyframes more
+    /// than a minute apart, and after the last one when that is more than a minute before the end or the end is unknown
+    /// (`to == nil`: up to the end of the file). An empty list leaves out everything.
+    static func gaps(in keyframes: [Double], duration: Double?) -> [(from: Double, to: Double?)] {
+        guard let first = keyframes.first, let last = keyframes.last else { return [(0, nil)] }
+        var result: [(from: Double, to: Double?)] = []
+        if first >= 10 { result.append((0, first)) }
+        for (a, b) in zip(keyframes, keyframes.dropFirst()) where b - a > 60 { result.append((a, b)) }
+        if duration.map({ $0 - last > 60 }) ?? true { result.append((last, nil)) }
+        return result
+    }
+
+    /// Where each stretch starts and ends in the file: the byte positions of its keyframes when the index has them, else an
+    /// estimate from the average bitrate (only used for the progress bar).
+    private static func byteSpans(of gaps: [(from: Double, to: Double?)], keyframes: [Double], positions: [Int64?], duration: Double?,
+                                  length: Int64?) -> [(from: Double, to: Double?, startByte: Int64, endByte: Int64)] {
+        let size = length ?? 0
+        func position(_ time: Double) -> Int64 {
+            if time <= 0 { return 0 }
+            if let index = keyframes.firstIndex(where: { abs($0 - time) < 0.0005 }), let known = positions[index] { return known }
+            guard let duration, duration > 0 else { return 0 }
+            return Int64(Double(size) * min(time / duration, 1))
+        }
+        return gaps.map { gap in
+            let start = position(gap.from)
+            return (gap.from, gap.to, start, max(gap.to.map(position) ?? size, start))
+        }
+    }
+
+    /// Reads only the given stretches of the file (video packets only) and returns the keyframes found in them; a stretch
+    /// without an end (`to == nil`) is read to the end of the file, which also gives the end of the video.
+    private static func readGaps(_ reader: PacketReader, video: Int, spans: [(from: Double, to: Double?, startByte: Int64, endByte: Int64)],
+                                 cancellation: CancellationFlag, progress: ((Double) -> Void)?) throws -> (keyframes: [(Double, Int64?)], end: Double?) {
+        let base = reader.timeBase(video)
+        let total = max(spans.reduce(Int64(0)) { $0 + ($1.endByte - $1.startByte) }, 1)
+        var done: Int64 = 0
+        var reported = -1.0
+        var found: [(Double, Int64?)] = []
+        var end: Double?
+        reader.limit(to: [video])
+        defer { reader.limit(to: Set(0..<reader.streamCount)) }
+        for span in spans {
+            if span.from <= 0 { try reader.rewind() } else { try reader.seek(stream: video, to: base.ticks(seconds: span.from)) }
+            while let packet = try reader.next() {
+                if cancellation.isCancelled { throw MediaError.cancelled }
+                guard packet.stream == video else { continue }
+                let time = base.seconds(packet.pts)
+                if let to = span.to {
+                    if packet.isKeyframe, time >= to - 0.0005 { break }
+                    if time > to + 30 { break }                       // past it without meeting its keyframe: a damaged stretch
+                } else {
+                    end = max(end ?? 0, base.seconds(packet.pts + packet.duration))
+                }
+                if packet.isKeyframe, time >= span.from { found.append((time, packet.position >= 0 ? packet.position : nil)) }
+                if let progress, packet.position > 0 {
+                    let within = min(max(packet.position - span.startByte, 0), span.endByte - span.startByte)
+                    let fraction = min(Double(done + within) / Double(total), 1)
+                    if fraction - reported >= 0.005 { reported = fraction; progress(fraction) }
+                }
+            }
+            done += span.endByte - span.startByte
+        }
+        return (found, end)
+    }
+
+    /// Two keyframe lists as one, in time order, without repeats (a position is kept from either).
+    private static func merged(_ a: [(Double, Int64?)], _ b: [(Double, Int64?)]) -> (keyframes: [Double], positions: [Int64?]) {
+        var keyframes: [Double] = [], positions: [Int64?] = []
+        for (time, position) in (a + b).sorted(by: { $0.0 < $1.0 }) {
+            if let last = keyframes.last, time - last < 0.0005 {
+                if positions[positions.count - 1] == nil { positions[positions.count - 1] = position }
+                continue
+            }
+            keyframes.append(time)
+            positions.append(position)
+        }
+        return (keyframes, positions)
+    }
+
+    /// What the start of a Matroska file said, for the log.
+    private static func describe(_ layout: MatroskaLayout?) -> String {
+        guard let layout else { return "not read as Matroska" }
+        let cues = layout.cuesListVideo.map { $0 ? "Cues list the video" : "Cues without the video" } ?? "no Cues"
+        let header = layout.duration == nil ? "no duration in the header" : "duration in the header"
+        return "\(cues), \(header), \(layout.videoTracks.count) video track(s)"
+    }
+
+    /// How complete a keyframe list is, for the log: its longest gap and where it is, and how many gaps over a minute.
+    private static func describeGaps(keyframes: [Double], duration: Double?) -> String {
+        guard let first = keyframes.first, let last = keyframes.last else { return "no keyframes" }
+        var longest = (length: 0.0, at: 0.0)
+        for (a, b) in zip(keyframes, keyframes.dropFirst()) where b - a > longest.length { longest = (b - a, a) }
+        let long = zip(keyframes, keyframes.dropFirst()).filter { $1 - $0 > 60 }.count
+        let tail = duration.map { String(format: "%.0f s after the last one", $0 - last) } ?? "end unknown"
+        return String(format: "first at %.1f s, longest gap %.1f s at %.0f s, %ld gaps over a minute, ", first, longest.length, longest.at, long) + tail
     }
 
     /// Why an index was not used, for the log (no names or paths).

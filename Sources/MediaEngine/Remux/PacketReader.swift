@@ -1,5 +1,6 @@
 internal import FFmpegLGPL
 import Foundation
+import os
 
 /// A time base: one tick lasts `num / den` seconds.
 struct Rational: Sendable, Equatable {
@@ -70,20 +71,40 @@ final class PacketReader: PacketSource {
     /// at the start of the stream put into the codec parameters (see ``AnnexB``).
     private var annexB: [Int: AnnexB.Codec] = [:]
     private var parameterSets: [Int: [Int: [Data]]] = [:]
+    /// The parameter sets of each Annex B stream's decoder configuration (what its init segment holds), by NAL type, taken
+    /// once from the codec parameters; and the streams that keep their parameter sets in the samples because they change
+    /// (see ``AnnexB/convert(_:codec:configuration:keepsSets:)``).
+    private var configurationSets: [Int: [Int: [Data]]] = [:]
+    private var inBandSets: Set<Int> = []
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "index")
     /// AAC with ADTS headers and container timestamps (MPEG-TS): the header is cut off and its content goes into the
     /// codec parameters. Raw `.aac` files have no timestamps at all and are handled below with `untimedStreams`.
     private var adtsStreams: Set<Int> = []
     private var adtsConfigurations: [Int: ADTSFrame] = [:]
 
-    init(source: any ByteSource, cancellation: CancellationFlag) throws {
+    /// `quick` (the default) opens a file whose duration the engine knows already (see ``FormatContext/open(source:cancellation:quick:)``);
+    /// a reader that needs FFmpeg's own duration passes `false`.
+    init(source: any ByteSource, cancellation: CancellationFlag, quick: Bool = true) throws {
         self.source = source
         self.cancellation = cancellation
-        context = try FormatContext.open(source: source, cancellation: cancellation)
+        self.quick = quick
+        context = try FormatContext.open(source: source, cancellation: cancellation, quick: quick)
         guard let packet = av_packet_alloc() else { throw MediaError.engine(detail: "could not allocate packet") }
         self.packet = packet
         try prepareStreams()
         adoptRememberedIndex()
+        let name = String(cString: format.pointee.iformat.pointee.name)
+        indexesKeyframes = name == "mpegts" || name == "mpeg"
     }
+
+    private let quick: Bool
+    /// MPEG transport and program streams have no index, and FFmpeg's seek in them searches the file by jumping about in it
+    /// unless its index already brackets the target: the reader adds every video keyframe it reads, so the next piece's
+    /// seek lands almost at once.
+    private var indexesKeyframes = false
+    /// FFmpeg seeks this file by decode time (MPEG transport and program streams): a keyframe shown at time t is decoded a few
+    /// frames before t, so a seek to t lands just after it.
+    var seeksByDecodeTime: Bool { indexesKeyframes }
 
     /// Whether the file is Matroska or WebM (FFmpeg's demuxer name).
     var isMatroska: Bool { String(cString: format.pointee.iformat.pointee.name).contains("matroska") }
@@ -104,6 +125,43 @@ final class PacketReader: PacketSource {
             guard let position, position >= 0 else { continue }
             av_add_index_entry(st, position, base.ticks(seconds: time) + origin, 0, 0, Int32(AVINDEX_KEYFRAME))
         }
+    }
+
+    /// Finds clusters for seeks the demuxer's index does not cover (Matroska only); made on the first such seek.
+    private var seeker: MatroskaSeeker?
+    private var seekerTried = false
+    /// Matroska loads its Cues on the first seek: a seek to the start does that cheaply, before the index is asked anything.
+    private var cuesLoaded = false
+
+    /// The time (engine timeline) of the demuxer's index entry at or before `seconds` for a stream, if any.
+    func indexEntry(stream index: Int, atOrBefore seconds: Double) -> Double? {
+        guard index < streamCount else { return nil }
+        let st = stream(index), base = timeBase(index)
+        let position = av_index_search_timestamp(st, base.ticks(seconds: seconds) + originTicks(index), AVSEEK_FLAG_BACKWARD)
+        guard position >= 0, let entry = avformat_index_get_entry(st, position) else { return nil }
+        return base.seconds(entry.pointee.timestamp - originTicks(index))
+    }
+
+    /// Before a Matroska seek to a time the index knows nothing near (no Cues there, nothing read there yet): FFmpeg would
+    /// read every cluster from the last one it knows up to the target. A cluster close before the target is found instead
+    /// (``MatroskaSeeker``) and put into the index as a seek point.
+    private func helpSeek(stream index: Int, to timestamp: Int64) throws {
+        guard isMatroska else { return }
+        let base = timeBase(index)
+        let target = base.seconds(timestamp)
+        guard target > 20 else { return }
+        if !cuesLoaded {
+            cuesLoaded = true
+            _ = av_seek_frame(format, Int32(index), originTicks(index), AVSEEK_FLAG_BACKWARD)
+        }
+        if let near = indexEntry(stream: index, atOrBefore: target), target - near <= 20 { return }
+        if !seekerTried {
+            seekerTried = true
+            let duration = format.pointee.duration > 0 ? Double(format.pointee.duration) / 1_000_000 : nil
+            seeker = MatroskaSeeker(source: source, scale: Double(base.num) / Double(base.den), duration: duration, cancellation: cancellation)
+        }
+        guard let seeker, let spot = try seeker.cluster(atOrBefore: target + originSeconds) else { return }
+        av_add_index_entry(stream(index), spot.position, base.ticks(seconds: spot.time), 0, 0, Int32(AVINDEX_KEYFRAME))
     }
 
     /// A Matroska file whose keyframes the engine worked out at an earlier opening (``KeyframeIndexStore``): every reader of
@@ -184,16 +242,19 @@ final class PacketReader: PacketSource {
     /// Starts again from the very first packet. Seeking to time zero would skip packets with negative
     /// timestamps (the encoder-delay "priming" frames of AAC and others), so the file is simply reopened.
     func rewind() throws {
-        context = try FormatContext.open(source: source, cancellation: cancellation)
+        context = try FormatContext.open(source: source, cancellation: cancellation, quick: quick)
         clock = [:]
+        cuesLoaded = false
         applyStreamLimit()
         applyPreparedParameters()
+        adoptRememberedIndex()
         // The new context knows nothing of the extradata made for raw ADTS files; it is made again on the first frame.
     }
 
     /// Positions the reader at the last keyframe at or before `timestamp` of the given stream.
     func seek(stream index: Int, to timestamp: Int64) throws {
         if untimedStreams.contains(index) { return try seekUntimed(stream: index, to: timestamp) }
+        try helpSeek(stream: index, to: timestamp)
         let result = av_seek_frame(format, Int32(index), timestamp + originTicks(index), AVSEEK_FLAG_BACKWARD)
         if result < 0 { throw FormatContext.openError(result, context.bridge) }
     }
@@ -209,6 +270,11 @@ final class PacketReader: PacketSource {
             }
             if result < 0 { throw FormatContext.openError(result, context.bridge) }
             defer { av_packet_unref(packet) }
+            if indexesKeyframes, packet.pointee.flags & AV_PKT_FLAG_KEY != 0, packet.pointee.pos >= 0,
+               let st = format.pointee.streams[Int(packet.pointee.stream_index)], st.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO {
+                let stamp = packet.pointee.dts != Int64.min ? packet.pointee.dts : packet.pointee.pts
+                if stamp != Int64.min { av_add_index_entry(st, packet.pointee.pos, stamp, 0, 0, Int32(AVINDEX_KEYFRAME)) }
+            }
 
             var pts = packet.pointee.pts
             var dts = packet.pointee.dts
@@ -249,7 +315,13 @@ final class PacketReader: PacketSource {
 
             let size = Int(packet.pointee.size) - payloadOffset
             var data = size > 0 ? Data(bytes: packet.pointee.data + payloadOffset, count: size) : Data()
-            if let codec = annexB[streamIndex] { data = AnnexB.convert(data, codec: codec, sets: &parameterSets[streamIndex, default: [:]]) }
+            if let codec = annexB[streamIndex] {
+                var keeps = inBandSets.contains(streamIndex)
+                data = AnnexB.convert(data, codec: codec, configuration: configuration(streamIndex, codec), keepsSets: &keeps)
+                if keeps, inBandSets.insert(streamIndex).inserted {
+                    Self.logger.notice("Video stream \(streamIndex, privacy: .public) changes its parameter sets after the start: they stay in the samples")
+                }
+            }
             var skipStart = 0, skipEnd = 0
             var sideSize = 0
             if let side = av_packet_get_side_data(packet, AV_PKT_DATA_SKIP_SAMPLES, &sideSize), sideSize >= 8 {
@@ -305,6 +377,23 @@ final class PacketReader: PacketSource {
             }
         }
         try rewind()                                                   // back to the first packet, with the parameters applied
+    }
+
+    /// The parameter sets in the decoder configuration of an Annex B stream, by NAL type: read once from its codec parameters
+    /// (FFmpeg's own extradata or the sets ``prepareStreams()`` found), which is what the init segment is made from.
+    private func configuration(_ index: Int, _ codec: AnnexB.Codec) -> [Int: [Data]] {
+        if let known = configurationSets[index] { return known }
+        let parameters = codecParameters(index)
+        var sets: [Int: [Data]] = [:]
+        if parameters.pointee.extradata_size > 0, let extradata = parameters.pointee.extradata {
+            let buffer = UnsafeBufferPointer(start: extradata, count: Int(parameters.pointee.extradata_size))
+            for range in AnnexB.units(in: buffer) {
+                let type = AnnexB.nalType(buffer[range.lowerBound], codec)
+                if AnnexB.isParameterSet(type, codec) { sets[type, default: []].append(Data(buffer[range])) }
+            }
+        }
+        configurationSets[index] = sets
+        return sets
     }
 
     /// Puts what was found at the start into the codec parameters of the (re)opened file.

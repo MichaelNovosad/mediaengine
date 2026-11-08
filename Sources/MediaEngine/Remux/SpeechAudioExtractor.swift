@@ -17,7 +17,7 @@ enum SpeechAudioExtractor {
     /// Decodes the whole track; `progress` gets 0 to 1 as the file is read. Blocks: call it on a thread of its own.
     static func extract(from byteSource: any ByteSource, stream: Int, codecName: String, to url: URL, cancellation: CancellationFlag,
                         progress: (@Sendable (Double) -> Void)?) throws {
-        let reader = try PacketReader(source: byteSource, cancellation: cancellation)
+        let reader = try PacketReader(source: byteSource, cancellation: cancellation, quick: false)      // its progress needs FFmpeg's duration
         reader.limit(to: [stream])
         let base = reader.timeBase(stream)
         let total = max(Double(reader.format.pointee.duration) / Double(AV_TIME_BASE), 0)

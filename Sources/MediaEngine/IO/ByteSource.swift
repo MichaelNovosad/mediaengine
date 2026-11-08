@@ -36,6 +36,11 @@ public protocol ByteSource: Sendable {
     /// bytes, without caching a chunk or reading ahead: the engine calls it at offsets megabytes apart, thousands of
     /// times. A short read is allowed. The default implementation calls ``read(at:into:)``.
     func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int
+
+    /// How fast this source has been delivering bytes lately, in bytes per second, or `nil` when it does not measure it (a
+    /// local file is as fast as the engine needs). The engine sizes the pieces it hands the player by it: over a slow link
+    /// each piece is shorter, so that the first picture and every jump wait for less. The default is `nil`.
+    var throughput: Double? { get }
 }
 
 extension ByteSource {
@@ -43,6 +48,26 @@ extension ByteSource {
 
     public func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
         try read(at: offset, into: buffer)
+    }
+
+    public var throughput: Double? { nil }
+}
+
+/// A running estimate of how fast a network source delivers: each fetch of at least `smallest` bytes is one sample, and the
+/// estimate leans on the latest ones (small fetches are mostly waiting for the round trip and say little about speed).
+public struct ThroughputMeter: Sendable {
+    public private(set) var bytesPerSecond: Double?
+    private let smallest: Int
+
+    public init(smallest: Int = 128 * 1024) {
+        self.smallest = smallest
+    }
+
+    /// Records one fetch of `bytes` that took `seconds`.
+    public mutating func record(bytes: Int, seconds: Double) {
+        guard bytes >= smallest, seconds > 0.000_1 else { return }
+        let sample = Double(bytes) / seconds
+        bytesPerSecond = bytesPerSecond.map { $0 * 0.7 + sample * 0.3 } ?? sample
     }
 }
 

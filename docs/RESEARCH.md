@@ -461,3 +461,109 @@ gaps, so the next opening reads nothing. The log now gives the index's size, its
 how many stretches and megabytes are read, and, for the hop, why it stopped (no first cluster, an element of unknown size, an unexpected
 element) and how many clusters started with a video keyframe. Compiled only; not run on any file.
 
+**Third round: play at once on a time grid (same day, the owner chose this after the second round still read the whole file).** The
+log of the second round explained it: "19 keyframes from the file; not read as Matroska; longest gap 7072 s". FFmpeg finds no usable Cues
+in the owner's file (the 19 are what the opening saw at the start and, through FFmpeg's `estimate_timings_from_pts`, at the end), and the
+engine's own reader of the file's top level (`MatroskaLayout`) failed on it for a reason the log did not give, so the cluster headers were
+never tried; with no index, the only stretch to read was the whole movie. The deeper limit: the HLS playlist must list every piece before
+AVPlayer plays, and the pieces were cut at keyframes, so unknown keyframes had to be found first.
+**Change.** Without a complete index the pieces lie on a fixed time grid made from the duration alone (`RemuxSession.gridStep`: six
+seconds, shorter at high bitrates, never less than two of the first GOPs, at most 20 s), and nothing is read at opening. This fits what
+`buildWindow` already did: a piece's video starts at the first keyframe at or after its start time and ends at the first keyframe at or
+after its end, so neighbouring pieces meet at the same keyframe; audio is cut at the grid times exactly. A piece whose span holds no
+keyframe of its own now has no video instead of a copy of the next piece's. The playlist states the grid durations, so a video piece can
+be up to a GOP longer or shorter than its EXTINF (the fragments carry their true timestamps). Seeks: `PacketReader.seek` (Matroska) first
+loads the Cues with a cheap seek to the start, then, when the index knows nothing within 20 s before the target, asks `MatroskaSeeker`
+(which replaces the cluster-header index and `MatroskaLayout`) for a cluster: it guesses the byte position from the time, reads 1 MB pieces
+there (`readSparse`) for the next cluster (its identifier, a known size, a Timestamp as first child, and a top-level element where its size
+ends), narrows the guess, and steps forward by cluster sizes to the last cluster at or before the target; that cluster goes into the
+demuxer's index as a seek point, FFmpeg reads from there and skips to the next keyframe. Clusters found are shared by every reader of the
+file (the subtitle overlay's too). A file without a duration still reads from its last known keyframe to the end; play lists and files
+without video and duration are read through as before (the second round had made audio-only files with a duration read through: fixed).
+**Not verified:** compiled only, no test (the owner's word), nothing played. Unknowns: how AVPlayer treats video pieces whose length differs
+from EXTINF by up to a GOP (believed tolerated, since the fragments' own timestamps place them); how many 1 MB reads a jump costs on the
+owner's file (it depends on its cluster size: a guess lands on average half a cluster before the next one).
+
+## 29. Loading over a network: pieces by link speed, fewer openings, remembered descriptions (2026-11-08)
+
+**Measured first** (the app's owner, the 19.1 GB movie over SMB from a home router, system log of 2026-11-07 23:06): click to picture about
+4.5 s: probe 1.2 s, files next to the movie and sync with a second opening 0.65 s, then 2.5 s for the first 6-second piece (about 17 MB at
+the movie's 22 Mbps, read at about 8 MB/s; AVPlayer started after one whole piece). The log also showed that **the movie is an MPEG
+transport stream (a Blu-ray `.m2ts`), not Matroska**: FFmpeg's `estimate_timings_from_pts` runs only for `mpeg` and `mpegts`, and its warning
+was in the log; this is why the Matroska reader of the earlier rounds never applied. A transport stream has no index; FFmpeg seeks in it by
+searching the file (`ff_seek_frame_binary` with `mpegts_get_dts`), which reads at many places unless its index brackets the target. A movie
+with fonts showed ten openings of the file within 60 ms: one per attachment.
+
+**Changes.** (1) `ByteSource.throughput` (default `nil`; `HTTPByteSource` and the app's SMB source measure it with `ThroughputMeter` over
+fetches of 128 KB and more) and `RemuxSession.pieceTarget`: a piece lasts what loads in about a second at that speed, from 2 to 6 s; a
+local file keeps 6 s. It is chosen once per opening (the playlist cannot change afterwards). (2) `FormatContext.open(quick:)`: every opening
+after the probe sets `skip_estimate_duration_from_pts`, so it does not jump to the end of a transport stream again (the speech extractor
+opens fully, it needs FFmpeg's duration). (3) `PacketReader` adds every video keyframe it reads from a transport or program stream to the
+demuxer's index, so that the next piece's seek is bracketed and lands almost at once. (4) `AttachmentReader.read(_:[Attachment])`: all
+fonts with one opening. (5) `ProbeStore`: the probe's result for a source that measures throughput (a network one) is kept in memory and
+in Caches (`MediaEngine/Probes`, a few KB per file, 200 at most), used only by the same build (version and executable date) on a device
+with the same capabilities; test runs neither read nor write it. (6) `HTTPByteSource` fetches four chunks at a time while reading straight
+on (one after a jump). (7) The log (category `index`) gives the chosen piece length with the link and movie rates, and how long pieces took
+to build: the first three, the first after a jump, and any over a second (`noteBuilt`).
+**Not verified:** compiled only (engine and app for macOS, iOS, visionOS; the Mac app started); no test; nothing measured yet on the owner's
+movie. Not done: starting AVPlayer without its stall check (`automaticallyWaitsToMinimizeStalling = false`): whether it resumes by itself
+after running dry is not known here, and short pieces should make the wait small anyway.
+
+
+## 30. Four movies over SMB: no picture, and stuck after jumps (2026-11-08)
+
+The app's owner played four movies from an SMB server (Debug build of 13:46, process 6282): movie 1 played sound without a picture;
+movie 2 stuck after a jump to a chapter, and no other chapter played; movie 3 took one jump, then stuck on the second; movie 4 jumped
+freely. Read from the system log only (`/usr/bin/log show`, subsystems `dev.mediaengine`, `com.apple.coremedia`, the `AppleAVD` kernel
+driver and `VTDecoderXPCService`). The files themselves were not available here.
+
+**Movie 1 (MPEG-TS, H.264 1080p, AC-3, DTS, four PGS; no complete index, so time-grid pieces of 2 s).** VideoToolbox's summary when the
+session closed: "decoded 20 dropped 513"; after the jump "decoded 0 dropped 453". The hardware decoder's kernel log names the reason:
+frame 21 (the first after the first group of pictures, which lasts 0.834 s) fails with "SDATAEND", and the frames after it with
+SLICEALIGN, CABACZWORD, RBSPSTOP, RBSPALIGN and PCMALIGN errors: the slice data does not parse. The first group decodes, every later
+one does not, and after the jump nothing does. Cause: `AnnexB.convert` dropped every SPS and PPS inside the stream and kept only
+those found at the start (in the init segment). **Confirmed in the file** (the owner mounted the share; movie 1 is
+`Labyrinth.1986.BDRemux/BDMV/STREAM/00000.m2ts`, 26.7 GB; its PES packets of PID 0x1011 read with a small script): the stream reuses
+PPS id 0 with different content again and again: at 0.834 s, the very frame where decoding failed, `pic_init_qp` goes from 26 to 3;
+at 1.96 s weighted prediction is switched on; then QP 14, 13 and so on, and it switches back (the PPS of 0.834 s returns at 2.5 s).
+Near 12:02 the PPS has QP 19 and 18, none of the start's. So every frame after the first group was parsed with the wrong PPS. **Fix:** parameter sets the decoder configuration holds are still dropped; a stream that brings
+different ones keeps them in its samples from then on (`PacketReader.inBandSets`, logged once: "changes its parameter sets after the
+start"). Behaviour of every other file is unchanged. Keeping all sets from the first change on (not only the differing ones) is
+needed here, since the stream switches back to earlier PPS contents. **Verified on the file:** the engine's pieces 0 to 2 (0 to 6 s)
+and 361 and 362 (12:02) decode in VideoToolbox through `AVAssetReader` without an error: 149 and 103 pictures, every one of them
+(a temporary diagnostic test, removed afterwards). Not yet seen in AVPlayer itself; for HEVC in `hvc1` the same is untried.
+The link was also about as fast as the movie (3.3 MB/s measured at opening against 4.4 MB/s average; pieces of 2 s took 1.5 to 1.9 s):
+with that margin some waiting is to be expected whatever the engine does.
+
+**Movies 2 and 3 (Matroska, Cues every 10.4 s, so pieces of 10.4 s of about 27 MB; link about twice the movie's rate).** Three things
+together, each visible in the log:
+1. *The player gives up on a piece after about its own length.* Every "-15628 CoreMediaErrorDomain ... retrying" falls in the same
+   millisecond as AVPlayer cancelling its request for a piece (CFNetwork "-999 cancelled"), 10.4 s after it asked for that piece
+   (movie 1: about 2 s). The meaning of -15628 is not documented that I know of; the timing is the evidence. So every piece must be
+   ready within its own duration of being asked for, waits included.
+2. *Requests waited behind builds.* All requests went through one serial queue, so a request for an audio fragment that was already
+   built waited behind a video build of 5 to 28 s, and the jump's own piece waited for the read-ahead of a piece nobody wanted any more
+   (movie 2: 5.8 s; movie 3: 2.5 s, then a 13.4 s build); the player gave up, asked again, and waited again.
+3. *The cache threw away what the player still needed.* The budget is 48 MB; with 27 MB pieces, storing the next piece pushed out the
+   previous piece's audio before the audio track had fetched it, so the whole 27 MB piece was read again from the server (pieces 313,
+   314 and 316 of movie 2 were built two or three times each).
+Movie 3 also has a text subtitle rendition; a subtitle request after a jump read every window from 15 s before to one after (up to
+four windows over the network), without a line in the log, on the same queue. Whether the player asked for subtitles there is not in
+the log. Movie 4 had pieces of 2.1 s from a dense index and none of this.
+
+**Fixes (engine, `RemuxSession`):** built fragments live in their own locked cache (`FragmentCache`), so a request for one is answered
+at once, even while the queue builds another piece; the eviction never drops the piece just built or the piece the player asked for
+last, gives up pieces behind the player or far ahead first, then big video fragments, and keeps small audio fragments longest; a
+read-ahead build stops as soon as a request waits for another piece that is not built (`GaveWay`, logged "read ahead stopped");
+over a network a subtitle request reads only its own window (`scanSubtitles`), logged "for subtitles"; the opening logs how long each
+step took ("Ready to play in ... ms"), since movie 2's player took 5.7 s to be ready and the log did not say where the time went.
+
+**Not changed, and why:** the Cues-aligned pieces of 10.4 s stay (cutting them on a time grid would make every jump read from the cue
+point before it, which costs more than the shorter piece saves, and the player's give-up time grows with the piece). A build the player
+asked for is not stopped when the player jumps away, since the engine cannot tell whether the request is still open; the loopback
+server could tell it (connection closed), which is the next step if jumps still wait. Pieces of a transport stream after a jump take a
+binary search over the file (movie 1: 6.2 s for a 2 s piece), each probe reading whole 1 MB chunks from the SMB source; an own
+interpolation seek for transport streams with small reads, like `MatroskaSeeker`, would shorten it. The SMB source fetches one 1 MB
+chunk at a time on one connection; on a link with a long round trip, two to four requests in flight would raise the speed.
+**Verified:** compiled (engine; the app for macOS, started for 7 s). No test run or written (the owner's rule), and none of the four
+movies played again here.

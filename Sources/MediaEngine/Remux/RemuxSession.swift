@@ -36,6 +36,61 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     private struct CacheKey: Hashable { var stream: Int; var segment: Int }
 
+    /// The finished fragments, shared by the build queue and the requests: a request whose fragment is built already gets
+    /// it at once, even while the queue builds another piece (over a network an audio request used to wait behind a video
+    /// build of several seconds, and the player gave up on it).
+    private struct FragmentCache {
+        var entries: [CacheKey: Data] = [:]
+        var order: [CacheKey] = []                       // least recently used first
+        var bytes = 0
+        /// The piece the player asked for last (any track).
+        var focus = 0
+
+        mutating func fetch(_ key: CacheKey) -> Data? {
+            guard let data = entries[key] else { return nil }
+            order.removeAll { $0 == key }
+            order.append(key)
+            return data
+        }
+
+        /// Keeps a fragment, then makes room down to `budget`. Never given up: the piece just built and the piece the player
+        /// asked for last (a request the player gave up on comes again, and rebuilding it over a network takes as long as the
+        /// first time). Given up first: pieces behind the player or far ahead of it, then big fragments (video), then the
+        /// rest, each oldest first; the small audio fragments a lagging track still needs stay longest. Over a network a piece
+        /// can be larger than half the budget, so the two kept pieces may pass it for a while.
+        mutating func insert(_ key: CacheKey, _ data: Data, budget: Int) {
+            if let old = entries[key] { bytes -= old.count }
+            entries[key] = data
+            bytes += data.count
+            order.removeAll { $0 == key }
+            order.append(key)
+            while bytes > budget {
+                let candidates = order.filter { $0.segment != key.segment && $0.segment != focus }
+                let far = candidates.first { $0.segment < focus - 1 || $0.segment > focus + 2 }
+                let big = candidates.first { (entries[$0]?.count ?? 0) >= 2 << 20 }
+                guard let victim = far ?? big ?? candidates.first, let removed = entries.removeValue(forKey: victim) else { break }
+                bytes -= removed.count
+                order.removeAll { $0 == victim }
+            }
+        }
+
+        mutating func removeAll() {
+            entries.removeAll()
+            order.removeAll()
+            bytes = 0
+        }
+    }
+
+    /// A build stopped: a read-ahead because the player asked for another piece that is not built (`wanted`), or a build the
+    /// player asked for and then hung up on, with nobody else waiting for that piece (`wanted` is `nil`).
+    private struct GaveWay: Error { var wanted: Int? }
+
+    /// A request waiting for a fragment that has to be built, and how to tell that its client hung up.
+    private struct Waiter {
+        var key: CacheKey
+        var abandoned: @Sendable () -> Bool
+    }
+
     let info: MediaInfo
     let plan: SegmentPlan
 
@@ -58,9 +113,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var end: Double
     }
     private var externalAudio: [Int: ExternalAudioSource] = [:]
-    private var cache: [CacheKey: Data] = [:]
-    private var cacheOrder: [CacheKey] = []
-    private var cacheBytes = 0
+    private let fragments = Mutex(FragmentCache())
+    /// Requests waiting for a fragment that has to be built, by a number of their own. A read-ahead build gives way when one of
+    /// them wants another piece (the player jumped) and none wants its own; a build for a request whose client hung up stops
+    /// when no other request wants that piece, so a jump never waits for a piece nobody wants any more.
+    private let waiting = Mutex<(next: Int, entries: [Int: Waiter])>((0, [:]))
+    /// The file is read over a network (not a local file or memory): every piece read costs seconds.
+    private let remote: Bool
     /// Source packets of audio that still has to be transcoded; done only if the player asks for that track.
     private var pendingTranscodes: [CacheKey: PendingTranscode] = [:]
     /// Keyframe times (seconds) of the video stream, for seeking a little before a segment.
@@ -88,6 +147,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private(set) var reorder: ReorderModel?
     /// How many (track, segment) transcodes have run (diagnostics and tests).
     private(set) var transcodeCount = 0
+    /// For the log: the source's speed when the plan was made, the last piece built and how many were.
+    private var linkRate: Double?
+    private var lastBuilt: Int?
+    private var builtCount = 0
     private let cacheBudget: Int
     private let requestEpoch = Mutex(0)
     /// Test hook: rewrites the master playlist before it is served.
@@ -102,6 +165,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
+        remote = !(source is FileByteSource || source is DataByteSource)
+        let opening = ContinuousClock.now
         if let packetSource {
             reader = packetSource
             timeline = packetSource as? TimelineReader
@@ -109,6 +174,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             reader = try PacketReader(source: source, cancellation: cancellation)
             timeline = nil
         }
+        let readerOpened = ContinuousClock.now
 
         let treatments = Dictionary(uniqueKeysWithValues: info.playbackPlan.tracks.map { ($0.trackID, $0.treatment) })
         let served = ServedTracks(info: info, externalSubtitles: externalSubtitles, externalAudio: audioFiles)
@@ -136,6 +202,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
         // First packets of every wanted stream: used to describe AC-3 streams and to measure the timestamp shift.
         var first = try Self.readStart(reader, streams: wanted, video: videoIndex)
+        let startRead = ContinuousClock.now
+        // How long the first group of pictures lasts (keyframe to keyframe): grid pieces must be longer than a GOP.
+        var firstGOP = 1.0
+        if let videoIndex, let run = first[videoIndex], let earliest = run.map(\.pts).min(), let latest = run.map(\.pts).max() {
+            let base = reader.timeBase(videoIndex)
+            firstGOP = base.seconds(latest - earliest) + base.seconds(max(run.last?.duration ?? 0, 0))
+        }
         if let videoIndex, let gop = first[videoIndex] {
             let model = ReorderModel.measure(gop, declaredDelay: Int(reader.parameters(videoIndex).pointee.video_delay))
             var repaired = gop
@@ -158,16 +231,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let shiftSeconds = -earliest
         mediaShift = shiftSeconds
 
-        // Segment plan from the video index: the file's own (Matroska Cues, an MP4 sync table) or one worked out at an earlier
-        // opening (KeyframeIndexStore). What the index leaves out (a late first keyframe, more than a minute without one, the
-        // part after its last one when that is long or the duration unknown) is read from the file: only those stretches, never
-        // the whole file because of one gap. A Matroska file without Cues for its video first gets a list from its cluster
-        // headers. The result is kept for the next opening.
+        // Segment plan. With a complete keyframe index (the file's own, such as Matroska Cues or an MP4 sync table, or one kept
+        // from an earlier opening) the pieces are cut at keyframes. Without one the movie is not read through first: the
+        // pieces lie on a fixed time grid made from the duration alone, and each piece's video starts at the first keyframe at
+        // or after its grid time, which `buildWindow` finds when the piece is asked for; a seek far from anything the index
+        // knows finds a cluster by itself (`PacketReader.seek`, `MatroskaSeeker`). The movie starts at once either way.
         var keyframes: [Double] = []
         var positions: [Int64?] = []
         var duration = info.duration
         let mainReader = packetSource == nil ? reader as? PacketReader : nil
-        let layout = mainReader?.isMatroska == true ? MatroskaLayout.read(from: source) : nil
         let fileKey = mainReader != nil ? KeyframeIndexStore.key(for: source) : nil
         let video = videoIndex
         let remembered = fileKey.flatMap { KeyframeIndexStore.shared.lookup($0) }.flatMap { $0.stream == video ? $0 : nil }
@@ -178,55 +250,35 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             Self.logger.notice("Index: \(keyframes.count, privacy: .public) keyframes kept from an earlier opening")
         } else if let videoIndex {
             let videoBase = reader.timeBase(videoIndex)
-            // The seek to the end loads the Cues; without Cues for the video track FFmpeg's seek would read every cluster.
-            let loadUpTo = layout == nil || layout?.cuesListVideo == true ? duration : nil
-            let index = reader.keyframeIndex(stream: videoIndex, loadingIndexUpTo: loadUpTo)
+            let index = reader.keyframeIndex(stream: videoIndex, loadingIndexUpTo: duration)
             keyframes = index.map { videoBase.seconds($0.timestamp) }
             positions = index.map(\.position)
-            Self.logger.notice("Index: \(keyframes.count, privacy: .public) keyframes from the file; \(Self.describe(layout), privacy: .public); \(Self.describeGaps(keyframes: keyframes, duration: duration), privacy: .public)")
+            Self.logger.notice("Index: \(keyframes.count, privacy: .public) keyframes from the file; \(Self.describeGaps(keyframes: keyframes, duration: duration), privacy: .public)")
         }
+        let indexRead = ContinuousClock.now
+        var useGrid = false
         let complete = duration != nil && (remembered != nil || Self.looksComplete(keyframes: keyframes, duration: duration))
         if !complete, let videoIndex, let mainReader {
-            Self.logger.notice("The index leaves gaps (\(Self.reason(keyframes: keyframes, duration: duration, layout: layout), privacy: .public)): reading only what it leaves out")
-            var share = 0.0                                                    // of the progress bar, taken by the cluster headers
-            if let layout, layout.cuesListVideo != true, let track = Self.videoTrackNumber(layout: layout, videoIndex: videoIndex, reader: mainReader) {
-                let rate = reader.stream(videoIndex).pointee.avg_frame_rate
-                let frame = rate.num > 0 && rate.den > 0 ? Double(rate.den) / Double(rate.num) : 0.04
-                var hopProgress: (@Sendable (Double) -> Void)?
-                if let progress { hopProgress = { @Sendable fraction in progress(fraction * 0.3) } }
-                if let found = try MatroskaClusterIndex.build(source: source, layout: layout, videoTrack: track, frameDuration: frame,
-                                                              cancellation: cancellation, progress: hopProgress) {
-                    let origin = mainReader.originSeconds
-                    let list = Self.merged(zip(keyframes, positions).map { ($0, $1) }, zip(found.keyframes, found.positions).map { ($0 - origin, Optional($1)) })
-                    keyframes = list.keyframes
-                    positions = list.positions
-                    if duration == nil { duration = layout.duration != nil ? found.duration : found.duration - origin }
-                    mainReader.addKeyframes(stream: videoIndex, seconds: keyframes, positions: positions)
-                    share = 0.3
-                }
-            }
-            let gaps = Self.gaps(in: keyframes, duration: duration)
-            if !gaps.isEmpty {
-                let spans = Self.byteSpans(of: gaps, keyframes: keyframes, positions: positions, duration: duration, length: source.length)
-                let total = spans.reduce(Int64(0)) { $0 + ($1.endByte - $1.startByte) }
-                Self.logger.notice("Reading \(gaps.count, privacy: .public) stretches, \(Int(gaps.reduce(0.0) { $0 + (($1.to ?? duration ?? $1.from) - $1.from) }), privacy: .public) s, about \(total / 1_000_000, privacy: .public) MB of \((source.length ?? 0) / 1_000_000, privacy: .public) MB")
-                let offset = share
-                var fillProgress: ((Double) -> Void)?
-                if let progress { fillProgress = { fraction in progress(offset + fraction * (1 - offset)) } }
-                let filled = try Self.readGaps(mainReader, video: videoIndex, spans: spans, cancellation: cancellation, progress: fillProgress)
+            if duration == nil {
+                // No duration in the file: read from the last keyframe known to the end (the opening has usually looked at the end).
+                let gaps: [(from: Double, to: Double?)] = [(keyframes.last ?? 0, nil)]
+                let spans = Self.byteSpans(of: gaps, keyframes: keyframes, positions: positions, duration: nil, length: source.length)
+                let filled = try Self.readGaps(mainReader, video: videoIndex, spans: spans, cancellation: cancellation, progress: progress)
                 let list = Self.merged(zip(keyframes, positions).map { ($0, $1) }, filled.keyframes)
                 keyframes = list.keyframes
                 positions = list.positions
-                if duration == nil { duration = filled.end }
+                duration = filled.end
             }
-            Self.logger.notice("Index now: \(keyframes.count, privacy: .public) keyframes; \(Self.describeGaps(keyframes: keyframes, duration: duration), privacy: .public)")
-            // Kept even when the video itself has long stretches without a keyframe: what was read is all the file has, and
-            // the next opening must not read it again.
-            if let fileKey, let duration, !keyframes.isEmpty {
-                KeyframeIndexStore.shared.remember(.init(stream: videoIndex, keyframes: keyframes, positions: positions, duration: duration), for: fileKey)
+            if let total = duration {
+                if Self.looksComplete(keyframes: keyframes, duration: total) {
+                    if let fileKey { KeyframeIndexStore.shared.remember(.init(stream: videoIndex, keyframes: keyframes, positions: positions, duration: total), for: fileKey) }
+                } else {
+                    useGrid = true
+                    Self.logger.notice("No complete index (\(Self.reason(keyframes: keyframes, duration: total), privacy: .public)): playing at once on a time grid (first GOP \(firstGOP, privacy: .public) s)")
+                }
             }
-        } else if !complete {
-            // A play list of several files, or a file without video: read it through, as before.
+        } else if !complete, duration == nil || packetSource != nil {
+            // A play list of several files, or a file without video and without a duration: read it through, as before.
             let scan = try Self.scan(reader, video: videoIndex, fallbackStream: wanted[0], length: source.length, progress: progress)
             if videoIndex != nil, !Self.looksComplete(keyframes: keyframes, duration: duration) { keyframes = scan.keyframes; positions = scan.positions }
             if duration == nil { duration = scan.duration }
@@ -235,8 +287,24 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         videoKeyframes = keyframes.sorted()
         // Segments are cut by time and by size: at high bitrates six seconds of video are too much to hold at once.
         let averageRate = info.fileSize.map { Double($0) / totalDuration }
-        plan = SegmentPlan.make(keyframes: keyframes, positions: positions, duration: totalDuration,
-                                maxSegmentBytes: maxSegmentBytes, averageBytesPerSecond: averageRate)
+        // Over a network each piece should load in about a second at the speed the source has shown so far: the first
+        // picture and every jump wait for one whole piece. A local file keeps six-second pieces.
+        let link = source.throughput
+        let target = Self.pieceTarget(link: link, movie: averageRate)
+        if useGrid {
+            let step = Self.gridStep(firstGOP: firstGOP, target: target, bytesPerSecond: averageRate, maxSegmentBytes: maxSegmentBytes)
+            plan = SegmentPlan.make(keyframes: [], duration: totalDuration, target: step)
+        } else {
+            plan = SegmentPlan.make(keyframes: keyframes, positions: positions, duration: totalDuration, target: target,
+                                    maxSegmentBytes: maxSegmentBytes, averageBytesPerSecond: averageRate)
+        }
+        linkRate = link
+        if let link {
+            let pieces = plan.segments.prefix(10).map(\.duration)
+            let typical = pieces.isEmpty ? 0 : pieces.reduce(0, +) / Double(pieces.count)
+            let count = plan.segments.count
+            Self.logger.notice("Pieces of about \(String(format: "%.1f", typical), privacy: .public) s (\(count, privacy: .public) in all): link about \(String(format: "%.1f", link / 1e6), privacy: .public) MB/s, movie \(String(format: "%.1f", (averageRate ?? 0) / 1e6), privacy: .public) MB/s")
+        }
         let overlayStreams = PlaybackSession.overlayStreams(of: info)
         overlayFeed = packetSource == nil && !(overlayStreams.text.isEmpty && overlayStreams.pictures.isEmpty)
             ? OverlayFeed(textStreams: overlayStreams.text, pictureStreams: overlayStreams.pictures,
@@ -260,6 +328,14 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             let begin = start.first.first.map { base.seconds($0.pts) } ?? 0
             externalAudio[start.id] = ExternalAudioSource(reader: start.reader, stream: start.file.stream, delay: start.file.delay,
                                                           start: min(begin, 0), end: start.file.duration ?? 0)
+        }
+        if remote {
+            func milliseconds(_ from: ContinuousClock.Instant, _ to: ContinuousClock.Instant) -> Int {
+                let span = to - from
+                return Int(span.components.seconds * 1000 + span.components.attoseconds / 1_000_000_000_000_000)
+            }
+            let done = ContinuousClock.now
+            Self.logger.notice("Ready to play in \(milliseconds(opening, done), privacy: .public) ms: file opened \(milliseconds(opening, readerOpened), privacy: .public) ms, first packets \(milliseconds(readerOpened, startRead), privacy: .public) ms, index \(milliseconds(startRead, indexRead), privacy: .public) ms, plan and the rest \(milliseconds(indexRead, done), privacy: .public) ms")
         }
     }
 
@@ -303,13 +379,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// Which windows have been read for subtitle cues so far (diagnostics and tests).
     var scannedSubtitleWindows: Set<Int> { queue.sync { subtitleWindows } }
     /// Bytes of finished fragments held in the cache right now (diagnostics and tests).
-    var cachedBytes: Int { queue.sync { cacheBytes } }
+    var cachedBytes: Int { fragments.withLock { $0.bytes } }
     /// Media timescale of a served stream.
     func timescale(_ stream: Int) -> Int32 { outputs[stream]?.initSegment.timescale ?? 1 }
 
     func close() {
         cancellation.cancel()
-        queue.sync { cache.removeAll(); cacheOrder.removeAll(); cacheBytes = 0 }
+        queue.sync { fragments.withLock { $0.removeAll() } }
     }
 
     /// Reads packets from the start of the file until every stream has a handful. Video yields its whole first run
@@ -367,29 +443,6 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             }
         }
         return (keyframes, positions, end)
-    }
-
-    /// The Matroska track number of the demuxer's video stream `videoIndex`: the file's video tracks in order, matched
-    /// with the demuxer's video streams in order (attached pictures are attachments in Matroska, not tracks).
-    private static func videoTrackNumber(layout: MatroskaLayout, videoIndex: Int, reader: PacketReader) -> UInt64? {
-        var ordinal = 0
-        for index in 0..<videoIndex {
-            let stream = reader.stream(index).pointee
-            if stream.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO, stream.disposition & Int32(AV_DISPOSITION_ATTACHED_PIC) == 0 { ordinal += 1 }
-        }
-        return ordinal < layout.videoTracks.count ? layout.videoTracks[ordinal] : nil
-    }
-
-    /// The stretches a keyframe list leaves out: before its first keyframe when that comes after 10 s, between keyframes more
-    /// than a minute apart, and after the last one when that is more than a minute before the end or the end is unknown
-    /// (`to == nil`: up to the end of the file). An empty list leaves out everything.
-    static func gaps(in keyframes: [Double], duration: Double?) -> [(from: Double, to: Double?)] {
-        guard let first = keyframes.first, let last = keyframes.last else { return [(0, nil)] }
-        var result: [(from: Double, to: Double?)] = []
-        if first >= 10 { result.append((0, first)) }
-        for (a, b) in zip(keyframes, keyframes.dropFirst()) where b - a > 60 { result.append((a, b)) }
-        if duration.map({ $0 - last > 60 }) ?? true { result.append((last, nil)) }
-        return result
     }
 
     /// Where each stretch starts and ends in the file: the byte positions of its keyframes when the index has them, else an
@@ -459,14 +512,6 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         return (keyframes, positions)
     }
 
-    /// What the start of a Matroska file said, for the log.
-    private static func describe(_ layout: MatroskaLayout?) -> String {
-        guard let layout else { return "not read as Matroska" }
-        let cues = layout.cuesListVideo.map { $0 ? "Cues list the video" : "Cues without the video" } ?? "no Cues"
-        let header = layout.duration == nil ? "no duration in the header" : "duration in the header"
-        return "\(cues), \(header), \(layout.videoTracks.count) video track(s)"
-    }
-
     /// How complete a keyframe list is, for the log: its longest gap and where it is, and how many gaps over a minute.
     private static func describeGaps(keyframes: [Double], duration: Double?) -> String {
         guard let first = keyframes.first, let last = keyframes.last else { return "no keyframes" }
@@ -477,11 +522,24 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         return String(format: "first at %.1f s, longest gap %.1f s at %.0f s, %ld gaps over a minute, ", first, longest.length, longest.at, long) + tail
     }
 
+    /// How long pieces should be: what loads in about a second over the link (`link` and `movie` in bytes per second), from
+    /// two to six seconds; six when the link speed is unknown (a local file) or fast.
+    static func pieceTarget(link: Double?, movie: Double?) -> Double {
+        guard let link, let movie, link > 0, movie > 0 else { return 6 }
+        return min(max(link / movie, 2), 6)
+    }
+
+    /// How long the grid pieces are: the target (six seconds, or less over a slow link), shorter for high bitrates (a piece is held in memory whole), never shorter
+    /// than two GOPs (each piece's video starts at a keyframe, so a piece shorter than a GOP could hold none), at most 20 s.
+    static func gridStep(firstGOP: Double, target: Double = 6, bytesPerSecond: Double?, maxSegmentBytes: Int64) -> Double {
+        var step = target
+        if let rate = bytesPerSecond, rate > 0 { step = min(step, Double(maxSegmentBytes) / rate) }
+        return min(max(step, 2 * firstGOP, 2), 20)
+    }
+
     /// Why an index was not used, for the log (no names or paths).
-    private static func reason(keyframes: [Double], duration: Double?, layout: MatroskaLayout?) -> String {
+    private static func reason(keyframes: [Double], duration: Double?) -> String {
         if duration == nil { return "no duration" }
-        if let layout, layout.cuesListVideo == nil { return "no Cues" }
-        if layout?.cuesListVideo == false { return "Cues without the video track" }
         guard let first = keyframes.first else { return "no keyframes" }
         return first >= 10 ? "first keyframe after 10 s" : "a gap of more than 60 s"
     }
@@ -489,7 +547,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     // MARK: Serving
 
     /// Everything the server hands out, by path. Returns `nil` for unknown paths.
-    func resource(path: String) throws -> Resource? {
+    func resource(path: String, isAbandoned: @escaping @Sendable () -> Bool) throws -> Resource? {
         requestEpoch.withLock { $0 += 1 }
         switch path {
         case "master.m3u8": return text(masterTransform.map { $0(master()) } ?? master())
@@ -498,9 +556,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         default: break
         }
         if path.hasPrefix("video-"), let stream = videoIndex, let number = Self.segmentNumber(path, prefix: "video-") {
-            return try segment(stream: stream, number: number)
+            return try segment(stream: stream, number: number, isAbandoned: isAbandoned)
         }
-        if path.hasPrefix("subs-") { return try subtitleResource(path) }
+        if path.hasPrefix("subs-") { return try subtitleResource(path, isAbandoned: isAbandoned) }
         if path.hasPrefix("audio-") {
             if path.hasSuffix(".m3u8"), let id = Int(path.dropFirst("audio-".count).dropLast(".m3u8".count)),
                outputs[id]?.kind == .audio {
@@ -510,13 +568,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             guard parts.count == 2, let id = Int(parts[0]), let output = outputs[id], output.kind == .audio else { return nil }
             let tail = String(parts[1])
             if tail == "init.mp4" { return Resource(data: output.initSegment.data, contentType: "audio/mp4") }
-            if let number = Self.segmentNumber(tail, prefix: "") { return try segment(stream: id, number: number) }
+            if let number = Self.segmentNumber(tail, prefix: "") { return try segment(stream: id, number: number, isAbandoned: isAbandoned) }
         }
         return nil
     }
 
     /// `subs-ID.m3u8` and `subs-ID-N.vtt`.
-    private func subtitleResource(_ path: String) throws -> Resource? {
+    private func subtitleResource(_ path: String, isAbandoned: @Sendable () -> Bool) throws -> Resource? {
         let body = path.dropFirst("subs-".count)
         if body.hasSuffix(".m3u8"), let id = Int(body.dropLast(".m3u8".count)), subtitleTracks.contains(where: { $0.id == id }) {
             return text(HLSPlaylists.subtitles(plan: plan, segmentURI: { "subs-\(id)-\($0).vtt" }))
@@ -526,7 +584,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
               subtitleTracks.contains(where: { $0.id == id }), plan.segments.indices.contains(number) else { return nil }
         let segment = plan.segments[number]
         let cues = try queue.sync { () throws -> [SubtitleCue] in
-            if cancellation.isCancelled { throw MediaError.cancelled }
+            if cancellation.isCancelled || isAbandoned() { throw MediaError.cancelled }
             if !subtitleCodecs.isEmpty { try scanSubtitles(through: number) }      // external files need no reading
             return (subtitleCues[id] ?? []).sorted { ($0.start, $0.end, $0.text) < ($1.start, $1.end, $1.text) }
         }
@@ -537,11 +595,17 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// Makes sure the windows that can hold cues shown in segment `number` have been read: the ones from
     /// `subtitleLookback` seconds before it up to the next one (a block can sit just behind its keyframe). Reading a
     /// window also builds its audio and video, which the player asks for next anyway. Call on `queue`.
+    ///
+    /// Over a network every window is megabytes and seconds: only the segment's own window is read (a line that began in a
+    /// window not read yet is missed after a jump; the next window comes with the read-ahead). Before 2026-11-08 a subtitle
+    /// request after a jump read up to four windows there, unlogged, while the player's video and audio requests waited.
     private func scanSubtitles(through number: Int) throws {
-        let earliest = plan.segments[number].start - Self.subtitleLookback
-        let last = min(number + 1, plan.segments.count - 1)
+        let earliest = plan.segments[number].start - (remote ? 0 : Self.subtitleLookback)
+        let last = remote ? number : min(number + 1, plan.segments.count - 1)
         for index in 0...last where plan.segments[index].end > earliest && !subtitleWindows.contains(index) {
+            let began = DispatchTime.now()
             try buildWindow(index)
+            noteBuilt(index, since: began, asked: true, why: " for subtitles")
         }
     }
 
@@ -564,7 +628,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         Resource(data: Data(playlist.utf8), contentType: "application/vnd.apple.mpegurl")
     }
 
-    private func segment(stream: Int, number: Int) throws -> Resource? {
+    private func segment(stream: Int, number: Int, isAbandoned: @escaping @Sendable () -> Bool) throws -> Resource? {
         guard plan.segments.indices.contains(number), let output = outputs[stream] else { return nil }
         if let source = externalAudio[stream] {
             let data = try queue.sync { () throws -> Data in
@@ -576,23 +640,71 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return Resource(data: data, contentType: "audio/mp4")
         }
         let epoch = requestEpoch.withLock { $0 }
-        let data: Data? = try queue.sync {
-            if cancellation.isCancelled { throw MediaError.cancelled }
-            let key = CacheKey(stream: stream, segment: number)
-            if let hit = try fragment(for: key) { return hit }
-            try buildWindow(number)
-            return try fragment(for: key)
+        let key = CacheKey(stream: stream, segment: number)
+        // A fragment that is built already goes out at once, even while the queue builds another piece.
+        var data = fragments.withLock { cache -> Data? in
+            cache.focus = number
+            return cache.fetch(key)
         }
-        // Read ahead: build the next window while the player consumes this one, unless a newer request arrived.
-        if number + 1 < plan.segments.count {
-            queue.async { [self] in
-                guard requestEpoch.withLock({ $0 }) == epoch, !cancellation.isCancelled,
-                      cache[CacheKey(stream: stream, segment: number + 1)] == nil,
-                      pendingTranscodes[CacheKey(stream: stream, segment: number + 1)] == nil else { return }
-                try? buildWindow(number + 1)
+        if data == nil {
+            let token = waiting.withLock { state -> Int in
+                state.next += 1
+                state.entries[state.next] = Waiter(key: key, abandoned: isAbandoned)
+                return state.next
+            }
+            defer { waiting.withLock { _ = $0.entries.removeValue(forKey: token) } }
+            data = try queue.sync {
+                if cancellation.isCancelled { throw MediaError.cancelled }
+                if let hit = try fragment(for: key) { return hit }
+                // The player hung up while this request waited (it gave up, or jumped elsewhere): build nothing for it.
+                if isAbandoned(), liveWaiters(for: number) == 0 { throw MediaError.cancelled }
+                let began = DispatchTime.now()
+                do {
+                    try buildWindow(number, abandoned: isAbandoned)
+                } catch is GaveWay {
+                    Self.logger.notice("Piece \(number, privacy: .public) stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player no longer wants it")
+                    throw MediaError.cancelled
+                }
+                noteBuilt(number, since: began, asked: true)
+                return try fragment(for: key)
             }
         }
+        readAhead(after: number, stream: stream, epoch: epoch)
         return data.map { Resource(data: $0, contentType: output.kind == .video ? "video/mp4" : "audio/mp4") }
+    }
+
+    /// Builds the next window while the player consumes this one, unless a newer request arrived. The build gives way as soon
+    /// as the player asks for a piece that is not built (a jump), so that the jump does not wait for a piece nobody wants.
+    private func readAhead(after number: Int, stream: Int, epoch: Int) {
+        guard number + 1 < plan.segments.count else { return }
+        let next = CacheKey(stream: stream, segment: number + 1)
+        queue.async { [self] in
+            guard requestEpoch.withLock({ $0 }) == epoch, !cancellation.isCancelled,
+                  fragments.withLock({ $0.entries[next] == nil }), pendingTranscodes[next] == nil else { return }
+            let began = DispatchTime.now()
+            do {
+                try buildWindow(number + 1, ahead: true)
+                noteBuilt(number + 1, since: began, asked: false)
+            } catch let gaveWay as GaveWay {
+                Self.logger.notice("Piece \(number + 1, privacy: .public) read ahead stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player asked for piece \(gaveWay.wanted ?? -1, privacy: .public)")
+            } catch {}
+        }
+    }
+
+    /// Logs how long a piece took to build: the first ones after the opening, the first after a jump, and any slow one
+    /// (over a second), with the link speed. Call on `queue`.
+    private static func milliseconds(since began: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds - began.uptimeNanoseconds) / 1_000_000)
+    }
+
+    private func noteBuilt(_ number: Int, since began: DispatchTime, asked: Bool, why: String = "") {
+        let milliseconds = Self.milliseconds(since: began)
+        let jumped = lastBuilt.map { number != $0 + 1 } ?? false
+        defer { lastBuilt = number; builtCount += 1 }
+        guard builtCount < 3 || jumped || milliseconds > 1000 else { return }
+        let segment = plan.segments[number]
+        let speed = linkRate.map { String(format: ", link %.1f MB/s", $0 / 1e6) } ?? ""
+        Self.logger.notice("Piece \(number, privacy: .public) (\(Int(segment.start), privacy: .public) s, \(String(format: "%.1f", segment.duration), privacy: .public) s long) built in \(milliseconds, privacy: .public) ms\(asked ? "" : " ahead", privacy: .public)\(jumped ? " after a jump" : "", privacy: .public)\(why, privacy: .public)\(speed, privacy: .public)")
     }
 
     /// One segment of audio from a separate file: the packets whose (delayed) time falls in the segment, converted if
@@ -636,8 +748,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     // MARK: Windows
 
-    /// Reads the packets of one segment for every output and stores the finished fragments. Call on `queue`.
-    private func buildWindow(_ number: Int) throws {
+    /// Reads the packets of one segment for every output and stores the finished fragments. A build `ahead` of the player
+    /// throws ``GaveWay`` when a request waits for another piece that is not built and none for this one; a build for a request
+    /// (`abandoned` given) throws it when that request's client hung up and no other request wants this piece. Call on `queue`.
+    private func buildWindow(_ number: Int, ahead: Bool = false, abandoned: (@Sendable () -> Bool)? = nil) throws {
         let segment = plan.segments[number]
         let seekStream = videoIndex ?? audioIndices[0]
         let seekBase = reader.timeBase(seekStream)
@@ -649,9 +763,18 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         } else {
             // A stateful audio decoder needs to hear a little before the segment: start from the keyframe at or
             // before (start - pre-roll). Video packets before the segment keyframe are skipped below.
+            // Only a keyframe close before: without a complete index (time-grid pieces) the nearest known one can be near the
+            // start of the film, and seeking there would read everything up to the piece.
             var from = segment.start
             if maxPreroll > 0 {
-                from = videoKeyframes.last { $0 <= segment.start - maxPreroll } ?? (segment.start - maxPreroll)
+                let wanted = segment.start - maxPreroll
+                from = videoKeyframes.last { $0 <= wanted && wanted - $0 <= 30 } ?? wanted
+            }
+            // Transport and program streams are sought by decode time: start a few frames early (the reordering depth), or the
+            // seek lands just after the piece's own keyframe and the piece starts at the next one, a GOP late (2026-11-08: Blu-ray
+            // extras lost 0.6 s per piece and their open GOPs became undecodable). Frames before the keyframe are skipped below.
+            if (reader as? PacketReader)?.seeksByDecodeTime == true, let reorder, let video = videoIndex {
+                from -= reader.timeBase(video).seconds(Int64(reorder.delay + 2) * max(reorder.frameTicks, 1))
             }
             if from <= 0 { try reader.rewind() } else { try reader.seek(stream: seekStream, to: seekBase.ticks(seconds: from)) }
         }
@@ -665,9 +788,16 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var audioDone = Set<Int>()
         let videoStartTicks = videoIndex.map { reader.timeBase($0).ticks(seconds: segment.start) }
         let isLast = number == plan.segments.count - 1
+        var read = 0
 
         while !(videoDone && audioDone.count == audioIndices.count) {
             if cancellation.isCancelled { throw MediaError.cancelled }
+            // Every 16 packets (a fraction of a second over a network): whether the player still wants this piece.
+            if read % 16 == 0 {
+                if ahead, let wanted = pieceWantedInstead(of: number) { throw GaveWay(wanted: wanted) }
+                if let abandoned, abandoned(), liveWaiters(for: number) == 0 { throw GaveWay(wanted: nil) }
+            }
+            read += 1
             guard let packet = try reader.next() else { break }
             if overlayStreams.contains(packet.stream) {
                 let base = reader.timeBase(packet.stream)
@@ -681,6 +811,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             if packet.stream == videoIndex {
                 if !videoStarted {
                     guard packet.isKeyframe, packet.pts >= (number == 0 ? Int64.min : videoStartTicks! - 1) else { continue }
+                    // The first keyframe is already the next piece's start (a GOP longer than this piece, possible on a time
+                    // grid): this piece has no video of its own, rather than a copy of the next one's.
+                    if !isLast, number > 0, seconds >= segment.end - 0.0005 { videoDone = true; continue }
                     videoStarted = true
                 } else if packet.isKeyframe, !isLast, seconds >= segment.end - 0.0005 {
                     videoDone = true
@@ -734,23 +867,29 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     }
 
     private func touch(_ key: CacheKey) -> Data? {
-        guard let data = cache[key] else { return nil }
-        cacheOrder.removeAll { $0 == key }
-        cacheOrder.append(key)
-        return data
+        fragments.withLock { $0.fetch(key) }
     }
 
     private func store(_ key: CacheKey, _ data: Data) {
-        if let old = cache[key] { cacheBytes -= old.count }
-        cache[key] = data
-        cacheBytes += data.count
-        cacheOrder.removeAll { $0 == key }
-        cacheOrder.append(key)
-        // Evict least recently used entries, but never the window just built.
-        while cacheBytes > cacheBudget, let oldest = cacheOrder.first, oldest.segment != key.segment {
-            cacheOrder.removeFirst()
-            if let removed = cache.removeValue(forKey: oldest) { cacheBytes -= removed.count }
+        let budget = cacheBudget
+        fragments.withLock { $0.insert(key, data, budget: budget) }
+    }
+
+    /// The requests still waiting for piece `number` whose clients have not hung up.
+    private func liveWaiters(for number: Int) -> Int {
+        let waiters = waiting.withLock { Array($0.entries.values) }
+        return waiters.filter { $0.key.segment == number && !$0.abandoned() }.count
+    }
+
+    /// The piece a waiting request wants when nobody waits for `number` and that piece is neither built nor waiting to be
+    /// transcoded (the player jumped): a read-ahead build of `number` stops for it. Call on `queue`.
+    private func pieceWantedInstead(of number: Int) -> Int? {
+        let waiters = waiting.withLock { Array($0.entries.values) }.filter { !$0.abandoned() }
+        guard !waiters.isEmpty, !waiters.contains(where: { $0.key.segment == number }) else { return nil }
+        for waiter in waiters where pendingTranscodes[waiter.key] == nil {
+            if fragments.withLock({ $0.entries[waiter.key] == nil }) { return waiter.key.segment }
         }
+        return nil
     }
 
     // MARK: Playlists

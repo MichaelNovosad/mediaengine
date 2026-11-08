@@ -133,13 +133,13 @@ extension PlaybackSession {
 
     /// The fonts attached to the file, by file name.
     private func loadFonts() async -> [(name: String, data: Data)] {
-        var fonts: [(name: String, data: Data)] = []
-        for attachment in info.attachments where attachment.kind == .font {
-            if let data = try? await source.data(of: attachment), !data.isEmpty {
-                fonts.append((attachment.filename ?? "font-\(attachment.id)", data))
-            }
+        let attachments = info.attachments.filter { $0.kind == .font }
+        guard !attachments.isEmpty else { return [] }
+        let read = await source.data(of: attachments)                  // one opening of the file for all of them
+        return attachments.compactMap { attachment in
+            guard let data = read[attachment.id], !data.isEmpty else { return nil }
+            return (attachment.filename ?? "font-\(attachment.id)", data)
         }
-        return fonts
     }
 }
 

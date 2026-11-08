@@ -53,22 +53,27 @@ enum AnnexB {
         return result
     }
 
-    /// An access unit as length-prefixed NAL units, without delimiters and parameter sets (those live in the decoder
-    /// configuration). Parameter sets found on the way are added to `sets`. Data without start codes comes back unchanged.
-    static func convert(_ data: Data, codec: Codec, sets: inout [Int: [Data]]) -> Data {
+    /// An access unit as length-prefixed NAL units, without delimiters. Parameter sets the decoder configuration holds
+    /// (`configuration`, by NAL type) are dropped: they live there. A stream that brings different ones keeps them in its
+    /// samples from then on (`keepsSets` turns on and stays on), so the decoder reads every frame with the sets that belong to
+    /// it: Blu-ray files often start with a separately encoded opening, and dropping the film's own sets made every frame
+    /// after the first group of pictures undecodable (2026-11-08). Data without start codes comes back unchanged.
+    static func convert(_ data: Data, codec: Codec, configuration: [Int: [Data]], keepsSets: inout Bool) -> Data {
         data.withUnsafeBytes { raw -> Data in
             let bytes = raw.bindMemory(to: UInt8.self)
             let units = units(in: bytes)
             guard !units.isEmpty else { return data }
+            if !keepsSets {
+                for range in units {
+                    let type = nalType(bytes[range.lowerBound], codec)
+                    if isParameterSet(type, codec), !(configuration[type] ?? []).contains(Data(bytes[range])) { keepsSets = true; break }
+                }
+            }
             var output = Data()
-            output.reserveCapacity(data.count)
+            output.reserveCapacity(data.count + 16)
             for range in units {
                 let type = nalType(bytes[range.lowerBound], codec)
-                if isParameterSet(type, codec) {
-                    let unit = Data(bytes[range])
-                    if !(sets[type] ?? []).contains(unit), (sets[type] ?? []).count < 8 { sets[type, default: []].append(unit) }
-                    continue
-                }
+                if isParameterSet(type, codec), !keepsSets { continue }
                 if isDelimiter(type, codec) { continue }
                 var length = UInt32(range.count).bigEndian
                 withUnsafeBytes(of: &length) { output.append(contentsOf: $0) }

@@ -1,356 +1,200 @@
 import Foundation
 import os
+import Synchronization
 
-/// Element identifiers for the index work below.
-private enum MKV {
-    static let ebml: UInt32 = 0x1A45DFA3, segment: UInt32 = 0x18538067, seekHead: UInt32 = 0x114D9B74
-    static let seek: UInt32 = 0x4DBB, seekID: UInt32 = 0x53AB, seekPosition: UInt32 = 0x53AC
-    static let info: UInt32 = 0x1549A966, timestampScale: UInt32 = 0x2AD7B1, duration: UInt32 = 0x4489
-    static let tracks: UInt32 = 0x1654AE6B, trackEntry: UInt32 = 0xAE, trackNumber: UInt32 = 0xD7, trackType: UInt32 = 0x83
-    static let cues: UInt32 = 0x1C53BB6B, cuePoint: UInt32 = 0xBB, cueTrackPositions: UInt32 = 0xB7, cueTrack: UInt32 = 0xF7
-    static let cluster: UInt32 = 0x1F43B675, timestamp: UInt32 = 0xE7, simpleBlock: UInt32 = 0xA3
-    static let blockGroup: UInt32 = 0xA0, block: UInt32 = 0xA1, referenceBlock: UInt32 = 0xFB
-    /// What a segment may hold at its top level, between and after its clusters (chapters, attachments, tags, void, CRC-32 too).
-    static let topLevel: Set<UInt32> = [seekHead, info, tracks, cues, cluster, 0x1043A770, 0x1941A469, 0x1254C367, 0xEC, 0xBF]
-}
-
-/// What the start of a Matroska file says about where things are: the timestamp scale and duration (Info), the numbers of
-/// the video tracks (Tracks), the first cluster, and whether the file's index (Cues) lists a video track.
+/// Finds a cluster of a Matroska file at or a little before a given time, for files whose index (Cues) does not cover that
+/// time: without it FFmpeg's seek reads every cluster from the last one it knows up to the target, which over a network can
+/// be most of a movie. The cluster's position then goes into the demuxer's index as a seek point, so FFmpeg starts reading
+/// there (and skips to the next keyframe, as with a cue).
 ///
-/// FFmpeg loads the Cues only on the first seek, and when a file has none, or none for the video track, a seek to the end
-/// reads every cluster of the file to find its keyframes; over a network that is the whole movie before the first picture.
-/// This look at the file's start says so beforehand, for a few reads that the opening has already made.
-struct MatroskaLayout: Sendable {
-    var segmentEnd: Int64?
-    var firstCluster: Int64?
-    /// Nanoseconds per tick of the file's timestamps.
-    var timestampScale = 1_000_000.0
-    /// Seconds, when the header states it (live recordings often do not).
-    var duration: Double?
-    /// The track numbers of the video tracks, in the order the file lists them.
-    var videoTracks: [UInt64] = []
-    /// `nil` when the file has no Cues; otherwise whether its first cue points list a video track.
-    var cuesListVideo: Bool?
+/// It needs nothing from the file's header: a cluster is recognised by its identifier, a known size and its Timestamp,
+/// which Matroska muxers write as its first child. The search guesses the byte position from the time (the bitrate is
+/// close to even over a film), finds the next cluster there with a few large reads (``ByteSource/readSparse(at:into:)``,
+/// nothing cached), narrows it down, and steps forward from cluster to cluster by their sizes, a small read each, to the last
+/// one that starts at or before the target. Clusters found are shared by every reader of the same file.
+final class MatroskaSeeker: Sendable {
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "index")
+    private static let cluster: [UInt8] = [0x1F, 0x43, 0xB6, 0x75]
+    /// Clusters found so far, per file (`KeyframeIndexStore.key`), in time order: what one reader learnt helps the others.
+    private static let found = Mutex<[String: [Spot]]>([:])
 
-    static func read(from source: any ByteSource) -> MatroskaLayout? {
-        let reader = EBMLReader(source: source)
-        guard let ebml = reader.header(at: 0), ebml.id == MKV.ebml, let ebmlSize = ebml.size else { return nil }
-        let segmentOffset = Int64(ebml.headerLength).addingReportingOverflow(ebmlSize)
-        guard !segmentOffset.overflow, let segment = reader.header(at: segmentOffset.partialValue), segment.id == MKV.segment else { return nil }
-        let dataStart = segmentOffset.partialValue + Int64(segment.headerLength)
-        var layout = MatroskaLayout()
-        if let size = segment.size, case let (end, overflow) = dataStart.addingReportingOverflow(size), !overflow { layout.segmentEnd = end }
-
-        let positions = topLevelPositions(reader, dataStart: dataStart, size: segment.size)
-        layout.firstCluster = positions[MKV.cluster]
-
-        if let at = positions[MKV.info], let info = reader.header(at: at), info.id == MKV.info, let size = info.size {
-            var ticks: Double?
-            for child in reader.children(from: at + Int64(info.headerLength), size: size, limit: 64) {
-                let body = child.offset + Int64(child.header.headerLength), length = Int(clamping: child.header.size ?? 0)
-                switch child.header.id {
-                case MKV.timestampScale: if let value = reader.uint(at: body, size: length), value > 0 { layout.timestampScale = Double(value) }
-                case MKV.duration: ticks = reader.float(at: body, size: length)
-                default: break
-                }
-            }
-            if let ticks, ticks.isFinite, ticks > 0 { layout.duration = ticks * layout.timestampScale / 1e9 }
-        }
-
-        if let at = positions[MKV.tracks], let tracks = reader.header(at: at), tracks.id == MKV.tracks, let size = tracks.size {
-            for entry in reader.children(from: at + Int64(tracks.headerLength), size: size, limit: 256) where entry.header.id == MKV.trackEntry {
-                guard let entrySize = entry.header.size else { continue }
-                var number: UInt64?, type: UInt64?
-                for field in reader.children(from: entry.offset + Int64(entry.header.headerLength), size: entrySize, limit: 64) {
-                    let body = field.offset + Int64(field.header.headerLength), length = Int(clamping: field.header.size ?? 0)
-                    if field.header.id == MKV.trackNumber { number = reader.uint(at: body, size: length) }
-                    if field.header.id == MKV.trackType { type = reader.uint(at: body, size: length) }
-                }
-                if type == 1, let number { layout.videoTracks.append(number) }
-            }
-        }
-
-        if let at = positions[MKV.cues], let cues = reader.header(at: at), cues.id == MKV.cues, let size = cues.size {
-            var listsVideo = false
-            for point in reader.children(from: at + Int64(cues.headerLength), size: size, limit: 8) where point.header.id == MKV.cuePoint {
-                guard let pointSize = point.header.size else { continue }
-                for place in reader.children(from: point.offset + Int64(point.header.headerLength), size: pointSize, limit: 16)
-                where place.header.id == MKV.cueTrackPositions {
-                    guard let placeSize = place.header.size else { continue }
-                    for field in reader.children(from: place.offset + Int64(place.header.headerLength), size: placeSize, limit: 16)
-                    where field.header.id == MKV.cueTrack {
-                        let length = Int(clamping: field.header.size ?? 0)
-                        if let track = reader.uint(at: field.offset + Int64(field.header.headerLength), size: length),
-                           layout.videoTracks.contains(track) { listsVideo = true }
-                    }
-                }
-            }
-            layout.cuesListVideo = listsVideo
-        }
-        return layout
+    struct Spot: Sendable, Equatable {
+        /// Seconds on the file's own timeline (Matroska timestamps times the scale).
+        var time: Double
+        var position: Int64
+        var size: Int64
+        var headerLength: Int
     }
 
-    /// Where the segment's top-level elements are: the ones before the first cluster (that one included), and what the
-    /// SeekHead points to (Cues usually sit after the clusters).
-    private static func topLevelPositions(_ reader: EBMLReader, dataStart: Int64, size: Int64?) -> [UInt32: Int64] {
-        var positions: [UInt32: Int64] = [:]
-        for (header, offset) in reader.children(from: dataStart, size: size, limit: 64, stopAt: MKV.cluster) {
-            if positions[header.id] == nil { positions[header.id] = offset }
-            guard header.id == MKV.seekHead, let headSize = header.size else { continue }
-            for entry in reader.children(from: offset + Int64(header.headerLength), size: headSize, limit: 64) where entry.header.id == MKV.seek {
-                guard let entrySize = entry.header.size else { continue }
-                var target: UInt32?, position: Int64?
-                for field in reader.children(from: entry.offset + Int64(entry.header.headerLength), size: entrySize, limit: 8) {
-                    let at = field.offset + Int64(field.header.headerLength), length = Int(clamping: field.header.size ?? 0)
-                    if field.header.id == MKV.seekID, let raw = reader.bytes(at: at, count: min(length, 4)) {
-                        target = raw.reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
-                    }
-                    if field.header.id == MKV.seekPosition, let value = reader.uint(at: at, size: length), let relative = Int64(exactly: value),
-                       case let (sum, overflow) = dataStart.addingReportingOverflow(relative), !overflow {
-                        position = sum
-                    }
-                }
-                if let target, let position, positions[target] == nil { positions[target] = position }
-            }
-        }
-        return positions
-    }
-}
+    private let source: any ByteSource
+    private let length: Int64
+    private let key: String
+    /// Seconds per tick of the file's timestamps.
+    private let scale: Double
+    /// The file's duration in seconds, when known (an upper bound for the search).
+    private let duration: Double?
+    private let cancellation: CancellationFlag
 
-/// Reads element headers far apart with small requests (``ByteSource/readSparse(at:into:)``), a few kilobytes at a time,
-/// so that hopping from cluster to cluster does not fetch the clusters themselves.
-struct SparseEBML {
-    let source: any ByteSource
-    let length: Int64
-    private var start: Int64 = 0
-    private var window: [UInt8] = []
-    static let windowSize = 8 * 1024
+    /// One large read while looking for a cluster; clusters of a film are a few megabytes apart.
+    private static let window = 1 << 20
+    /// Read this far at most from one guess before giving up on it.
+    private static let farthest: Int64 = 48 << 20
+    /// Close enough: from a cluster this much before the target, the demuxer reads on to it.
+    private static let closeEnough = 8.0
 
-    init(source: any ByteSource, length: Int64) {
+    init?(source: any ByteSource, scale: Double, duration: Double?, cancellation: CancellationFlag) {
+        guard let length = source.length, length > 0, scale > 0, let key = KeyframeIndexStore.key(for: source) else { return nil }
         self.source = source
         self.length = length
+        self.key = key
+        self.scale = scale
+        self.duration = duration
+        self.cancellation = cancellation
     }
 
-    /// `count` bytes at `offset`; `nil` past the end of the file or when the source has no more.
-    mutating func bytes(at offset: Int64, count: Int) throws -> [UInt8]? {
-        guard count > 0, offset >= 0, count <= EBMLReader.largestRead, offset <= length - Int64(count) else { return nil }
-        if offset >= start, offset + Int64(count) <= start + Int64(window.count) {
-            let from = Int(offset - start)
-            return Array(window[from..<(from + count)])
+    /// The last cluster that starts at or before `target` (seconds on the file's own timeline), or one at most a few
+    /// seconds before it; `nil` when none can be found.
+    func cluster(atOrBefore target: Double) throws -> Spot? {
+        let known = Self.found.withLock { $0[key] ?? [] }
+        if let best = known.last(where: { $0.time <= target }), target - best.time <= Self.closeEnough, known.contains(where: { $0.time > target }) {
+            return best
         }
-        let wanted = Int(min(Int64(max(count, Self.windowSize)), length - offset))
-        var buffer = [UInt8](repeating: 0, count: wanted)
-        var filled = 0
-        while filled < wanted {
-            let read = try buffer.withUnsafeMutableBytes { raw in
-                try source.readSparse(at: offset + Int64(filled), into: UnsafeMutableRawBufferPointer(rebasing: raw[filled...]))
+        var low: Spot? = known.last { $0.time <= target }
+        var high: (time: Double, position: Int64) = known.first { $0.time > target }.map { ($0.time, $0.position) }
+            ?? (max(duration ?? 0, target + 1), length)
+        var reads = 0
+        // Guess, look, narrow: until a cluster within a minute before the target is known.
+        for _ in 0..<12 where low.map({ target - $0.time > 60 }) ?? true {
+            let from = low.map { $0.position + Int64($0.headerLength) } ?? 0
+            let lowTime = low?.time ?? 0
+            guard high.position - from > Int64(Self.window), high.time > lowTime else { break }
+            let fraction = min(max((target - 20 - lowTime) / (high.time - lowTime), 0.02), 0.98)
+            let guess = from + Int64(Double(high.position - from) * fraction)
+            guard let spot = try nextCluster(from: guess, before: high.position, reads: &reads) else {
+                high = (high.time, guess)                         // no cluster between the guess and the bound: look earlier
+                continue
             }
-            if read <= 0 { break }
-            filled += read
+            remember(spot)
+            if spot.time <= target { low = spot } else { high = (spot.time, spot.position) }
         }
-        guard filled >= count else { return nil }
-        start = offset
-        window = Array(buffer.prefix(filled))
-        return Array(window[0..<count])
-    }
-
-    /// The header of the element at `offset` (identifier, size, header length).
-    mutating func header(at offset: Int64) throws -> EBMLHeader? {
-        let available = Int(min(12, length - offset))
-        guard available >= 2, let head = try bytes(at: offset, count: available), head[0] != 0 else { return nil }
-        let idLength = head[0].leadingZeroBitCount + 1
-        guard idLength <= 4, head.count > idLength, head[idLength] != 0 else { return nil }
-        let id = head[0..<idLength].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
-        let sizeLength = head[idLength].leadingZeroBitCount + 1
-        guard head.count >= idLength + sizeLength else { return nil }
-        var value = UInt64(head[idLength] & (0xFF >> UInt8(sizeLength)))
-        for byte in head[(idLength + 1)..<(idLength + sizeLength)] { value = value << 8 | UInt64(byte) }
-        let allOnes = (UInt64(1) << UInt64(7 * sizeLength)) - 1
-        return EBMLHeader(id: id, size: value == allOnes ? nil : Int64(clamping: value), headerLength: idLength + sizeLength)
-    }
-
-    mutating func uint(at offset: Int64, size: Int) throws -> UInt64? {
-        guard (1...8).contains(size), let raw = try bytes(at: offset, count: size) else { return nil }
-        return raw.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
-    }
-
-    /// The start of a Block or SimpleBlock: track number, time relative to the cluster, flags.
-    mutating func blockHeader(at offset: Int64, size: Int64) throws -> (track: UInt64, relative: Int16, flags: UInt8)? {
-        let count = Int(min(size, 12))
-        guard count >= 4, let raw = try bytes(at: offset, count: count), raw[0] != 0 else { return nil }
-        let trackLength = raw[0].leadingZeroBitCount + 1
-        guard trackLength <= 8, raw.count >= trackLength + 3 else { return nil }
-        var track = UInt64(raw[0] & (0xFF >> UInt8(trackLength)))
-        for byte in raw[1..<trackLength] { track = track << 8 | UInt64(byte) }
-        let relative = Int16(bitPattern: UInt16(raw[trackLength]) << 8 | UInt16(raw[trackLength + 1]))
-        return (track, relative, raw[trackLength + 2])
-    }
-}
-
-/// A keyframe list for a Matroska file whose own index (Cues) is missing or unusable, built by hopping from cluster to cluster
-/// and reading only the start of each: its time and its first video block. A few kilobytes per cluster instead of the
-/// whole file. Keyframes that are not the first video block of their cluster are not found; segments are cut only at the
-/// ones that are, which is where muxers start their clusters.
-enum MatroskaClusterIndex {
-    struct Result: Sendable {
-        /// Seconds on the file's own timeline (before the engine takes the start time off).
-        var keyframes: [Double]
-        /// Where each keyframe's cluster starts (absolute byte offset): what a Matroska index stores, so FFmpeg can seek to it.
-        var positions: [Int64]
-        var duration: Double
-    }
-
-    private static let logger = Logger(subsystem: "dev.mediaengine", category: "index")
-
-    /// `nil` when it cannot be done this way: no cluster, a cluster of unknown size (a live recording), no keyframe found.
-    /// The log says which.
-    static func build(source: any ByteSource, layout: MatroskaLayout, videoTrack: UInt64, frameDuration: Double,
-                      cancellation: CancellationFlag, progress: (@Sendable (Double) -> Void)?) throws -> Result? {
-        guard let first = layout.firstCluster, let length = source.length, length > first else {
-            logger.notice("Cluster headers: no first cluster found")
+        guard var current = low else {
+            Self.logger.notice("Seek help: no cluster found before \(Int(target), privacy: .public) s (\(reads, privacy: .public) reads)")
             return nil
         }
-        let end = min(layout.segmentEnd ?? length, length)
-        var reader = SparseEBML(source: source, length: length)
-        let scale = layout.timestampScale / 1e9                          // seconds per tick
-        var keyframes: [Double] = [], positions: [Int64] = []
-        var latest = 0.0
-        var lastCluster: (offset: Int64, header: EBMLHeader)?
-        var offset = first
-        var reported = -1.0
-        var clusters = 0, withVideo = 0
+        // Step forward by the clusters' sizes to the last one at or before the target.
+        var steps = 0
+        while steps < 2_000, let next = try following(current) {
+            if cancellation.isCancelled { throw MediaError.cancelled }
+            steps += 1
+            remember(next)
+            if next.time > target { break }
+            current = next
+        }
+        Self.logger.notice("Seek help: cluster at \(Int(current.time), privacy: .public) s for \(Int(target), privacy: .public) s (\(reads, privacy: .public) large reads, \(steps, privacy: .public) steps)")
+        return current
+    }
+
+    private func remember(_ spot: Spot) {
+        Self.found.withLock { all in
+            var list = all[key] ?? []
+            guard !list.contains(where: { $0.position == spot.position }) else { return }
+            let at = list.firstIndex { $0.time > spot.time } ?? list.count
+            list.insert(spot, at: at)
+            all[key] = list
+        }
+    }
+
+    /// The first cluster that starts at or after `start` and before `limit`, read in large pieces.
+    private func nextCluster(from start: Int64, before limit: Int64, reads: inout Int) throws -> Spot? {
+        var offset = max(start, 0)
+        let end = min(limit, start + Self.farthest, length)
         while offset < end {
             if cancellation.isCancelled { throw MediaError.cancelled }
-            guard let header = try reader.header(at: offset) else {                        // the end of what can be read
-                logger.notice("Cluster headers: unreadable element at \(offset, privacy: .public) of \(length, privacy: .public)")
-                break
-            }
-            guard MKV.topLevel.contains(header.id) else {                                  // not a top-level element: damaged here
-                logger.notice("Cluster headers: unexpected element \(String(header.id, radix: 16), privacy: .public) at \(offset, privacy: .public)")
-                break
-            }
-            guard let size = header.size else {                                            // unknown size: the next one cannot be found
-                logger.notice("Cluster headers: an element of unknown size at \(offset, privacy: .public) (a live recording); cannot hop")
-                return nil
-            }
-            if header.id == MKV.cluster {
-                clusters += 1
-                lastCluster = (offset, header)
-                if let found = try firstVideoBlock(&reader, cluster: offset, header: header, track: videoTrack, scale: scale) {
-                    withVideo += 1
-                    latest = max(latest, found.time)
-                    if found.isKeyframe, found.time >= (keyframes.last ?? -.infinity) {
-                        keyframes.append(found.time)
-                        positions.append(offset)
-                    }
+            let count = Int(min(Int64(Self.window), end - offset))
+            guard let buffer = try read(at: offset, count: count) else { return nil }
+            reads += 1
+            var index = 0
+            while index + 4 <= buffer.count {
+                if buffer[index] == 0x1F, buffer[index + 1] == 0x43, buffer[index + 2] == 0xB6, buffer[index + 3] == 0x75,
+                   let spot = parse(buffer, at: index, base: offset), try endsWell(spot) {
+                    return spot
                 }
+                index += 1
             }
-            let step = Int64(header.headerLength).addingReportingOverflow(size)
-            let next = offset.addingReportingOverflow(step.partialValue)
-            guard !step.overflow, !next.overflow, next.partialValue > offset else { break }
-            offset = next.partialValue
-            if let progress {
-                let fraction = min(Double(offset - first) / Double(max(end - first, 1)), 1)
-                if fraction - reported >= 0.005 { reported = fraction; progress(fraction) }
-            }
+            // The next piece overlaps a little, so that a cluster header across the edge is still seen.
+            offset += Int64(max(buffer.count - 32, 1))
         }
-        logger.notice("Cluster headers: \(clusters, privacy: .public) clusters, \(withVideo, privacy: .public) with a video block of track \(videoTrack, privacy: .public), \(keyframes.count, privacy: .public) of them start with a keyframe")
-        guard !keyframes.isEmpty else { return nil }
-        var duration = layout.duration
-        if duration == nil, let last = lastCluster {
-            // No duration in the header: the last cluster's last block, plus one frame.
-            let ending = try lastBlockTime(&reader, cluster: last.offset, header: last.header, scale: scale) ?? latest
-            duration = max(ending, latest) + frameDuration
-        }
-        guard let duration, duration > 0 else { return nil }
-        return Result(keyframes: keyframes, positions: positions, duration: duration)
+        return nil
     }
 
-    /// The time of the cluster's first block of the video track and whether it is a keyframe.
-    private static func firstVideoBlock(_ reader: inout SparseEBML, cluster: Int64, header: EBMLHeader, track: UInt64,
-                                        scale: Double) throws -> (time: Double, isKeyframe: Bool)? {
-        var clusterTime: Int64?
-        var found: (time: Double, isKeyframe: Bool)?
-        try walkBlocks(&reader, cluster: cluster, header: header, limit: 64) { child, body, size, reader in
-            switch child {
-            case MKV.timestamp:
-                clusterTime = try reader.uint(at: body, size: Int(clamping: size)).map { Int64(clamping: $0) }
-            case MKV.simpleBlock:
-                if let clusterTime, let block = try reader.blockHeader(at: body, size: size), block.track == track {
-                    found = (Double(clusterTime + Int64(block.relative)) * scale, block.flags & 0x80 != 0)
-                }
-            case MKV.blockGroup:
-                if let clusterTime, let block = try groupBlock(&reader, group: body, size: size), block.track == track {
-                    found = (Double(clusterTime + Int64(block.relative)) * scale, block.isKeyframe)
-                }
-            default: break
+    /// Top-level elements a segment holds: Cluster, Cues, Tags, Chapters, Attachments, SeekHead, Info, Tracks, Void, CRC-32.
+    private static let topLevel: Set<UInt32> = [0x1F43B675, 0x1C53BB6B, 0x1254C367, 0x1043A770, 0x1941A469, 0x114D9B74, 0x1549A966,
+                                                0x1654AE6B, 0xEC, 0xBF]
+
+    /// A cluster found by its bytes is real when, where its size says it ends, the file ends or another top-level element
+    /// begins: the same four bytes inside a picture would almost never also have that.
+    private func endsWell(_ spot: Spot) throws -> Bool {
+        let end = spot.position + Int64(spot.headerLength) + spot.size
+        if end >= length - 1 { return end <= length + 1 }
+        guard let buffer = try read(at: end, count: Int(min(16, length - end))), let header = Self.elementHeader(buffer, at: 0) else { return false }
+        return Self.topLevel.contains(header.id)
+    }
+
+    /// The top-level element after `spot` that is a cluster (other elements, such as Cues or Tags, are stepped over).
+    private func following(_ spot: Spot) throws -> Spot? {
+        var offset = spot.position + Int64(spot.headerLength) + spot.size
+        for _ in 0..<8 {
+            guard offset < length, let buffer = try read(at: offset, count: Int(min(64, length - offset))), buffer.count >= 8 else { return nil }
+            if Array(buffer[0..<4]) == Self.cluster { return parse(buffer, at: 0, base: offset) }
+            guard let header = Self.elementHeader(buffer, at: 0), let size = header.size else { return nil }
+            offset += Int64(header.length) + size
+        }
+        return nil
+    }
+
+    /// A cluster at `index` of `buffer` (which starts at file offset `base`): known size, and a Timestamp as its first child
+    /// (after a CRC-32, if any) with a time that fits the file.
+    private func parse(_ buffer: [UInt8], at index: Int, base: Int64) -> Spot? {
+        guard let header = Self.elementHeader(buffer, at: index), header.id == 0x1F43B675, let size = header.size, size > 0 else { return nil }
+        let position = base + Int64(index)
+        guard position + Int64(header.length) + size <= length + 1 else { return nil }
+        var child = index + header.length
+        if child < buffer.count, buffer[child] == 0xBF, let crc = Self.elementHeader(buffer, at: child), let crcSize = crc.size {
+            child += crc.length + Int(crcSize)
+        }
+        guard let stamp = Self.elementHeader(buffer, at: child), stamp.id == 0xE7, let stampSize = stamp.size, (1...8).contains(stampSize),
+              child + stamp.length + Int(stampSize) <= buffer.count else { return nil }
+        let value = buffer[(child + stamp.length)..<(child + stamp.length + Int(stampSize))].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        let time = Double(value) * scale
+        guard time >= 0, time <= (duration ?? .greatestFiniteMagnitude) + 600 else { return nil }
+        return Spot(time: time, position: position, size: size, headerLength: header.length)
+    }
+
+    private func read(at offset: Int64, count: Int) throws -> [UInt8]? {
+        guard count > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: count)
+        var filled = 0
+        while filled < count {
+            let got = try buffer.withUnsafeMutableBytes { raw in
+                try source.readSparse(at: offset + Int64(filled), into: UnsafeMutableRawBufferPointer(rebasing: raw[filled...]))
             }
-            return found == nil
+            if got <= 0 { break }
+            filled += got
         }
-        return found
+        return filled > 0 ? Array(buffer.prefix(filled)) : nil
     }
 
-    /// The latest block time in a cluster, any track (the end of the file, when the header does not say).
-    private static func lastBlockTime(_ reader: inout SparseEBML, cluster: Int64, header: EBMLHeader, scale: Double) throws -> Double? {
-        var clusterTime: Int64?
-        var latest: Double?
-        try walkBlocks(&reader, cluster: cluster, header: header, limit: 20_000) { child, body, size, reader in
-            switch child {
-            case MKV.timestamp:
-                clusterTime = try reader.uint(at: body, size: Int(clamping: size)).map { Int64(clamping: $0) }
-            case MKV.simpleBlock:
-                if let clusterTime, let block = try reader.blockHeader(at: body, size: size) {
-                    latest = max(latest ?? 0, Double(clusterTime + Int64(block.relative)) * scale)
-                }
-            case MKV.blockGroup:
-                if let clusterTime, let block = try groupBlock(&reader, group: body, size: size) {
-                    latest = max(latest ?? 0, Double(clusterTime + Int64(block.relative)) * scale)
-                }
-            default: break
-            }
-            return true
-        }
-        return latest
-    }
-
-    /// Calls `visit` with each child of the cluster (identifier, where its data starts, its size) until it returns `false`.
-    private static func walkBlocks(_ reader: inout SparseEBML, cluster: Int64, header: EBMLHeader, limit: Int,
-                                   _ visit: (UInt32, Int64, Int64, inout SparseEBML) throws -> Bool) throws {
-        guard let size = header.size else { return }
-        let start = cluster + Int64(header.headerLength)
-        let end = start.addingReportingOverflow(size)
-        guard !end.overflow else { return }
-        var offset = start
-        var visited = 0
-        while offset < end.partialValue, visited < limit {
-            visited += 1
-            guard let child = try reader.header(at: offset), let childSize = child.size else { return }
-            let body = offset + Int64(child.headerLength)
-            guard try visit(child.id, body, childSize, &reader) else { return }
-            let next = body.addingReportingOverflow(childSize)
-            guard !next.overflow, next.partialValue > offset else { return }
-            offset = next.partialValue
-        }
-    }
-
-    /// The Block inside a BlockGroup: its track and time, and whether it is a keyframe (a group with a ReferenceBlock is not).
-    private static func groupBlock(_ reader: inout SparseEBML, group: Int64, size: Int64) throws -> (track: UInt64, relative: Int16, isKeyframe: Bool)? {
-        let end = group.addingReportingOverflow(size)
-        guard !end.overflow else { return nil }
-        var offset = group
-        var block: (track: UInt64, relative: Int16)?
-        var referenced = false
-        var visited = 0
-        while offset < end.partialValue, visited < 16 {
-            visited += 1
-            guard let child = try reader.header(at: offset), let childSize = child.size else { break }
-            let body = offset + Int64(child.headerLength)
-            if child.id == MKV.block, let header = try reader.blockHeader(at: body, size: childSize) { block = (header.track, header.relative) }
-            if child.id == MKV.referenceBlock { referenced = true }
-            let next = body.addingReportingOverflow(childSize)
-            guard !next.overflow, next.partialValue > offset else { break }
-            offset = next.partialValue
-        }
-        return block.map { ($0.track, $0.relative, !referenced) }
+    /// An EBML element header in a buffer: identifier, size (`nil` when unknown) and header length.
+    private static func elementHeader(_ buffer: [UInt8], at index: Int) -> (id: UInt32, size: Int64?, length: Int)? {
+        guard index < buffer.count, buffer[index] != 0 else { return nil }
+        let idLength = buffer[index].leadingZeroBitCount + 1
+        guard idLength <= 4, index + idLength < buffer.count, buffer[index + idLength] != 0 else { return nil }
+        let id = buffer[index..<(index + idLength)].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+        let sizeLength = buffer[index + idLength].leadingZeroBitCount + 1
+        guard index + idLength + sizeLength <= buffer.count else { return nil }
+        var value = UInt64(buffer[index + idLength] & (0xFF >> UInt8(sizeLength)))
+        for byte in buffer[(index + idLength + 1)..<(index + idLength + sizeLength)] { value = value << 8 | UInt64(byte) }
+        let allOnes = (UInt64(1) << UInt64(7 * sizeLength)) - 1
+        return (id, value == allOnes ? nil : Int64(clamping: value), idLength + sizeLength)
     }
 }

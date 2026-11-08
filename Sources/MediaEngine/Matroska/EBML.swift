@@ -55,13 +55,6 @@ struct EBMLReader {
         return raw.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
     }
 
-    /// An EBML float: 4 or 8 bytes, big-endian.
-    func float(at offset: Int64, size: Int) -> Double? {
-        guard size == 4 || size == 8, let raw = bytes(at: offset, count: size) else { return nil }
-        let bits = raw.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
-        return size == 4 ? Double(Float(bitPattern: UInt32(truncatingIfNeeded: bits))) : Double(bitPattern: bits)
-    }
-
     func string(at offset: Int64, size: Int) -> String? {
         guard size >= 0, size <= 4096, let raw = bytes(at: offset, count: size) else { return nil }
         let trimmed = raw.prefix { $0 != 0 }

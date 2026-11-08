@@ -35,13 +35,38 @@ public struct MediaSource: Sendable {
         let cancellation = CancellationFlag()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                // Blocking work belongs on its own thread, never on Swift's cooperative pool.
+                // Blocking work belongs on its own thread, never on Swift's cooperative pool (the look-up below reads the
+                // file's first 64 KB to recognise it, which over a network blocks too).
                 DispatchQueue.global(qos: .userInitiated).async {
                     do {
-                        continuation.resume(returning: try Prober.probe(source: source, cancellation: cancellation))
+                        // A file read over a network that was looked at before (a reopening, or the session made again when
+                        // files are added) is described from what was kept: the look at its start and end costs a second or more.
+                        if source.throughput != nil, let remembered = ProbeStore.shared.lookup(source) {
+                            continuation.resume(returning: remembered)
+                            return
+                        }
+                        let info = try Prober.probe(source: source, cancellation: cancellation)
+                        if source.throughput != nil { ProbeStore.shared.remember(info, for: source) }
+                        continuation.resume(returning: info)
                     } catch {
                         continuation.resume(throwing: error)
                     }
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+            source.cancelPendingReads()
+        }
+    }
+
+    /// The bytes of several attachments (the fonts of a subtitle track), read with one opening of the file.
+    func data(of attachments: [Attachment]) async -> [Int: Data] {
+        let source = byteSource
+        let cancellation = CancellationFlag()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: (try? AttachmentReader.read(attachments, from: source, cancellation: cancellation)) ?? [:])
                 }
             }
         } onCancel: {

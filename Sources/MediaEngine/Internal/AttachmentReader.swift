@@ -6,7 +6,20 @@ enum AttachmentReader {
     static let sizeLimit = 32 * 1024 * 1024
 
     static func read(_ attachment: Attachment, from source: any ByteSource, cancellation: CancellationFlag) throws -> Data {
-        let context = try FormatContext.open(source: source, cancellation: cancellation)
+        let context = try FormatContext.open(source: source, cancellation: cancellation, quick: true)
+        return try bytes(of: attachment, in: context)
+    }
+
+    /// Several attachments (the fonts of a subtitle track) with one opening of the file instead of one each; the ones that
+    /// cannot be read are left out.
+    static func read(_ attachments: [Attachment], from source: any ByteSource, cancellation: CancellationFlag) throws -> [Int: Data] {
+        let context = try FormatContext.open(source: source, cancellation: cancellation, quick: true)
+        var result: [Int: Data] = [:]
+        for attachment in attachments { result[attachment.id] = try? bytes(of: attachment, in: context) }
+        return result
+    }
+
+    private static func bytes(of attachment: Attachment, in context: FormatContext) throws -> Data {
         let format = context.format
         guard attachment.id >= 0, attachment.id < Int(format.pointee.nb_streams),
               let stream = format.pointee.streams[attachment.id], let parameters = stream.pointee.codecpar else {

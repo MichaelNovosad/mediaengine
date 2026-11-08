@@ -10,7 +10,48 @@ import Synchronization
 /// rejects requests whose `Host` header is not its own address (DNS rebinding), and stops with the session.
 /// Anything the loopback server can hand out by relative path.
 protocol ResourceProvider: Sendable {
-    func resource(path: String) throws -> RemuxSession.Resource?
+    /// The resource at `path`. `isAbandoned` turns true when the client has hung up on this request (AVPlayer cancels a
+    /// request it gave up on, or one it no longer needs after a jump): work done only for it can stop.
+    func resource(path: String, isAbandoned: @escaping @Sendable () -> Bool) throws -> RemuxSession.Resource?
+}
+
+extension ResourceProvider {
+    func resource(path: String) throws -> RemuxSession.Resource? { try resource(path: path, isAbandoned: { false }) }
+}
+
+/// Watches a connection while its request is being answered: the one receive posted meanwhile tells whether the client hung
+/// up (end of stream or an error), and whatever it brings (the next request on a kept-alive connection) is handed on afterwards.
+private final class ConnectionWatch: Sendable {
+    private struct State {
+        var fired = false
+        var hungUp = false
+        var data = Data()
+        var next: (@Sendable (Data, Bool) -> Void)?
+    }
+    private let state = Mutex(State())
+
+    /// The client closed the connection before the answer was sent.
+    var hungUp: Bool { state.withLock { $0.hungUp } }
+
+    func arrived(_ data: Data, closed: Bool) {
+        let next = state.withLock { state -> (@Sendable (Data, Bool) -> Void)? in
+            state.fired = true
+            state.hungUp = closed
+            state.data = data
+            return state.next
+        }
+        next?(data, closed)
+    }
+
+    /// Calls `body` with what the receive brought, now if it has fired, else when it fires.
+    func then(_ body: @escaping @Sendable (Data, Bool) -> Void) {
+        let ready = state.withLock { state -> (Data, Bool)? in
+            if state.fired { return (state.data, state.hungUp) }
+            state.next = body
+            return nil
+        }
+        if let ready { body(ready.0, ready.1) }
+    }
 }
 
 final class LoopbackServer: @unchecked Sendable {
@@ -105,18 +146,22 @@ final class LoopbackServer: @unchecked Sendable {
 
     private func receive(on connection: NWConnection, buffered: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
             var buffer = buffered
             if let data { buffer.append(data) }
-            if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
-                let head = buffer[..<end.lowerBound]
-                let remainder = Data(buffer[end.upperBound...])
-                work.async { self.respond(to: Data(head), on: connection, then: remainder) }
-            } else if error != nil || isComplete || buffer.count > Self.maxRequestBytes {
-                connection.cancel()
-            } else {
-                receive(on: connection, buffered: buffer)
-            }
+            self?.consume(buffer, closed: isComplete || error != nil, on: connection)
+        }
+    }
+
+    /// Answers the request at the start of `buffer` once its head is complete, or reads on.
+    private func consume(_ buffer: Data, closed: Bool, on connection: NWConnection) {
+        if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
+            let head = Data(buffer[..<end.lowerBound])
+            let remainder = Data(buffer[end.upperBound...])
+            work.async { self.respond(to: head, on: connection, then: remainder, closed: closed) }
+        } else if closed || buffer.count > Self.maxRequestBytes {
+            connection.cancel()
+        } else {
+            receive(on: connection, buffered: buffer)
         }
     }
 
@@ -142,7 +187,7 @@ final class LoopbackServer: @unchecked Sendable {
     }
 
     /// Decides the response for a request. Pure given the session; used by the connection code and by tests.
-    func response(for request: Request) -> (status: Int, headers: [String: String], body: Data) {
+    func response(for request: Request, isAbandoned: @escaping @Sendable () -> Bool = { false }) -> (status: Int, headers: [String: String], body: Data) {
         guard request.method == "GET" || request.method == "HEAD" else { return (405, ["Allow": "GET, HEAD"], Data()) }
         let allowedHosts: Set<String> = ["127.0.0.1:\(port)", "localhost:\(port)"]
         guard let host = request.headers["host"], allowedHosts.contains(host) else { return (403, [:], Data()) }
@@ -151,7 +196,7 @@ final class LoopbackServer: @unchecked Sendable {
         guard request.path.hasPrefix(prefix), !request.path.contains(".."), !request.path.contains("?") else { return (404, [:], Data()) }
         let name = String(request.path.dropFirst(prefix.count))
         let resource: RemuxSession.Resource?
-        do { resource = try provider.resource(path: name) } catch let error as MediaError where error == .cancelled { return (503, [:], Data()) }
+        do { resource = try provider.resource(path: name, isAbandoned: isAbandoned) } catch let error as MediaError where error == .cancelled { return (503, [:], Data()) }
         catch { return (500, [:], Data()) }
         guard let resource else { return (404, [:], Data()) }
 
@@ -182,27 +227,47 @@ final class LoopbackServer: @unchecked Sendable {
     private static let reasons = [200: "OK", 206: "Partial Content", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
                                   416: "Range Not Satisfiable", 500: "Internal Server Error", 503: "Service Unavailable"]
 
-    private func respond(to head: Data, on connection: NWConnection, then remainder: Data) {
+    /// `closed`: the client ended its side of the connection together with this request (it can still read the answer, but
+    /// sends nothing more).
+    private func respond(to head: Data, on connection: NWConnection, then remainder: Data, closed: Bool) {
         guard let request = Self.parse(head) else {
             send(status: 400, headers: [:], body: Data(), isHead: false, on: connection, keepAlive: false)
             return
         }
-        let result = response(for: request)
-        let keepAlive = request.headers["connection"]?.lowercased() != "close"
+        // While the answer is worked out, one receive waits on the connection: a client that hangs up meanwhile (AVPlayer
+        // cancelling a piece it gave up on or no longer needs after a jump) is noticed, and the engine stops building for it.
+        // Not when the client cannot send more, or has already sent its next request (pipelining): that one is answered next.
+        let watch = ConnectionWatch()
+        if closed || remainder.range(of: Data("\r\n\r\n".utf8)) != nil {
+            watch.arrived(Data(), closed: false)
+        } else {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8 * 1024) { data, _, isComplete, error in
+                watch.arrived(data ?? Data(), closed: isComplete || error != nil)
+            }
+        }
+        let result = response(for: request, isAbandoned: { watch.hungUp })
+        let keepAlive = !closed && request.headers["connection"]?.lowercased() != "close"
         send(status: result.status, headers: result.headers, body: result.body, isHead: request.method == "HEAD",
-             on: connection, keepAlive: keepAlive, remainder: remainder)
+             on: connection, keepAlive: keepAlive) { [weak self] in
+            // The receive posted above is the one that reads the next request; it may have fired already.
+            watch.then { [weak self] data, hungUp in
+                var buffer = remainder
+                buffer.append(data)
+                self?.consume(buffer, closed: hungUp, on: connection)
+            }
+        }
     }
 
     private func send(status: Int, headers: [String: String], body: Data, isHead: Bool, on connection: NWConnection,
-                      keepAlive: Bool, remainder: Data = Data()) {
+                      keepAlive: Bool, readNext: (@Sendable () -> Void)? = nil) {
         var head = "HTTP/1.1 \(status) \(Self.reasons[status] ?? "Error")\r\n"
         for (key, value) in headers { head += "\(key): \(value)\r\n" }
         head += "Content-Length: \(body.count)\r\nConnection: \(keepAlive ? "keep-alive" : "close")\r\n\r\n"
         var packet = Data(head.utf8)
         if !isHead { packet.append(body) }
-        connection.send(content: packet, completion: .contentProcessed { [weak self] error in
+        connection.send(content: packet, completion: .contentProcessed { error in
             if error != nil || !keepAlive { connection.cancel(); return }
-            self?.receive(on: connection, buffered: remainder)
+            readNext?()
         })
     }
 }

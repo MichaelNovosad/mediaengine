@@ -30,8 +30,10 @@ final class FormatContext {
         io = nil
     }
 
-    /// Opens the source and reads enough to describe every stream.
-    static func open(source: any ByteSource, cancellation: CancellationFlag) throws -> FormatContext {
+    /// Opens the source and reads enough to describe every stream. `quick` is for opening a file again whose duration is
+    /// known already: FFmpeg then skips its duration estimate from the end of an MPEG transport or program stream, a jump
+    /// to the end of the file and reads there (over a network, on every opening).
+    static func open(source: any ByteSource, cancellation: CancellationFlag, quick: Bool = false) throws -> FormatContext {
         FFmpegLogging.ensureInstalled()
         let bridge = AVIOBridge(source: source, cancellation: cancellation)
         guard let io = bridge.makeContext() else { throw MediaError.engine(detail: "could not allocate I/O context") }
@@ -41,6 +43,7 @@ final class FormatContext {
         }
         allocated.pointee.pb = io
         allocated.pointee.flags |= AVFMT_FLAG_CUSTOM_IO
+        if quick { allocated.pointee.skip_estimate_duration_from_pts = 1 }
 
         var options: OpaquePointer?
         av_dict_set(&options, "probesize", probeSize, 0)

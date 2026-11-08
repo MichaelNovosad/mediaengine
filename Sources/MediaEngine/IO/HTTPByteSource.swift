@@ -3,9 +3,10 @@ import Synchronization
 
 /// Reads a file from an HTTP(S) server with range requests.
 ///
-/// Bytes arrive in fixed-size chunks that are cached (least recently used chunks are dropped) and the
-/// next chunk is fetched ahead of time. Transient failures (timeouts, dropped connections, 5xx) are
-/// retried with backoff; anything else surfaces as a ``MediaError``.
+/// Bytes arrive in fixed-size chunks that are cached (least recently used chunks are dropped). While the engine reads
+/// straight on, the next few chunks are fetched at the same time, each its own request, so that a distant server's round
+/// trips overlap; after a jump only the next one is. Transient failures (timeouts, dropped connections, 5xx) are
+/// retried with backoff; anything else surfaces as a ``MediaError``. ``throughput`` says how fast chunks have arrived.
 public final class HTTPByteSource: ByteSource {
     public let length: Int64?
 
@@ -15,7 +16,12 @@ public final class HTTPByteSource: ByteSource {
     private let chunkSize: Int64
     private let maxCachedChunks: Int
     private let maxAttempts = 4
+    /// Chunks fetched ahead at the same time while the engine reads straight on.
+    private let readAhead = 4
     private let state = Mutex(State())
+    private let meter = Mutex(ThroughputMeter())
+
+    public var throughput: Double? { meter.withLock { $0.bytesPerSecond } }
 
     private struct State {
         var cache: [Int64: Data] = [:]
@@ -23,6 +29,8 @@ public final class HTTPByteSource: ByteSource {
         var inFlight: [Int64: DispatchGroup] = [:]
         var tasks: [Int: URLSessionTask] = [:]
         var epoch = 0                                   // bumped by cancelPendingReads()
+        /// The chunk the last read ended in, to tell reading on from jumping.
+        var lastIndex: Int64 = -2
 
         mutating func touch(_ index: Int64) {
             recency.removeAll { $0 == index }
@@ -133,7 +141,14 @@ public final class HTTPByteSource: ByteSource {
             }
             written += count
         }
-        if written > 0 { prefetch((offset + Int64(written) - 1) / chunkSize + 1, epoch: epoch) }
+        if written > 0 {
+            let last = (offset + Int64(written) - 1) / chunkSize
+            let onward = state.withLock { state -> Bool in
+                defer { state.lastIndex = last }
+                return offset / chunkSize == state.lastIndex || offset / chunkSize == state.lastIndex + 1
+            }
+            for ahead in 1...(onward ? readAhead : 1) { prefetch(last + Int64(ahead), epoch: epoch) }
+        }
         return written
     }
 
@@ -256,6 +271,7 @@ public final class HTTPByteSource: ByteSource {
             if state.epoch != epoch { throw MediaError.cancelled }
             state.tasks[task.taskIdentifier] = task
         }
+        let began = DispatchTime.now()
         task.resume()
         let waited = semaphore.wait(timeout: .now() + 90)
         state.withLock { $0.tasks[task.taskIdentifier] = nil }
@@ -282,6 +298,8 @@ public final class HTTPByteSource: ByteSource {
         let body = data ?? Data()
         switch http.statusCode {
         case 206:
+            let seconds = Double(DispatchTime.now().uptimeNanoseconds - began.uptimeNanoseconds) / 1e9
+            meter.withLock { $0.record(bytes: body.count, seconds: seconds) }
             return body.count > range.count ? body.prefix(range.count) : body
         case 200:
             // The server ignored the Range header. Only acceptable when the whole file fits one chunk.

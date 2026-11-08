@@ -39,12 +39,23 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// The finished fragments, shared by the build queue and the requests: a request whose fragment is built already gets
     /// it at once, even while the queue builds another piece (over a network an audio request used to wait behind a video
     /// build of several seconds, and the player gave up on it).
+    ///
+    /// Picture and sound have budgets of their own. Video fragments are big: kept are the piece just built and the piece the player
+    /// asked for last (a request the player gave up on comes again, and rebuilding it over a network takes as long as the first
+    /// time); given up first are pieces behind the player or far ahead of it, then the oldest. Sound fragments are small: those of
+    /// every track stay until their own budget is used up, oldest first, so that switching to another sound track finds the pieces
+    /// around the playhead built (the player asks for them from where it is playing, which can be well behind the last piece it
+    /// asked for), instead of reading them from the network again (owner, 2026-11-08: "it could get stuck when I change the audio").
     private struct FragmentCache {
         var entries: [CacheKey: Data] = [:]
         var order: [CacheKey] = []                       // least recently used first
-        var bytes = 0
+        var videoBytes = 0
+        var audioBytes = 0
+        var bytes: Int { videoBytes + audioBytes }
         /// The piece the player asked for last (any track).
         var focus = 0
+        /// The video stream (its fragments count against the picture's budget; everything else is sound).
+        var videoStream: Int?
 
         mutating func fetch(_ key: CacheKey) -> Data? {
             guard let data = entries[key] else { return nil }
@@ -53,31 +64,38 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return data
         }
 
-        /// Keeps a fragment, then makes room down to `budget`. Never given up: the piece just built and the piece the player
-        /// asked for last (a request the player gave up on comes again, and rebuilding it over a network takes as long as the
-        /// first time). Given up first: pieces behind the player or far ahead of it, then big fragments (video), then the
-        /// rest, each oldest first; the small audio fragments a lagging track still needs stay longest. Over a network a piece
-        /// can be larger than half the budget, so the two kept pieces may pass it for a while.
-        mutating func insert(_ key: CacheKey, _ data: Data, budget: Int) {
-            if let old = entries[key] { bytes -= old.count }
-            entries[key] = data
-            bytes += data.count
+        private func isVideo(_ key: CacheKey) -> Bool { key.stream == videoStream }
+
+        private mutating func remove(_ key: CacheKey) {
+            guard let removed = entries.removeValue(forKey: key) else { return }
+            if isVideo(key) { videoBytes -= removed.count } else { audioBytes -= removed.count }
             order.removeAll { $0 == key }
+        }
+
+        mutating func insert(_ key: CacheKey, _ data: Data, budget: Int, audioBudget: Int) {
+            remove(key)
+            entries[key] = data
+            if isVideo(key) { videoBytes += data.count } else { audioBytes += data.count }
             order.append(key)
-            while bytes > budget {
-                let candidates = order.filter { $0.segment != key.segment && $0.segment != focus }
-                let far = candidates.first { $0.segment < focus - 1 || $0.segment > focus + 2 }
-                let big = candidates.first { (entries[$0]?.count ?? 0) >= 2 << 20 }
-                guard let victim = far ?? big ?? candidates.first, let removed = entries.removeValue(forKey: victim) else { break }
-                bytes -= removed.count
-                order.removeAll { $0 == victim }
+            if isVideo(key) {
+                while videoBytes > budget {
+                    let candidates = order.filter { isVideo($0) && $0.segment != key.segment && $0.segment != focus }
+                    guard let victim = candidates.first(where: { $0.segment < focus - 1 || $0.segment > focus + 2 }) ?? candidates.first else { break }
+                    remove(victim)
+                }
+            } else {
+                while audioBytes > audioBudget {
+                    guard let victim = order.first(where: { !isVideo($0) && $0.segment != key.segment }) else { break }
+                    remove(victim)
+                }
             }
         }
 
         mutating func removeAll() {
             entries.removeAll()
             order.removeAll()
-            bytes = 0
+            videoBytes = 0
+            audioBytes = 0
         }
     }
 
@@ -329,6 +347,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             externalAudio[start.id] = ExternalAudioSource(reader: start.reader, stream: start.file.stream, delay: start.file.delay,
                                                           start: min(begin, 0), end: start.file.duration ?? 0)
         }
+        let videoStream = videoIndex
+        fragments.withLock { $0.videoStream = videoStream }
         if remote {
             func milliseconds(_ from: ContinuousClock.Instant, _ to: ContinuousClock.Instant) -> Int {
                 let span = to - from
@@ -873,8 +893,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     private func store(_ key: CacheKey, _ data: Data) {
         let budget = cacheBudget
-        fragments.withLock { $0.insert(key, data, budget: budget) }
+        fragments.withLock { $0.insert(key, data, budget: budget, audioBudget: Self.audioBudget) }
     }
+
+    /// The memory for sound fragments of every track (a 10 s piece of AC-3 is under 1 MB): about 30 pieces of one track.
+    private static let audioBudget = 24 * 1024 * 1024
 
     /// The requests still waiting for piece `number` whose clients have not hung up.
     private func liveWaiters(for number: Int) -> Int {

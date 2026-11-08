@@ -33,6 +33,8 @@ public final class PlaybackSession: @unchecked Sendable {
         var isClosed = false
         /// Told how far a read through the file has got (``observePreparation(_:)``).
         var preparation: (@Sendable (Double) -> Void)?
+        /// The fonts attached to the file, read once (`startReadingFonts()`).
+        var fonts: Task<[(name: String, data: Data)], Never>?
     }
     let state = Mutex(State())
 
@@ -80,6 +82,8 @@ public final class PlaybackSession: @unchecked Sendable {
         }
 
         let remux = try await startRemux()
+        // A file with subtitles the engine draws (ASS with its fonts) reads its fonts now, while the player starts.
+        if info.attachments.contains(where: { $0.kind == .font }), !overlayChoices.filter({ !$0.isBitmap }).isEmpty { startReadingFonts() }
         let server = try await startServer(for: remux)
         let item = AVPlayerItem(url: server.masterURL)
         await describe(item)

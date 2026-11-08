@@ -246,6 +246,12 @@ final class LoopbackServer: @unchecked Sendable {
             }
         }
         let result = response(for: request, isAbandoned: { watch.hungUp })
+        // The player hung up while the answer was made (it gave up on the piece or jumped): nothing is sent to a closed connection
+        // ("Connection reset by peer" and "Broken pipe" in the log were those writes).
+        if watch.hungUp {
+            connection.cancel()
+            return
+        }
         let keepAlive = !closed && request.headers["connection"]?.lowercased() != "close"
         send(status: result.status, headers: result.headers, body: result.body, isHead: request.method == "HEAD",
              on: connection, keepAlive: keepAlive) { [weak self] in

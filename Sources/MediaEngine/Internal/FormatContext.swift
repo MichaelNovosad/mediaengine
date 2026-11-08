@@ -58,11 +58,28 @@ final class FormatContext {
         }
         let context = FormatContext(bridge: bridge, format: format, io: io)
 
+        measureAttachedPictures(format)
         let infoResult = avformat_find_stream_info(format, nil)
         if bridge.cancellation.isCancelled { throw MediaError.cancelled }
         if infoResult < 0, format.pointee.nb_streams == 0 { throw openError(infoResult, bridge) }
         guard format.pointee.nb_streams > 0 else { throw MediaError.corrupt(detail: "no tracks") }
         return context
+    }
+
+    /// A cover picture (a file attachment shown as a still video stream, as Matroska covers are) is in memory once the file is open.
+    /// FFmpeg can tell its size only by decoding it, and this build has no JPEG or PNG decoder, so its stream analysis waited for a size
+    /// that never came and read on to the probe limit (4 MB, 2 s of the movie) on every opening, logging "Could not find codec
+    /// parameters ... (Video: mjpeg, none): unspecified size". The picture's own header gives the size; with it the analysis stops
+    /// as soon as the real tracks are described.
+    private static func measureAttachedPictures(_ format: UnsafeMutablePointer<AVFormatContext>) {
+        for index in 0..<Int(format.pointee.nb_streams) {
+            guard let stream = format.pointee.streams[index], stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC != 0,
+                  let parameters = stream.pointee.codecpar, parameters.pointee.width == 0,
+                  let data = stream.pointee.attached_pic.data, stream.pointee.attached_pic.size > 0,
+                  let size = ImageHeader.size(of: UnsafeBufferPointer(start: data, count: Int(stream.pointee.attached_pic.size))) else { continue }
+            parameters.pointee.width = Int32(size.width)
+            parameters.pointee.height = Int32(size.height)
+        }
     }
 
     static func openError(_ code: Int32, _ bridge: AVIOBridge) -> MediaError {

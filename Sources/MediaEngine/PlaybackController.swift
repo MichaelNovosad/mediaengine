@@ -2,6 +2,7 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 import Observation
+import os
 
 /// Where a player is in its life.
 public enum PlaybackState: Sendable, Equatable {
@@ -112,6 +113,10 @@ public final class AVPlayerController: PlaybackController {
     public var subtitleDelay: TimeInterval = 0 { didSet { overlay?.delay = subtitleDelay } }
 
     @ObservationIgnored private var ticker: Task<Void, Never>?
+    /// Writes the item's own error log (`AVPlayerItemErrorLog`: documented status codes, domains and comments) to the system log, so
+    /// that what the player itself counts as an error can be told apart from the undocumented internal codes it prints.
+    @ObservationIgnored private var errorWatcher: Task<Void, Never>?
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "player")
     @ObservationIgnored private var overlay: SubtitleRenderer?
     /// 0 while the person has paused, otherwise the speed that is playing.
     @ObservationIgnored private var wantedRate: Float = 1
@@ -131,9 +136,22 @@ public final class AVPlayerController: PlaybackController {
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }
+        errorWatcher = Task { @MainActor [item] in
+            var seen = item.errorLog()?.events.count ?? 0
+            for await _ in NotificationCenter.default.notifications(named: AVPlayerItem.newErrorLogEntryNotification, object: item) {
+                guard let events = item.errorLog()?.events, events.count > seen else { continue }
+                for event in events[seen...] {
+                    Self.logger.error("Player error log: \(event.errorDomain, privacy: .public) \(event.errorStatusCode, privacy: .public): \(event.errorComment ?? "no comment", privacy: .public)")
+                }
+                seen = events.count
+            }
+        }
     }
 
-    deinit { ticker?.cancel() }
+    deinit {
+        ticker?.cancel()
+        errorWatcher?.cancel()
+    }
 
     private func refresh() {
         currentTime = max(item.currentTime().seconds.isFinite ? item.currentTime().seconds : 0, 0)
@@ -156,7 +174,9 @@ public final class AVPlayerController: PlaybackController {
         if state == .ended { Task { await seek(to: 0); play() }; return }
         // The speed the person chose (1 unless `setRate` said otherwise), also after a pause: `wantedRate` is 0 while paused.
         wantedRate = speed
-        player.rate = speed
+        // Plays what is loaded at once instead of first waiting until AVPlayer judges the buffer enough not to stall (for a movie on a
+        // server that wait was several pieces long); with too little loaded it waits as for a stall and goes on by itself (AVPlayer.h).
+        player.playImmediately(atRate: speed)
         state = .playing
     }
 
@@ -169,7 +189,7 @@ public final class AVPlayerController: PlaybackController {
     public func setRate(_ rate: Float) {
         if rate == 0 { pause(); return }
         speed = min(max(rate, 0.5), 2)
-        if state == .playing { wantedRate = speed; player.rate = speed }
+        if state == .playing { wantedRate = speed; player.playImmediately(atRate: speed) }
     }
 
     public func seek(to time: TimeInterval) async {
@@ -177,6 +197,8 @@ public final class AVPlayerController: PlaybackController {
         await item.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = target
         if state == .ended { state = .paused }
+        // After a jump too: the picture goes on as soon as the first piece there has arrived.
+        if state == .playing, wantedRate > 0 { player.playImmediately(atRate: wantedRate) }
     }
 
     public var audioChoices: [TrackChoice] { session.audioChoices }
@@ -221,7 +243,11 @@ public final class AVPlayerController: PlaybackController {
 
     public func close() {
         ticker?.cancel()
+        errorWatcher?.cancel()
         player.pause()
+        // The player lets go of the item before the local server stops: a paused item still loads pieces, and those requests went to a
+        // server that was gone ("Connection refused" to 127.0.0.1 in the log, 2026-11-08).
+        player.replaceCurrentItem(with: nil)
         overlay?.close()
         session.close()
     }

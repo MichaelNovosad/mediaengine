@@ -131,8 +131,25 @@ extension PlaybackSession {
         return (text + bitmaps, titles, served)
     }
 
-    /// The fonts attached to the file, by file name.
-    private func loadFonts() async -> [(name: String, data: Data)] {
+    /// The fonts attached to the file, by file name: read once per session, and started as soon as the player item is made when the
+    /// file has subtitles the engine draws (``startReadingFonts()``), so that choosing such a track does not wait for another opening
+    /// of the file over the network (the owner, 2026-11-08: subtitles came with a delay).
+    func loadFonts() async -> [(name: String, data: Data)] {
+        await startReadingFonts().value
+    }
+
+    /// The one reading of the attached fonts, started now if it has not been yet.
+    @discardableResult
+    func startReadingFonts() -> Task<[(name: String, data: Data)], Never> {
+        state.withLock { state in
+            if let reading = state.fonts { return reading }
+            let reading = Task { await self.readFonts() }
+            state.fonts = reading
+            return reading
+        }
+    }
+
+    private func readFonts() async -> [(name: String, data: Data)] {
         let attachments = info.attachments.filter { $0.kind == .font }
         guard !attachments.isEmpty else { return [] }
         let read = await source.data(of: attachments)                  // one opening of the file for all of them

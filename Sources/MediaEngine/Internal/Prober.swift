@@ -60,6 +60,7 @@ enum Prober {
                 isHearingImpaired: disposition & AV_DISPOSITION_HEARING_IMPAIRED != 0,
                 isCommentary: disposition & AV_DISPOSITION_COMMENT != 0,
                 bitrate: par.pointee.bit_rate > 0 ? par.pointee.bit_rate : nil)
+            if stream.pointee.id != 0 { track.containerID = Int(stream.pointee.id) }
             switch kind {
             case .video:
                 let (codec, details) = videoInfo(stream: stream, par: par)

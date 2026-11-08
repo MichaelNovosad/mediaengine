@@ -37,19 +37,29 @@ public final class PlaybackSession: @unchecked Sendable {
     let state = Mutex(State())
 
     /// Opens a local file (security-scoped URLs from the file picker included) or an HTTP(S) address.
-    public convenience init(url: URL) async throws {
-        try await self.init(source: MediaSource(url: url), fileURL: url.isFileURL ? url : nil)
+    ///
+    /// - Parameter trackLanguages: as for ``init(source:trackLanguages:)``.
+    public convenience init(url: URL, trackLanguages: [Int: Locale.Language] = [:]) async throws {
+        try await self.init(source: MediaSource(url: url), fileURL: url.isFileURL ? url : nil, trackLanguages: trackLanguages)
     }
 
     /// Opens any ``MediaSource``, for example one backed by a network share.
-    public convenience init(source: MediaSource) async throws {
-        try await self.init(source: source, fileURL: nil)
+    ///
+    /// - Parameter trackLanguages: languages for tracks the file itself leaves without one, by ``Track/containerID``: a Blu-ray
+    ///   folder keeps its languages next to the stream (``DiscInfo/languages(blurayClipInfo:)``), not in it. A language the file
+    ///   states is kept.
+    public convenience init(source: MediaSource, trackLanguages: [Int: Locale.Language] = [:]) async throws {
+        try await self.init(source: source, fileURL: nil, trackLanguages: trackLanguages)
     }
 
-    private init(source: MediaSource, fileURL: URL?) async throws {
+    private init(source: MediaSource, fileURL: URL?, trackLanguages: [Int: Locale.Language] = [:]) async throws {
         self.source = source
         self.fileURL = fileURL
-        self.info = try await source.probe()
+        var info = try await source.probe()
+        for index in info.tracks.indices where info.tracks[index].language == nil {
+            if let id = info.tracks[index].containerID, let language = trackLanguages[id] { info.tracks[index].language = language }
+        }
+        self.info = info
     }
 
     deinit { close() }

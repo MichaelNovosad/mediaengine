@@ -656,13 +656,14 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             data = try queue.sync {
                 if cancellation.isCancelled { throw MediaError.cancelled }
                 if let hit = try fragment(for: key) { return hit }
-                // The player hung up while this request waited (it gave up, or jumped elsewhere): build nothing for it.
-                if isAbandoned(), liveWaiters(for: number) == 0 { throw MediaError.cancelled }
+                // The player hung up while this request waited and now wants another piece (it jumped): build nothing for it. A
+                // request it only gave up on for taking long is built all the same: the same request comes again at once.
+                if isAbandoned(), liveWaiters(for: number) == 0, pieceWantedInstead(of: number) != nil { throw MediaError.cancelled }
                 let began = DispatchTime.now()
                 do {
                     try buildWindow(number, abandoned: isAbandoned)
-                } catch is GaveWay {
-                    Self.logger.notice("Piece \(number, privacy: .public) stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player no longer wants it")
+                } catch let gaveWay as GaveWay {
+                    Self.logger.notice("Piece \(number, privacy: .public) stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player went to piece \(gaveWay.wanted ?? -1, privacy: .public)")
                     throw MediaError.cancelled
                 }
                 noteBuilt(number, since: began, asked: true)
@@ -795,7 +796,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             // Every 16 packets (a fraction of a second over a network): whether the player still wants this piece.
             if read % 16 == 0 {
                 if ahead, let wanted = pieceWantedInstead(of: number) { throw GaveWay(wanted: wanted) }
-                if let abandoned, abandoned(), liveWaiters(for: number) == 0 { throw GaveWay(wanted: nil) }
+                if let abandoned, abandoned(), let wanted = pieceWantedInstead(of: number) { throw GaveWay(wanted: wanted) }
             }
             read += 1
             guard let packet = try reader.next() else { break }

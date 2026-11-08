@@ -68,6 +68,10 @@ public struct Track: Sendable, Equatable, Codable, Identifiable {
     public var video: VideoDetails?
     public var audio: AudioDetails?
     public var subtitle: SubtitleDetails?
+    /// The stream's number in its container, where the container numbers its streams: the PID in an MPEG transport stream
+    /// (Blu-ray `.m2ts`), the stream id in an MPEG program stream (DVD `.vob`), the track number in Matroska. It is how a disc's
+    /// own description files name the stream (see ``DiscInfo``).
+    public var containerID: Int?
 }
 
 public struct Codec: Sendable, Equatable, Codable {

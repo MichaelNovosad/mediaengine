@@ -82,18 +82,22 @@ public final class SubtitleRenderer: @unchecked Sendable {
     /// With the player's reading: how far back from the requested time the file is read when the player did not read it (after a
     /// seek). Shorter than ``lookback`` for files on a server, where that read competes with the player for the connection.
     private let seekLookback: Double
+    /// The file is on a server: a choice of this track does not wait for reads of it (``prepareForChoice(at:)``).
+    private let readsOverNetwork: Bool
     /// Seconds to add to a file time to get the player's time (the global shift of the HLS timeline) plus the file's delay.
     private let offset: @Sendable () -> Double
     private let cancellation: CancellationFlag
 
     init(backend: any OverlayBackend, loader: (any OverlayEventSource)?, feed: (@Sendable () -> (any OverlayFeedSource)?)? = nil,
-         seekLookback: Double = SubtitleRenderer.lookback, cancellation: CancellationFlag, offset: @escaping @Sendable () -> Double) {
+         seekLookback: Double = SubtitleRenderer.lookback, readsOverNetwork: Bool = false, cancellation: CancellationFlag,
+         offset: @escaping @Sendable () -> Double) {
         var initial = State(backend: backend)
         if loader == nil, feed == nil { initial.coverage = .everything }          // a whole script, given up front
         state = Mutex(initial)
         self.loader = loader
         findFeed = feed
         self.seekLookback = min(max(seekLookback, 0), Self.lookback)
+        self.readsOverNetwork = readsOverNetwork
         self.cancellation = cancellation
         self.offset = offset
     }
@@ -114,12 +118,23 @@ public final class SubtitleRenderer: @unchecked Sendable {
 
     /// Reads the blocks around `time` now, if they are not loaded yet.
     public func prepare(at time: TimeInterval) async throws {
+        try await prepare(at: time, waitingForFile: true)
+    }
+
+    /// When a person chooses this track: takes what the player's reading has around `time` at once. For a file on a server it does not
+    /// wait for a read of the file itself (the lines that began before a jump, for example): those arrive in the background, and the
+    /// track is shown without waiting for the network (the owner, 2026-11-11: subtitles came seconds after they were chosen).
+    func prepareForChoice(at time: TimeInterval) async throws {
+        try await prepare(at: time, waitingForFile: !readsOverNetwork)
+    }
+
+    private func prepare(at time: TimeInterval, waitingForFile: Bool) async throws {
         guard loader != nil || findFeed != nil else { return }
         let playhead = time - offset()
         let fileTime = playhead - delay
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             queue.async { [self] in
-                continuation.resume(with: Result { try load(forFileTime: fileTime, playhead: playhead, waitForReads: true) })
+                continuation.resume(with: Result { try load(forFileTime: fileTime, playhead: playhead, waitForReads: waitingForFile) })
             }
         }
     }

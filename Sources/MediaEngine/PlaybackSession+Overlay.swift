@@ -1,4 +1,5 @@
 import CoreGraphics
+internal import FFmpegLGPL
 import Foundation
 
 extension PlaybackSession {
@@ -26,11 +27,16 @@ extension PlaybackSession {
             throw MediaError.unsupported(detail: "the engine cannot draw the track \"\(choice.title)\" itself")
         }
         if state.withLock({ $0.isClosed }) { throw MediaError.cancelled }
-        let fonts = await loadFonts()
+        let isExternal = served.externalSubtitleIDs.contains(track.id)
+        let isBitmap = track.subtitle?.format == .bitmap
+        let codecName = track.codec.name
+        let isCueText = !isExternal && !isBitmap && !["ass", "ssa"].contains(codecName)
+        // SubRip, WebVTT and Timed Text are drawn in a plain style with a system font: they do not wait for the file's attached fonts.
+        let fonts = isCueText ? [] : await loadFonts()
         let videoSize = info.videoTracks.first?.video.map { CGSize(width: $0.width, height: $0.height) }
         let shift: @Sendable () -> Double = { [weak self] in self?.state.withLock { $0.remux?.mediaShift } ?? 0 }
 
-        if served.externalSubtitleIDs.contains(track.id) {
+        if isExternal {
             let index = track.id - ServedTracks.externalSubtitleBase
             let files = externalSubtitles
             guard files.indices.contains(index), let script = files[index].assScript else {
@@ -46,9 +52,6 @@ extension PlaybackSession {
         let byteSource = source.byteSource, info = info, cancellation = cancellation
         let linked = state.withLock { $0.linkedSources }
         let streamIndex = track.id
-        let isBitmap = track.subtitle?.format == .bitmap
-        let codecName = track.codec.name
-        let isCueText = !isBitmap && !["ass", "ssa"].contains(codecName)
         // While the player plays the file through the remuxer, the blocks come from its reading (the file is not read twice:
         // for a movie on a server that second download made blocks late or lost them). A play list reads its parts itself.
         let feed: @Sendable () -> (any OverlayFeedSource)? = { [weak self] in
@@ -56,47 +59,74 @@ extension PlaybackSession {
                   shared.streams.contains(streamIndex) else { return nil }
             return OverlayFeedView(feed: shared, stream: streamIndex, cueCodec: isCueText ? codecName : nil)
         }
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(with: Result {
-                    let video = info.videoTracks.first?.id, audio = info.audioTracks.first?.id
-                    let anchor = video ?? audio ?? streamIndex, marker = audio ?? video ?? streamIndex
-                    let source: any PacketSource
-                    if let ordered = info.orderedChapters {
-                        source = try Self.makeTimeline(main: byteSource, info: info, ordered: ordered, linked: linked,
-                                                       overlay: (streamIndex, marker == streamIndex ? nil : marker), cancellation: cancellation).reader
-                    } else {
-                        source = try PacketReader(source: byteSource, cancellation: cancellation)
-                    }
-                    let backend: any OverlayBackend
-                    if isBitmap {
-                        guard let bitmap = BitmapBackend(parameters: source.parameters(streamIndex), videoSize: videoSize) else {
-                            throw MediaError.unsupported(detail: "no decoder for this picture subtitle format")
-                        }
-                        backend = bitmap
-                    } else if ["ass", "ssa"].contains(codecName) {
-                        let extradata = source.parameters(streamIndex).pointee
-                        let header = extradata.extradata.map { Data(bytes: $0, count: Int(extradata.extradata_size)) } ?? Data()
-                        guard let ass = ASSBackend(header: header, fonts: fonts, videoSize: videoSize) else {
-                            throw MediaError.engine(detail: "libass could not read the script header")
-                        }
-                        backend = ass
-                    } else {
-                        // SubRip, WebVTT and Timed Text: drawn in a plain default style through the same renderer.
-                        guard let ass = ASSBackend(header: Data(CueScript.header.utf8), fonts: fonts, videoSize: videoSize) else {
-                            throw MediaError.engine(detail: "libass could not start")
-                        }
-                        backend = ass
-                    }
-                    var loader: any OverlayEventSource = OverlayEventLoader(source: source, stream: streamIndex, anchor: anchor, marker: marker, cancellation: cancellation)
-                    if isCueText { loader = CueScriptEventSource(base: loader, codec: codecName) }
-                    // After a seek the renderer reads what the player did not: on a server that read shares the connection with
-                    // the player, so it reaches back only as far as most lines last.
-                    let local = byteSource is FileByteSource || byteSource is DataByteSource
-                    return SubtitleRenderer(backend: backend, loader: loader, feed: feed, seekLookback: local ? SubtitleRenderer.lookback : 8,
-                                            cancellation: cancellation, offset: shift)
-                })
+        let video = info.videoTracks.first?.id, audio = info.audioTracks.first?.id
+        let anchor = video ?? audio ?? streamIndex, marker = audio ?? video ?? streamIndex
+        // The stream's blocks as read from the file itself (or a play list).
+        let reading: @Sendable (any PacketSource) -> any OverlayEventSource = { source in
+            let loader = OverlayEventLoader(source: source, stream: streamIndex, anchor: anchor, marker: marker, cancellation: cancellation)
+            return isCueText ? CueScriptEventSource(base: loader, codec: codecName) : loader
+        }
+        // After a seek the renderer reads what the player did not: on a server that read shares the connection with the player, so it
+        // reaches back only as far as most lines last.
+        let local = byteSource is FileByteSource || byteSource is DataByteSource
+        let seekLookback = local ? SubtitleRenderer.lookback : 8
+
+        // While the remuxer plays the file, its reading has the stream's header and blocks: the renderer starts without opening the file,
+        // and opens it only if a stretch must be read from it (after a jump). Each choice of a subtitle track used to open the file again,
+        // which for a movie on a server read its header and every attached font over the network first (the owner, 2026-11-11).
+        if info.orderedChapters == nil, let shared = state.withLock({ $0.remux?.overlayFeed }), shared.streams.contains(streamIndex),
+           let parameters = shared.parameters[streamIndex] {
+            return try await Self.offMainThread {
+                let backend = try Self.makeOverlayBackend(parameters: parameters.pointer, isBitmap: isBitmap, codecName: codecName,
+                                                          fonts: fonts, videoSize: videoSize)
+                let loader = DeferredEventSource { try reading(PacketReader(source: byteSource, cancellation: cancellation)) }
+                return SubtitleRenderer(backend: backend, loader: loader, feed: feed, seekLookback: seekLookback, readsOverNetwork: !local,
+                                        cancellation: cancellation, offset: shift)
             }
+        }
+        return try await Self.offMainThread {
+            let source: any PacketSource
+            if let ordered = info.orderedChapters {
+                source = try Self.makeTimeline(main: byteSource, info: info, ordered: ordered, linked: linked,
+                                               overlay: (streamIndex, marker == streamIndex ? nil : marker), cancellation: cancellation).reader
+            } else {
+                source = try PacketReader(source: byteSource, cancellation: cancellation)
+            }
+            let backend = try Self.makeOverlayBackend(parameters: source.parameters(streamIndex), isBitmap: isBitmap, codecName: codecName,
+                                                      fonts: fonts, videoSize: videoSize)
+            return SubtitleRenderer(backend: backend, loader: reading(source), feed: feed, seekLookback: seekLookback, readsOverNetwork: !local,
+                                    cancellation: cancellation, offset: shift)
+        }
+    }
+
+    /// The backend that draws one of the file's own subtitle streams, set up from its codec parameters.
+    private static func makeOverlayBackend(parameters: UnsafeMutablePointer<AVCodecParameters>, isBitmap: Bool, codecName: String,
+                                           fonts: [(name: String, data: Data)], videoSize: CGSize?) throws -> any OverlayBackend {
+        if isBitmap {
+            guard let bitmap = BitmapBackend(parameters: parameters, videoSize: videoSize) else {
+                throw MediaError.unsupported(detail: "no decoder for this picture subtitle format")
+            }
+            return bitmap
+        }
+        if ["ass", "ssa"].contains(codecName) {
+            let codec = parameters.pointee
+            let header = codec.extradata.map { Data(bytes: $0, count: Int(codec.extradata_size)) } ?? Data()
+            guard let ass = ASSBackend(header: header, fonts: fonts, videoSize: videoSize) else {
+                throw MediaError.engine(detail: "libass could not read the script header")
+            }
+            return ass
+        }
+        // SubRip, WebVTT and Timed Text: drawn in a plain default style through the same renderer.
+        guard let ass = ASSBackend(header: Data(CueScript.header.utf8), fonts: fonts, videoSize: videoSize) else {
+            throw MediaError.engine(detail: "libass could not start")
+        }
+        return ass
+    }
+
+    /// Runs `work` on a background queue (libass set-up, opening a file) and returns its result.
+    private static func offMainThread<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(with: Result { try work() }) }
         }
     }
 

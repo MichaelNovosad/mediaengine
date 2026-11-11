@@ -218,7 +218,7 @@ public final class AVPlayerController: PlaybackController {
         if engineDraws {
             try await session.deselectSubtitles(on: item)
             let renderer = try await session.makeSubtitleRenderer(for: choice)
-            try? await renderer.prepare(at: currentTime)
+            try? await renderer.prepareForChoice(at: currentTime)
             renderer.appearance = subtitleAppearance
             renderer.delay = subtitleDelay
             overlay = renderer

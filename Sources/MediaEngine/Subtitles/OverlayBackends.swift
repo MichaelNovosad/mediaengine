@@ -210,6 +210,25 @@ protocol OverlayEventSource: AnyObject {
     func events(from: Double, to: Double) throws -> [OverlayEvent]
 }
 
+/// Opens the file only when a stretch of it must be read (2026-11-11). While the player's reading brings the blocks (an ``OverlayFeed``),
+/// a renderer needs the file itself only after a jump, if at all; opening it as soon as a track was chosen meant, for a movie on a
+/// server, reading its header and every attached font over the network again on each choice, and the track came seconds late.
+final class DeferredEventSource: OverlayEventSource {
+    private let open: () throws -> any OverlayEventSource
+    private var opened: (any OverlayEventSource)?
+
+    init(open: @escaping () throws -> any OverlayEventSource) { self.open = open }
+
+    func events(from: Double, to: Double) throws -> [OverlayEvent] {
+        let source: any OverlayEventSource
+        if let opened { source = opened } else {
+            source = try open()
+            opened = source
+        }
+        return try source.events(from: from, to: to)
+    }
+}
+
 /// Reads the blocks of one subtitle stream from a file (or a play list) a window at a time.
 final class OverlayEventLoader: OverlayEventSource {
     private let source: any PacketSource

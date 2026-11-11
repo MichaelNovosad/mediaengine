@@ -1,5 +1,28 @@
+internal import FFmpegLGPL
 import Foundation
 import Synchronization
+
+/// A copy of one stream's codec parameters that lives as long as this object (2026-11-11): taken once from the remuxer's reader, so a
+/// subtitle renderer can start (ASS styles, a picture decoder's set-up) without opening the file again. Never changed after it is made,
+/// and FFmpeg only reads it (`avcodec_parameters_to_context`, the extradata), so it can be shared between threads.
+final class StreamParameters: @unchecked Sendable {
+    let pointer: UnsafeMutablePointer<AVCodecParameters>
+
+    init?(copying source: UnsafeMutablePointer<AVCodecParameters>) {
+        guard let copy = avcodec_parameters_alloc() else { return nil }
+        guard avcodec_parameters_copy(copy, source) >= 0 else {
+            var pointer: UnsafeMutablePointer<AVCodecParameters>? = copy
+            avcodec_parameters_free(&pointer)
+            return nil
+        }
+        pointer = copy
+    }
+
+    deinit {
+        var copy: UnsafeMutablePointer<AVCodecParameters>? = pointer
+        avcodec_parameters_free(&copy)
+    }
+}
 
 /// The subtitle blocks the remuxer reads anyway (2026-11-06).
 ///
@@ -13,6 +36,8 @@ import Synchronization
 final class OverlayFeed: Sendable {
     /// The streams whose blocks are kept: every subtitle stream the overlay can draw.
     let streams: Set<Int>
+    /// Their codec parameters, copied when the remuxer opened the file (see ``StreamParameters``).
+    let parameters: [Int: StreamParameters]
     /// Picture streams (PGS, VobSub, DVB): their blocks are big, so those of a stream no renderer watches are kept only for the
     /// last ``pictureHistory`` windows read (enough to switch to one in the middle of a movie without reading the file).
     private let pictureStreams: Set<Int>
@@ -49,8 +74,9 @@ final class OverlayFeed: Sendable {
         var watchers: [Int: Int] = [:]
     }
 
-    init(textStreams: Set<Int>, pictureStreams: Set<Int>, windows: [Range<Double>]) {
+    init(textStreams: Set<Int>, pictureStreams: Set<Int>, windows: [Range<Double>], parameters: [Int: StreamParameters] = [:]) {
         streams = textStreams.union(pictureStreams)
+        self.parameters = parameters
         self.pictureStreams = pictureStreams
         // The last window is read to the end of the file.
         ranges = windows.enumerated().map { $0.offset == windows.count - 1 ? $0.element.lowerBound..<Double.greatestFiniteMagnitude : $0.element }

@@ -75,6 +75,10 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
 
 - 2026-11-08 (the app's owner) **"One movie played sound but no picture; the next stuck after a jump to a part and no other part played; the third took one jump and stuck on the next; the fourth jumped easily. All over SMB. Check the logs, find what is missing, the best solutions and what could be added."** Status: causes found in the log and fixed in the engine (RESEARCH section 30), compiled only, not committed. Further steps named there: stop asked-for builds the player abandoned (loopback server sees the closed connection), an interpolation seek for transport streams, several SMB requests in flight.
 
+- 2026-11-11 (the app's owner) **"Subtitles of a movie from the server don't apply immediately. It works immediately for Audio, but not for
+  Subtitles: they apply with a strange delay, as if they are downloaded each time I apply them."** Status: cause found and fixed (see Done,
+  2026-11-11), compiled, not committed, not tried on the share.
+
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
 ### Deferred after v1 (decided while working; revisit after the release)
@@ -103,6 +107,19 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-11 **A subtitle track of a server movie is shown as soon as it is chosen** (the app's owner, Backlog 2026-11-11). Cause, read in
+  the code: every choice of a track the engine draws went through `makeSubtitleRenderer`, which opened a new `PacketReader` on the movie's
+  byte source only to read the stream's header and keep a reader at hand. For a movie on SMB that is a whole opening over the network:
+  the Matroska header and every attached font (FFmpeg's Matroska demuxer reads attachments in its header), then the controller's
+  `prepare(at:)` waited for a read of the 8 s before the playhead when the player had jumped there. Audio switches are an HLS media
+  selection, which reads nothing. Now: the remuxer copies the codec parameters of every overlay stream when it opens the file
+  (`StreamParameters`, held by `OverlayFeed.parameters`); while the feed exists the renderer is set up from them and its file reader is a
+  `DeferredEventSource`, opened only when a stretch must be read from the file (after a jump); `AVPlayerController` and
+  `SoftwareController` call `SubtitleRenderer.prepareForChoice(at:)`, which for a file on a server takes the feed's windows and does not
+  wait for a read of the file (lines that began before a jump follow in the background); SubRip, WebVTT and Timed Text tracks no longer
+  wait for the attached fonts (they are drawn in Helvetica). Play lists (ordered chapters) and sessions without a remuxer work as before.
+  `swift build` (core) without warnings; the app compiled against the exported extended package (see the app's PROGRESS). **Not run:** no
+  test written or run (the owner's rule), not tried against the share.
 - 2026-11-10 **DVD track languages** (the app's owner: "Do all 9"; item 8 of the app's `docs/REVIEW_2026-11-10.md`). `DiscInfo.languages(dvdTitleInfo:)`
   reads a title set's information file (`VIDEO_TS/VTS_xx_0.IFO`): the sound streams' and subtitle streams' two-letter languages, mapped to
   the program stream's ids (`Track.containerID`: AC-3 0x80+n, DTS 0x88+n, LPCM 0xA0+n, MPEG 0x1C0+n, subtitles 0x20+n) through the first

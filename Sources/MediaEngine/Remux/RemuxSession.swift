@@ -324,9 +324,18 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             Self.logger.notice("Pieces of about \(String(format: "%.1f", typical), privacy: .public) s (\(count, privacy: .public) in all): link about \(String(format: "%.1f", link / 1e6), privacy: .public) MB/s, movie \(String(format: "%.1f", (averageRate ?? 0) / 1e6), privacy: .public) MB/s")
         }
         let overlayStreams = PlaybackSession.overlayStreams(of: info)
-        overlayFeed = packetSource == nil && !(overlayStreams.text.isEmpty && overlayStreams.pictures.isEmpty)
-            ? OverlayFeed(textStreams: overlayStreams.text, pictureStreams: overlayStreams.pictures,
-                          windows: plan.segments.map { $0.start..<max($0.start, $0.end) }) : nil
+        if packetSource == nil, !(overlayStreams.text.isEmpty && overlayStreams.pictures.isEmpty) {
+            // The streams' headers too, copied now (before packets are read on another queue): a renderer starts from them without
+            // opening the file again.
+            var parameters: [Int: StreamParameters] = [:]
+            for stream in overlayStreams.text.union(overlayStreams.pictures) {
+                parameters[stream] = StreamParameters(copying: reader.parameters(stream))
+            }
+            overlayFeed = OverlayFeed(textStreams: overlayStreams.text, pictureStreams: overlayStreams.pictures,
+                                      windows: plan.segments.map { $0.start..<max($0.start, $0.end) }, parameters: parameters)
+        } else {
+            overlayFeed = nil
+        }
 
         for stream in wanted {
             guard let track = info.tracks.first(where: { $0.id == stream }) else { continue }

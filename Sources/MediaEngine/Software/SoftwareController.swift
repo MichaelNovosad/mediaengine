@@ -222,7 +222,7 @@ public final class SoftwareController: PlaybackController {
         }
         overlay?.close(); overlay = nil
         let renderer = try await session.makeSubtitleRenderer(for: choice)
-        try? await renderer.prepare(at: currentTime)
+        try? await renderer.prepareForChoice(at: currentTime)
         renderer.appearance = subtitleAppearance
         renderer.delay = subtitleDelay
         overlay = renderer

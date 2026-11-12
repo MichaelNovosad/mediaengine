@@ -130,6 +130,15 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-12 (late) **DVD parts open** (the app's owner: Az ember tragédiája and Häxan do not run on iOS). Two causes, found by
+  playing the owner's VOB files muted through the engine with a temporary diagnostic program (removed): (1) the later VOB files of a
+  title (`VTS_01_5`, `VTS_01_6`) show their DVD subtitle streams only near the end of the file, which the quick reopening does not read
+  (`ffprobe` with and without the duration estimate: 5 subtitle streams against none), the crash fixed by `hasStream` the same evening;
+  (2) such a file starts with AC-3 packets that share a decode time, and `InitSegmentBuilder.build` handed them to FFmpeg's MP4 muxer,
+  which refused them ("non monotonically increasing dts"), so the opening failed; the samples only describe the stream, so one whose
+  decode time does not move forward is now left out. Evidence (macOS, the files read through a byte source that looks like a server's):
+  all 11 VOB files of Az ember tragédiája start, play 8 s and jump to 600 s. Also fixed: the build error of the evening (a closure
+  captured `self` before the session was set up). Not tested on an iPhone; no unit test.
 - 2026-11-12 **DTS 5.1 with side surrounds opens; no crash on a stream the reopened file lacks** (the app's owner: Lawrence of Arabia
   and Brazil did not start, two crashes on an iPhone). (1) `AudioTranscoder.encoderLayout`: FFmpeg's ALAC encoder refuses "5.1(side)",
   the layout the DTS decoder reports, so every movie with such a track failed to open ("ALAC encoder failed to open: Invalid

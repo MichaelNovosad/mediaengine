@@ -68,7 +68,13 @@ enum InitSegmentBuilder {
 
         guard let packet = av_packet_alloc() else { _ = finish(); throw MediaError.engine(detail: "no packet") }
         defer { var p: UnsafeMutablePointer<AVPacket>? = packet; av_packet_free(&p) }
+        // The samples only describe the stream (the header is everything before the first fragment), so one whose decode time does not
+        // move forward is left out: the muxer refuses it, and with it the whole movie (the app's owner, 2026-11-12: the later VOB files of
+        // a DVD start with AC-3 packets that share a timestamp).
+        var lastDTS: Int64?
         for sample in samples {
+            guard sample.dts != Int64.min, lastDTS.map({ sample.dts > $0 }) ?? true else { continue }
+            lastDTS = sample.dts
             guard av_new_packet(packet, Int32(sample.data.count)) >= 0 else { continue }
             sample.data.copyBytes(to: packet.pointee.data, count: sample.data.count)
             packet.pointee.stream_index = 0

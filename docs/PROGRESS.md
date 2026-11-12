@@ -130,6 +130,11 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-12 **A source's connection closes with its session** (the app's owner: switching movies quickly left SMB connections
+  open; not committed). `ByteSource.close()` (protocol requirement with a default that does nothing), called by
+  `PlaybackSession.close()` for the source the session was made from (each session is made from its own source in the app) and by the
+  new `AudioTrack.close()` (the app closes a movie's sound files with the movie). Before, `close()` only cancelled pending reads and an
+  SMB source connected again at the next read. Compiled through the app's PlayerCore package (see the app's PROGRESS); no test run.
 - 2026-11-12 **Apple first, the engine's decoders as the fallback; Dolby Vision 5 and 8 through Apple** (the app's owner, Backlog
   2026-11-12; committed without compiling at the owner's word). `Internal/AppleDecoding.swift` (a `VTDecompressionSession` for the
   stream's own `avcC`/`hvcC` outside H.264 66/77/88/100 and HEVC 1/2/3; AudioToolbox's decoder list; AAC Main/SSR/LTP not Apple's

@@ -62,3 +62,9 @@ public struct AudioTrack: Sendable {
         self.transcodes = transcodes
     }
 }
+
+extension AudioTrack {
+    /// The movie this sound file belonged to is closed: the file's network connection goes now (a file on an SMB server keeps a
+    /// connection of its own) instead of when the last copy of the track goes. Do not add the track to a session afterwards.
+    public func close() { source.byteSource.close() }
+}

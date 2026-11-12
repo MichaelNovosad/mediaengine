@@ -129,6 +129,9 @@ public final class PlaybackSession: @unchecked Sendable {
         cancellation.cancel()
         server?.stop()
         remux?.close()
+        // The source this session was made from goes with it: its network connection closes now, and nothing that still reads
+        // (a subtitle window, a frame for a picture) opens a new one for a movie that is gone (app owner, 2026-11-12).
+        source.byteSource.close()
         folders.forEach { $0.stopAccessingSecurityScopedResource() }
     }
 

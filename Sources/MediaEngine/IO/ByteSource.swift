@@ -41,10 +41,18 @@ public protocol ByteSource: Sendable {
     /// local file is as fast as the engine needs). The engine sizes the pieces it hands the player by it: over a slow link
     /// each piece is shorter, so that the first picture and every jump wait for less. The default is `nil`.
     var throughput: Double? { get }
+
+    /// The session that read this source is finished with it: let network connections go now; later reads may fail. Called by
+    /// ``PlaybackSession/close()`` for the source the session was made from and by ``AudioTrack/close()``. A source that holds a
+    /// connection per file (SMB) should close it here rather than when its last reference goes, which can be late. The default does
+    /// nothing.
+    func close()
 }
 
 extension ByteSource {
     public func cancelPendingReads() {}
+
+    public func close() {}
 
     public func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
         try read(at: offset, into: buffer)

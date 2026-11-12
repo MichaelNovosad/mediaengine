@@ -40,6 +40,11 @@ struct MediaPacket: Sendable, Equatable {
 /// What the remuxer needs from a source of packets: one opened file (``PacketReader``) or a play list that stitches
 /// parts of several files into one timeline (``TimelineReader``).
 protocol PacketSource: AnyObject {
+    /// Whether the opened file has this stream. A file opened again can have fewer streams than the probe described: an MPEG program
+    /// stream (a DVD's VOB) shows a stream only once it is read, and the quick reopening does not read the end of the file, where the
+    /// probe may have found it (the app's owner, 2026-11-12: two crashes on an iPhone). Ask before `parameters`, `stream` or `timeBase`
+    /// with a stream number that came from the probe.
+    func hasStream(_ index: Int) -> Bool
     func timeBase(_ index: Int) -> Rational
     func parameters(_ index: Int) -> UnsafeMutablePointer<AVCodecParameters>
     func stream(_ index: Int) -> UnsafeMutablePointer<AVStream>
@@ -178,6 +183,7 @@ final class PacketReader: PacketSource {
 
     var format: UnsafeMutablePointer<AVFormatContext> { context.format }
     var streamCount: Int { Int(format.pointee.nb_streams) }
+    func hasStream(_ index: Int) -> Bool { index >= 0 && index < streamCount && format.pointee.streams[index] != nil }
 
     func stream(_ index: Int) -> UnsafeMutablePointer<AVStream> { format.pointee.streams[index]! }
     /// Where the file's timeline starts, when it does not start at zero (MPEG-TS recordings begin at 1.4 s or later; Matroska

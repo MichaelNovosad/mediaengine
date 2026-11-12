@@ -85,12 +85,17 @@ extension PlaybackSession {
             }
         }
         return try await Self.offMainThread {
-            let source: any PacketSource
+            var source: any PacketSource
             if let ordered = info.orderedChapters {
                 source = try Self.makeTimeline(main: byteSource, info: info, ordered: ordered, linked: linked,
                                                overlay: (streamIndex, marker == streamIndex ? nil : marker), cancellation: cancellation).reader
             } else {
                 source = try PacketReader(source: byteSource, cancellation: cancellation)
+                // A stream the probe found only near the end of the file (a DVD's subtitles): open it as the probe did.
+                if !source.hasStream(streamIndex) { source = try PacketReader(source: byteSource, cancellation: cancellation, quick: false) }
+            }
+            guard source.hasStream(streamIndex) else {
+                throw MediaError.corrupt(detail: "subtitle track \(streamIndex) is not in the file when it is opened again")
             }
             let backend = try Self.makeOverlayBackend(parameters: source.parameters(streamIndex), isBitmap: isBitmap, codecName: codecName,
                                                       fonts: fonts, videoSize: videoSize)

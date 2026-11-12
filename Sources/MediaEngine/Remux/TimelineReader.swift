@@ -69,6 +69,7 @@ final class TimelineReader: PacketSource {
 
     // MARK: PacketSource (the main file's streams)
 
+    func hasStream(_ index: Int) -> Bool { readers[0].hasStream(index) }
     func timeBase(_ index: Int) -> Rational { readers[0].timeBase(index) }
     func parameters(_ index: Int) -> UnsafeMutablePointer<AVCodecParameters> { readers[0].parameters(index) }
     func stream(_ index: Int) -> UnsafeMutablePointer<AVStream> { readers[0].stream(index) }

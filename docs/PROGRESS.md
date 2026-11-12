@@ -130,6 +130,17 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-12 **DTS 5.1 with side surrounds opens; no crash on a stream the reopened file lacks** (the app's owner: Lawrence of Arabia
+  and Brazil did not start, two crashes on an iPhone). (1) `AudioTranscoder.encoderLayout`: FFmpeg's ALAC encoder refuses "5.1(side)",
+  the layout the DTS decoder reports, so every movie with such a track failed to open ("ALAC encoder failed to open: Invalid
+  argument", seen by opening the owner's files with the engine); now the source layout when the encoder takes it, else the encoder's
+  layout with the same number of channels (`avcodec_get_supported_config`), the resampler moving side to back. (2)
+  `PacketSource.hasStream`: `RemuxSession.init` copied the parameters of an overlay stream the reopened file did not have (crash
+  reports: a bad pointer in `avcodec_parameters_copy`, then a nil stream in `PacketReader.parameters`), as an MPEG program stream shows
+  a stream only once read and the quick reopening skips the end of the file; now checked for overlay parameters, ASS headers, the
+  served tracks after the start is read (an error instead of a crash), the renderer's fallback (one full reopening, then an error) and
+  speech extraction. The app removed its DTS country rule the same evening (`MediaEngine.disabledProfiles` stays, unused). **Not
+  compiled, not tested** (the owner's word); exported to `dist/package` for the app.
 - 2026-11-12 **A source's connection closes with its session** (the app's owner: switching movies quickly left SMB connections
   open; not committed). `ByteSource.close()` (protocol requirement with a default that does nothing), called by
   `PlaybackSession.close()` for the source the session was made from (each session is made from its own source in the app) and by the

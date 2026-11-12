@@ -205,7 +205,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         subtitleTracks = served.subtitles
         subtitleCodecs = Dictionary(uniqueKeysWithValues: textTracks.map { ($0.id, $0.codec.name) })
         let packetReader = reader
-        assHeaders = Dictionary(uniqueKeysWithValues: textTracks.filter { ["ass", "ssa"].contains($0.codec.name) }.map { track in
+        assHeaders = Dictionary(uniqueKeysWithValues: textTracks.filter { ["ass", "ssa"].contains($0.codec.name) && packetReader.hasStream($0.id) }.map { track in
             let parameters = packetReader.parameters(track.id)
             let header = parameters.pointee.extradata.map {
                 String(decoding: UnsafeBufferPointer(start: $0, count: Int(parameters.pointee.extradata_size)), as: UTF8.self)
@@ -220,6 +220,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
         // First packets of every wanted stream: used to describe AC-3 streams and to measure the timestamp shift.
         var first = try Self.readStart(reader, streams: wanted, video: videoIndex)
+        // Reading the start can bring a late stream in (MPEG program streams); one the reader still does not have cannot be served.
+        if let missing = wanted.first(where: { !reader.hasStream($0) }) {
+            throw MediaError.corrupt(detail: "track \(missing) is not in the file when it is opened again")
+        }
         let startRead = ContinuousClock.now
         // How long the first group of pictures lasts (keyframe to keyframe): grid pieces must be longer than a GOP.
         var firstGOP = 1.0
@@ -328,7 +332,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             // The streams' headers too, copied now (before packets are read on another queue): a renderer starts from them without
             // opening the file again.
             var parameters: [Int: StreamParameters] = [:]
-            for stream in overlayStreams.text.union(overlayStreams.pictures) {
+            // A stream the reopened file does not have yet (a DVD's subtitles) gets none: its renderer opens the file itself.
+            for stream in overlayStreams.text.union(overlayStreams.pictures) where reader.hasStream(stream) {
                 parameters[stream] = StreamParameters(copying: reader.parameters(stream))
             }
             overlayFeed = OverlayFeed(textStreams: overlayStreams.text, pictureStreams: overlayStreams.pictures,

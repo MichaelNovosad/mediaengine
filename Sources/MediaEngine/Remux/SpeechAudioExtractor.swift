@@ -19,6 +19,7 @@ enum SpeechAudioExtractor {
     static func extract(from byteSource: any ByteSource, stream: Int, codecName: String, to url: URL, cancellation: CancellationFlag,
                         progress: (@Sendable (Double) -> Void)?) throws {
         let reader = try PacketReader(source: byteSource, cancellation: cancellation, quick: false)      // its progress needs FFmpeg's duration
+        guard reader.hasStream(stream) else { throw MediaError.corrupt(detail: "track \(stream) is not in the file when it is opened again") }
         reader.limit(to: [stream])
         let base = reader.timeBase(stream)
         let total = max(Double(reader.format.pointee.duration) / Double(AV_TIME_BASE), 0)

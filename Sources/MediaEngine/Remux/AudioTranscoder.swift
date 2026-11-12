@@ -88,8 +88,7 @@ final class AudioTranscoder: @unchecked Sendable {
         context.pointee.sample_rate = Int32(sampleRate)
         context.pointee.sample_fmt = outputFormat
         context.pointee.time_base = outputTimeBase.ffmpeg
-        var layout = parameters.pointee.ch_layout
-        if layout.order == AV_CHANNEL_ORDER_UNSPEC { av_channel_layout_default(&layout, Int32(channels)) }
+        var layout = Self.encoderLayout(source: parameters.pointee.ch_layout, channels: channels, encoder: context, codec: codec)
         av_channel_layout_copy(&context.pointee.ch_layout, &layout)
         context.pointee.bits_per_raw_sample = bitDepth
         let result = avcodec_open2(context, codec, nil)
@@ -99,6 +98,32 @@ final class AudioTranscoder: @unchecked Sendable {
             throw MediaError.engine(detail: "ALAC encoder failed to open: \(AVError.describe(result))")
         }
         return context
+    }
+
+    /// The channel layout of the ALAC stream: the source's own when FFmpeg's ALAC encoder takes it, else the encoder's layout with the
+    /// same number of channels. DTS (and other decoders) report 5.1 with side surrounds, "5.1(side)", which the encoder refuses: it takes
+    /// "5.1", the same speakers with the surrounds named back, as Apple Lossless does; the resampler moves side to back. Refusing it
+    /// stopped every movie with such a track from opening (the app's owner, 2026-11-12: Lawrence of Arabia, Brazil).
+    static func encoderLayout(source: AVChannelLayout, channels: Int, encoder: UnsafeMutablePointer<AVCodecContext>,
+                              codec: UnsafePointer<AVCodec>) -> AVChannelLayout {
+        var wanted = AVChannelLayout()
+        if source.order == AV_CHANNEL_ORDER_UNSPEC || source.nb_channels != Int32(channels) {
+            av_channel_layout_default(&wanted, Int32(channels))
+        } else {
+            var copy = source
+            av_channel_layout_copy(&wanted, &copy)
+        }
+        var configs: UnsafeRawPointer?
+        var count: Int32 = 0
+        guard avcodec_get_supported_config(encoder, codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, 0, &configs, &count) >= 0,
+              let configs, count > 0 else { return wanted }
+        let supported = UnsafeBufferPointer(start: configs.assumingMemoryBound(to: AVChannelLayout.self), count: Int(count))
+        if supported.contains(where: { var layout = $0; return av_channel_layout_compare(&layout, &wanted) == 0 }) { return wanted }
+        guard var same = supported.first(where: { $0.nb_channels == Int32(channels) }) else { return wanted }
+        av_channel_layout_uninit(&wanted)
+        var result = AVChannelLayout()
+        av_channel_layout_copy(&result, &same)
+        return result
     }
 
     // MARK: Transcoding

@@ -221,7 +221,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         // First packets of every wanted stream: used to describe AC-3 streams and to measure the timestamp shift.
         var first = try Self.readStart(reader, streams: wanted, video: videoIndex)
         // Reading the start can bring a late stream in (MPEG program streams); one the reader still does not have cannot be served.
-        if let missing = wanted.first(where: { !reader.hasStream($0) }) {
+        if let missing = wanted.first(where: { !packetReader.hasStream($0) }) {
             throw MediaError.corrupt(detail: "track \(missing) is not in the file when it is opened again")
         }
         let startRead = ContinuousClock.now

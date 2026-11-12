@@ -11,8 +11,22 @@ public struct CodecProfile: OptionSet, Sendable, Hashable, Codable {
     public static let core = CodecProfile(rawValue: 1 << 0)
     /// Software decoders for codecs Apple does not decode (legacy video formats, VP9).
     public static let extended = CodecProfile(rawValue: 1 << 1)
-    /// DTS and TrueHD decoders. Patent-licensed; off until legally cleared.
+    /// Dolby TrueHD (and MLP) decoders. Patent-licensed; off until legally cleared.
     public static let licensedAudio = CodecProfile(rawValue: 1 << 2)
+    /// The original DTS core (DTS Coherent Acoustics, up to 5.1 channels), converted to Apple Lossless. DTS-HD, DTS Express
+    /// and DTS:X are not decoded: a DTS-HD or DTS:X track plays the DTS core it carries; DTS Express, which has none, does not
+    /// play. Opt-in: the integrator weighs the patent position (`docs/PATENT_PROFILES.md`).
+    public static let dtsCore = CodecProfile(rawValue: 1 << 3)
+    /// A software H.264 decoder, used only when Apple's decoder on this device refuses the stream (High 10, High 4:2:2, High 4:4:4:
+    /// see ``Codec/appleDecodes``). Such video plays on the software path. Opt-in: the integrator weighs the patent position
+    /// (`docs/PATENT_PROFILES.md`).
+    public static let h264Software = CodecProfile(rawValue: 1 << 4)
+    /// A software HEVC decoder, used only when Apple's decoder on this device refuses the stream (typically 4:2:2 and 4:4:4 range
+    /// extensions). Such video plays on the software path. Opt-in: the integrator weighs the patent position.
+    public static let hevcSoftware = CodecProfile(rawValue: 1 << 5)
+    /// AAC, AC-3 and E-AC-3 decoders of the engine, used only when Apple cannot play a track (AAC Main, SSR, LTP; a missing system
+    /// decoder); the sound is converted to Apple Lossless. Opt-in: the integrator weighs the patent position (AAC).
+    public static let audioFallback = CodecProfile(rawValue: 1 << 6)
 }
 
 /// What the engine does with one track.
@@ -43,7 +57,7 @@ public struct UnavailableReason: Sendable, Equatable, Codable {
         case needsCodecProfile
         /// Held back until a legal review clears it.
         case pendingLegalClearance
-        /// Deliberately unsupported (for example H.264 High 10).
+        /// Deliberately unsupported. (H.264 High 10 was reported this way until the ``CodecProfile/h264Software`` module.)
         case outOfScope
         /// A profile of a supported codec that Apple's decoders do not handle.
         case unsupportedProfile
@@ -92,6 +106,8 @@ public struct PlaybackPlan: Sendable, Equatable, Codable {
 struct DeviceCapabilities: Sendable {
     var hardwareAV1: Bool
     var availableProfiles: CodecProfile
+    /// Whether the device decodes Dolby Vision (profiles 5 and 8 then reach AVPlayer as Dolby Vision).
+    var dolbyVision = true
 
     static var current: DeviceCapabilities {
         DeviceCapabilities(
@@ -99,7 +115,8 @@ struct DeviceCapabilities: Sendable {
             // hardware decoder (tests, and a way to compare the two when a picture looks wrong).
             hardwareAV1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
                 && ProcessInfo.processInfo.environment["MEDIAENGINE_DISABLE_HARDWARE_AV1"] == nil,
-            availableProfiles: MediaEngine.availableProfiles)
+            availableProfiles: MediaEngine.availableProfiles,
+            dolbyVision: AppleDecoding.decodesDolbyVision)
     }
 }
 
@@ -210,17 +227,31 @@ enum PlaybackPlanner {
     private static func decideVideo(_ track: Track, _ name: String, _ capabilities: DeviceCapabilities) -> Decision {
         switch name {
         case "h264":
-            // Apple decodes Baseline, Main, Extended and High (8-bit 4:2:0). Hi10P and the 4:2:2 / 4:4:4
-            // profiles are out of scope by owner decision (2026-10-24): no software H.264 decoder ships.
-            if let profile = track.codec.profileIdentifier, ![66, 77, 88, 100].contains(profile) {
-                return unavailable(.outOfScope, "H.264 \(track.codec.profile ?? "High 10") video is not supported.")
+            // Apple first (owner, 2026-11-12). Every Apple device decodes Baseline, Main, Extended and High (8-bit 4:2:0); other
+            // profiles were asked at probe time (`Codec.appleDecodes`; measured 2026-11-12: Apple's hardware decodes High 10 on an
+            // M1 Max). Only when Apple refuses, High 10, High 4:2:2 and High 4:4:4 (and their intra variants, which share the
+            // profile numbers) go to the engine's own decoder (opt-in `h264Software`). Anything else (SVC, MVC) is not supported.
+            guard let profile = track.codec.profileIdentifier, !AppleDecoding.alwaysH264Profiles.contains(profile) else {
+                return Decision(treatment: .passthrough)
             }
-            return Decision(treatment: .passthrough)
+            if track.codec.appleDecodes == true { return Decision(treatment: .passthrough) }
+            if [110, 122, 244, 44].contains(profile) {
+                return Decision(treatment: .software(.h264Software), needs: .h264Software)
+            }
+            return unavailable(.unsupportedProfile, "H.264 \(track.codec.profile ?? "\(profile)") video is not supported.")
         case "hevc":
-            if let profile = track.codec.profileIdentifier, ![1, 2, 3].contains(profile) {
-                return unavailable(.unsupportedProfile, "HEVC \(track.codec.profile ?? "extended") profiles are not supported.")
+            // Dolby Vision profile 5 has no HDR10 base layer: without a Dolby Vision decoder its colours come out wrong.
+            if case .dolbyVision(let dolbyProfile, _, _)? = track.video?.hdr, dolbyProfile == 5, !capabilities.dolbyVision {
+                return unavailable(.unsupportedProfile, "Dolby Vision profile 5 video needs a device that decodes Dolby Vision.")
             }
-            return Decision(treatment: .passthrough)
+            // Apple first, as for H.264: Main, Main 10 and Main Still Picture everywhere; range extensions (4:2:2, 4:4:4) when this
+            // device's decoder accepts them, else the engine's own decoder (opt-in `hevcSoftware`).
+            guard let profile = track.codec.profileIdentifier, !AppleDecoding.alwaysHEVCProfiles.contains(profile) else {
+                return Decision(treatment: .passthrough)
+            }
+            if track.codec.appleDecodes == true { return Decision(treatment: .passthrough) }
+            if profile == 4 { return Decision(treatment: .software(.hevcSoftware), needs: .hevcSoftware) }
+            return unavailable(.unsupportedProfile, "HEVC \(track.codec.profile ?? "\(profile)") video is not supported.")
         case "av1":
             return capabilities.hardwareAV1
                 ? Decision(treatment: .passthrough)
@@ -239,7 +270,12 @@ enum PlaybackPlanner {
 
     private static func decideAudio(_ track: Track, _ name: String) -> Decision {
         switch name {
-        case "aac", "ac3", "eac3", "alac", "mp3":
+        case "aac", "ac3", "eac3":
+            // Apple first (owner, 2026-11-12): passthrough unless the probe found Apple cannot play it (`Codec.appleDecodes`:
+            // AAC Main, SSR, LTP; no system decoder); then the engine's own decoder, converted to ALAC (opt-in `audioFallback`).
+            if track.codec.appleDecodes == false { return Decision(treatment: .transcodeAudio(.alac), needs: .audioFallback) }
+            return Decision(treatment: .passthrough)
+        case "alac", "mp3":
             return Decision(treatment: .passthrough)
         case "flac":
             return Decision(treatment: .transcodeAudio(.alac))
@@ -248,7 +284,12 @@ enum PlaybackPlanner {
         case _ where name.hasPrefix("pcm_"):
             return Decision(treatment: .transcodeAudio(.alac))
         case "dts":
-            return Decision(treatment: .transcodeAudio(.alac), needs: .licensedAudio)
+            // Only the DTS core is decoded (`CodecProfile.dtsCore`); DTS-HD and DTS:X tracks carry one. DTS Express
+            // (FFmpeg's profile 70) has no core.
+            if track.codec.profileIdentifier == 70 {
+                return unavailable(.unsupportedProfile, "DTS Express audio has no DTS core and is not supported.")
+            }
+            return Decision(treatment: .transcodeAudio(.alac), needs: .dtsCore)
         case "truehd", "mlp":
             return Decision(treatment: .transcodeAudio(.alac), needs: .licensedAudio)
         // AVPlayer does not play MPEG audio layer II in the engine's HLS stream; the extended build decodes it.

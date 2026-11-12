@@ -29,10 +29,32 @@ grep -v '^#' "$ROOT/third_party/sources.lock" | while IFS=$'\t' read -r name ver
   fi
   log "$name $version verified (sha256${sigurl:+ + signature})"
 
+  # Our patches: third_party/patches/<name>-*.diff, applied in file-name order with `patch -p1`. The extracted tree
+  # remembers which set it carries (.patches); a tree extracted before the set changed is extracted again.
+  patches=""
+  for p in "$ROOT"/third_party/patches/"$name"-*.diff; do
+    if [ -f "$p" ]; then patches="$patches $p"; fi
+  done
+  if [ -n "$patches" ]; then
+    # shellcheck disable=SC2086
+    patchsum="$(cat $patches | shasum -a 256 | awk '{print $1}')"
+  else
+    patchsum="none"
+  fi
+  if [ -d "$src" ] && [ "$(cat "$src/.patches" 2>/dev/null || echo none)" != "$patchsum" ]; then
+    log "$name: patch set changed, extracting again"
+    rm -rf "$src"
+  fi
+
   if [ ! -d "$src" ]; then
     tmp="$BUILD/src/.extract-$name-$version"
     rm -rf "$tmp"; mkdir -p "$tmp"
     tar -xf "$file" -C "$tmp" --strip-components=1
+    for p in $patches; do
+      log "$name: apply $(basename "$p")"
+      patch -p1 -s -d "$tmp" < "$p" || die "$name: $(basename "$p") does not apply to the pinned archive"
+    done
+    echo "$patchsum" > "$tmp/.patches"
     mv "$tmp" "$src"
   fi
 done

@@ -1,0 +1,13 @@
+{
+  "name": "audioFallback",
+  "description": "Our AAC, AC-3 and E-AC-3 decoders, used only when Apple cannot play a track (Apple first: AudioToolbox's decoders and the AAC object types Apple plays are checked for every track; typically AAC Main, SSR and LTP). Such sound is converted to Apple Lossless. Opt-in, in the `extended-plus` variant (owner, 2026-11-12; RESEARCH.md section 3.2, point 8).",
+  "ffmpeg": {
+    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
+    "decoders": ["aac", "ac3", "eac3"]
+  },
+  "codecStatus": {
+    "aac": {"status": "accepted-risk", "note": "fallback only, when Apple cannot play the track; the AAC pool (Via LA) is active and evergreen"},
+    "ac3": {"status": "expired", "note": "Dolby Digital; last patent expired 2017-03-20 (several sources)"},
+    "eac3": {"status": "expired", "note": "Dolby Digital Plus; last US patent US 7,516,064 expired 2026-01-30 (reported by Phoronix and a forum; not a legal opinion)"}
+  }
+}

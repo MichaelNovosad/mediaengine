@@ -38,13 +38,27 @@ struct SecurityTests {
         #expect(names.contains("matroska,webm") && names.contains("mov,mp4,m4a,3gp,3g2,mj2"))
     }
 
-    @Test("no decoders for patent-pooled codecs are present: never in any build for H.264, HEVC, AAC, AC-3, VC-1, DTS, TrueHD; MPEG-2 only in the extended one")
+    @Test("no decoders for patent-pooled codecs: never VC-1, TrueHD; MPEG-2 only in the extended builds; H.264, HEVC, AAC, AC-3, E-AC-3 and the DTS core only in the opt-in extended-plus build")
     func noPooledDecoders() {
-        let extended = MediaEngine.availableProfiles.contains(.extended)
-        var never: [AVCodecID] = [AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_AAC, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3, AV_CODEC_ID_VC1, AV_CODEC_ID_DTS, AV_CODEC_ID_TRUEHD]
-        if !extended { never.append(AV_CODEC_ID_MPEG2VIDEO) }          // expired, and part of the extended profile
+        let profiles = MediaEngine.availableProfiles
+        var never: [AVCodecID] = [AV_CODEC_ID_VC1, AV_CODEC_ID_TRUEHD]
+        if !profiles.contains(.extended) { never.append(AV_CODEC_ID_MPEG2VIDEO) }   // expired, and part of the extended profile
+        // Opt-in (owner, 2026-11-12): the DTS core, and the fallbacks for what Apple's decoders refuse (Apple first).
+        if !profiles.contains(.h264Software) { never.append(AV_CODEC_ID_H264) }
+        if !profiles.contains(.hevcSoftware) { never.append(AV_CODEC_ID_HEVC) }
+        if !profiles.contains(.audioFallback) { never += [AV_CODEC_ID_AAC, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3] }
+        if !profiles.contains(.dtsCore) { never.append(AV_CODEC_ID_DTS) }
         for id in never {
             #expect(avcodec_find_decoder(id) == nil, "decoder present for \(String(cString: avcodec_get_name(id)))")
+        }
+        // Our patch (third_party/patches/ffmpeg-0001-dts-core-only.diff) removes the decoder's `core_only` option: it is
+        // always core-only, so DTS-HD lossless, DTS Express and DTS:X cannot be decoded by any build.
+        if let dca = avcodec_find_decoder(AV_CODEC_ID_DTS) {
+            var privClass = dca.pointee.priv_class
+            let option = withUnsafeMutablePointer(to: &privClass) {
+                av_opt_find(UnsafeMutableRawPointer($0), "core_only", nil, 0, AV_OPT_SEARCH_FAKE_OBJ)
+            }
+            #expect(option == nil, "the DTS decoder still has the core_only option: the core-only patch was not applied")
         }
         for id in [AV_CODEC_ID_FLAC, AV_CODEC_ID_VORBIS, AV_CODEC_ID_OPUS] {
             #expect(avcodec_find_decoder(id) != nil, "royalty-free decoder missing for \(String(cString: avcodec_get_name(id)))")

@@ -86,18 +86,26 @@ struct ProbeTests {
         #expect(info.requiredProfile.isEmpty)
     }
 
-    @Test("DTS and TrueHD need the optional audio module and are reported unavailable here")
+    @Test("DTS needs the dtsCore module and TrueHD the licensed audio module; without them they are reported unavailable")
     func licensedAudio() async throws {
         let info = try await Fixture.probe("fixture-licensed-audio")
         #expect(info.audioTracks.map(\.codec.name) == ["dts", "truehd"])
-        #expect(info.requiredProfile == .licensedAudio)
+        #expect(info.requiredProfile == [.dtsCore, .licensedAudio])
         #expect(info.playbackPlan.path == .remux)                    // video still plays
-        for plan in info.playbackPlan.tracks where plan.kind == .audio {
+        let available = MediaEngine.availableProfiles
+        for (track, plan) in zip(info.audioTracks, info.playbackPlan.tracks.filter { $0.kind == .audio }) {
+            let needed: CodecProfile = track.codec.name == "dts" ? .dtsCore : .licensedAudio
+            if available.contains(needed) {
+                #expect(plan.treatment == .transcodeAudio(.alac), "\(track.codec.name)")
+                continue
+            }
             guard case .unavailable(let reason) = plan.treatment else { Issue.record("expected unavailable"); continue }
             #expect(reason.code == .needsCodecProfile)
-            #expect(reason.requires == .licensedAudio)
+            #expect(reason.requires == needed)
         }
-        #expect(info.playbackPlan.notes.contains { $0.contains("silent") })
+        if !available.contains(.dtsCore), !available.contains(.licensedAudio) {
+            #expect(info.playbackPlan.notes.contains { $0.contains("silent") })
+        }
     }
 
     @Test("anime-style MKV: two audio languages, styled subtitles, forced signs track, font and cover attachments")

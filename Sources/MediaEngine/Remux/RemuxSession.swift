@@ -930,16 +930,31 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private func master() -> String {
         let video = videoIndex.flatMap { outputs[$0] }.flatMap { output -> HLSPlaylists.VideoRendition? in
             guard let details = output.track.video else { return nil }
-            let range: String? = switch details.hdr {
-            case .hdr10: "PQ"
-            case .hlg: "HLG"
-            case .dolbyVision: nil
-            case .sdr: nil
+            var codecs = output.codecs
+            var supplemental: String?
+            let range: String?
+            switch details.hdr {
+            case .hdr10: range = "PQ"
+            case .hlg: range = "HLG"
+            case .sdr: range = nil
+            case .dolbyVision(let profile, let level, let compatibility):
+                // Dolby Vision through Apple (owner, 2026-11-12; before this it was declared as SDR): profile 5 is declared as
+                // `dvh1`, profile 8 as its base layer plus SUPPLEMENTAL-CODECS (Apple's HLS authoring specification), when the
+                // device decodes Dolby Vision (the init segment then carries `dvcC`/`dvvC`). The range is the base layer's:
+                // HLG for compatibility 4, SDR for 2, PQ otherwise (profile 5, HDR10-compatible 1, and 6 in profile 7).
+                if compatibility == 4 { range = "HLG" } else if compatibility == 2 { range = nil } else { range = "PQ" }
+                if AppleDecoding.decodesDolbyVision, output.track.codec.name == "hevc" {
+                    let levelText = String(format: "%02d", level)
+                    if profile == 5 { codecs = "dvh1.05.\(levelText)" }
+                    if profile == 8, compatibility == 1 { supplemental = "dvh1.08.\(levelText)/db1p" }
+                    if profile == 8, compatibility == 4 { supplemental = "dvh1.08.\(levelText)/db4h" }
+                }
             }
             let fileBits = info.fileSize.map { Double($0) * 8 / max(plan.totalDuration, 1) }
             let bandwidth = Int(output.track.bitrate.map(Double.init) ?? info.bitrate.map(Double.init) ?? fileBits ?? 4_000_000)
-            return HLSPlaylists.VideoRendition(codecs: output.codecs, width: details.width, height: details.height,
-                                               frameRate: details.frameRate, range: range, bandwidth: max(bandwidth, 1))
+            return HLSPlaylists.VideoRendition(codecs: codecs, width: details.width, height: details.height,
+                                               frameRate: details.frameRate, range: range, bandwidth: max(bandwidth, 1),
+                                               supplementalCodecs: supplemental)
         }
         let defaultID = audioIndices.first { outputs[$0]?.track.isDefault == true } ?? audioIndices.first
         let audio = audioIndices.compactMap { id -> HLSPlaylists.AudioRendition? in

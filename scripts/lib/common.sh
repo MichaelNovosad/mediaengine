@@ -17,6 +17,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build"
 MIN_OS="26.0"             # the oldest system the libraries run on (26.0 since 2026-11-04, the app's minimum)
 SLICES="macos ios ios-simulator xros xros-simulator"
+# The FFmpeg binaries (profiles joined by +). Each becomes build/FFmpegLGPL<suffix>.xcframework (variant_suffix below).
+VARIANTS="${MEDIAENGINE_VARIANTS:-core core+extended core+extended+dtsCore+h264Software+hevcSoftware+audioFallback}"   # MEDIAENGINE_VARIANTS narrows it (checks of one variant)
+# The file-name suffix of a variant: "" for core, "-extended", and "-extended-plus" for the variant with the DTS core and the
+# engine's fallback decoders for what Apple refuses (owner, 2026-11-12; RESEARCH.md section 3.2 points 6 and 8).
+variant_suffix() {
+  case "$1" in
+    core) echo "" ;;
+    core+extended+dtsCore+h264Software+hevcSoftware+audioFallback) echo "-extended-plus" ;;
+    *) echo "-${1#core+}" ;;
+  esac
+}
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-27.app/Contents/Developer}"
 # rustup is keg-only on this Mac; Homebrew tools (meson, ninja, cmake, gpg) live in /opt/homebrew/bin.

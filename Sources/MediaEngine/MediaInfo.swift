@@ -85,6 +85,10 @@ public struct Codec: Sendable, Equatable, Codable {
     public var profileIdentifier: Int?
     /// Level such as "4.1", when known.
     public var level: String?
+    /// Whether this device's own decoders (Apple's) can decode the stream, asked when the file is probed for streams outside the
+    /// profiles every Apple device decodes (H.264 High 10 and 4:2:2/4:4:4, HEVC range extensions, rare AAC types, AC-3, E-AC-3);
+    /// `nil` when not asked. The plan sends a stream to the engine's own decoders only when this is not `true` ("Apple first").
+    public var appleDecodes: Bool? = nil
 }
 
 public struct VideoDetails: Sendable, Equatable, Codable {

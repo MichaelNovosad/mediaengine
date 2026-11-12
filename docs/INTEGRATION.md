@@ -39,7 +39,9 @@ let info = try await MediaSource(url: fileURL).probe()      // reads headers onl
 if info.requiredProfile.contains(.extended), !purchased { offerUpgrade(); return }
 ```
 
-`requiredProfile` is `.core`, `.extended` and/or `.licensedAudio`. The engine never gates anything itself, and `availableProfiles`
+`requiredProfile` is `.core`, `.extended`, `.dtsCore`, `.h264Software`, `.hevcSoftware`, `.audioFallback` and/or `.licensedAudio`
+(the DTS core and the engine's own decoders for what Apple's decoders refuse on the device are in the opt-in `extended-plus` variant;
+see `docs/PATENT_PROFILES.md`). Apple first: a stream goes to an engine decoder only when `Codec.appleDecodes` is not `true`. The engine never gates anything itself, and `availableProfiles`
 says what the linked binary contains: a file that needs a module the binary lacks plans as `.unsupported` with code `needsCodecProfile`.
 
 ## 4. Tracks, subtitles, chapters

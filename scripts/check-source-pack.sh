@@ -15,7 +15,7 @@ done || fail=1
 
 # BUILD-INFO names every variant and slice, and the configure lines are complete.
 info="$pack/BUILD-INFO.txt"
-for variant in core core+extended; do
+for variant in $VARIANTS; do
   for s in $SLICES; do
     grep -q "FFmpeg configure line, $variant, slice $s:" "$info" || bad "BUILD-INFO.txt lacks the configure line of $variant/$s"
   done

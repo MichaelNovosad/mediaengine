@@ -46,6 +46,14 @@ enum InitSegmentBuilder {
         stream.pointee.sample_aspect_ratio = sampleAspect
         // Apple's players require the "hvc1" form of HEVC sample entries; FFmpeg defaults to "hev1".
         stream.pointee.codecpar.pointee.codec_tag = parameters.pointee.codec_id == AV_CODEC_ID_HEVC ? 0x3163_7668 : 0
+        // Dolby Vision 5 and 8 go to Apple as Dolby Vision when the device decodes it (owner, 2026-11-12; before this the
+        // configuration was dropped and profile 8 played as HDR10). FFmpeg writes the `dvcC`/`dvvC` box only at "unofficial"
+        // strictness; profile 5 (no HDR10 base layer) needs the `dvh1` sample entry, profile 8 keeps `hvc1` (Apple's HLS
+        // authoring specification). Profile 7 and devices without Dolby Vision keep the base layer only, as before.
+        if let profile = Self.dolbyVisionProfile(parameters), [5, 8].contains(profile), AppleDecoding.decodesDolbyVision {
+            context.pointee.strict_std_compliance = -1                      // FF_COMPLIANCE_UNOFFICIAL
+            if profile == 5 { stream.pointee.codecpar.pointee.codec_tag = 0x3168_7664 }   // 'dvh1'
+        }
 
         var options: OpaquePointer?
         av_dict_set(&options, "movflags", "frag_custom+empty_moov+delay_moov+default_base_moof+negative_cts_offsets", 0)
@@ -94,6 +102,16 @@ enum InitSegmentBuilder {
 }
 
 extension InitSegmentBuilder {
+    /// The Dolby Vision profile of a stream from its configuration record (Matroska's BlockAdditionMapping, MP4's `dvcC`/`dvvC`),
+    /// or `nil` when the stream carries none.
+    static func dolbyVisionProfile(_ parameters: UnsafePointer<AVCodecParameters>) -> Int? {
+        guard let side = av_packet_side_data_get(parameters.pointee.coded_side_data, parameters.pointee.nb_coded_side_data,
+                                                 AV_PKT_DATA_DOVI_CONF),
+              side.pointee.size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size else { return nil }
+        let record = UnsafeRawPointer(side.pointee.data).loadUnaligned(as: AVDOVIDecoderConfigurationRecord.self)
+        return Int(record.dv_profile)
+    }
+
     /// Apple's HLS rules expect PQ (HDR10) video to carry mastering display and content light level boxes
     /// (`mdcv`, `clli`). Files with real values keep them; for files without any, nominal HDR10 values are
     /// written (BT.2020 primaries, D65 white, 0.0001 to 1000 nits, MaxCLL 1000, MaxFALL 400) so the stream is

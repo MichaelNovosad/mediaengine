@@ -68,6 +68,7 @@ final class ProbeStore: Sendable {
     /// What the playback plan depends on besides the file.
     private static var capabilities: String {
         let current = DeviceCapabilities.current
-        return "\(current.hardwareAV1)-\(current.availableProfiles.rawValue)"
+        // "apple1": probes made before the Apple-first check (2026-11-12) lack `Codec.appleDecodes` and are probed again.
+        return "\(current.hardwareAV1)-\(current.availableProfiles.rawValue)-\(current.dolbyVision)-apple1"
     }
 }

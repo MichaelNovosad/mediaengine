@@ -1,0 +1,11 @@
+{
+  "name": "dtsCore",
+  "description": "The original DTS core (DTS Coherent Acoustics, up to 5.1 channels), converted to Apple Lossless for playback. The FFmpeg source is patched (third_party/patches/ffmpeg-0001-dts-core-only.diff) so that the `dca` decoder decodes only the core: the DTS-HD lossless (XLL) and DTS Express (LBR) decoders are not compiled and the extension parsers are removed. DTS-HD and DTS:X tracks play the DTS core they carry; DTS Express has none and does not play. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-12 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 6).",
+  "ffmpeg": {
+    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
+    "decoders": ["dca"]
+  },
+  "codecStatus": {
+    "dca": {"status": "accepted-risk", "note": "DTS core only (patched); a DTS licensing programme is believed active; the expiry of the core's patents is unverified"}
+  }
+}

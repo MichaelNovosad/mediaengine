@@ -4,19 +4,21 @@
 # Why: this repository's build/ folder holds about 100,000 files (sources, intermediates); Xcode lists every file of a path dependency
 # and looks up its type, which took an hour at background priority. The copy has a few hundred files. Incremental (rsync): run it
 # before every app build; it takes seconds.
-# usage: scripts/export-package.sh [core|extended]
+# usage: scripts/export-package.sh [core|extended|extended-plus]
 # The optional argument is the variant the exported package links by default (MEDIAENGINE_PROFILE still overrides it): `core` for apps
-# that play what Apple decodes, `extended` for apps that also want the software decoders and legacy containers. Both frameworks are in
-# the copy. Default: core.
+# that play what Apple decodes, `extended` for apps that also want the software decoders and legacy containers, `extended-plus`
+# for apps that also decode the DTS core and have fallback decoders for what Apple refuses (opt-in; docs/PATENT_PROFILES.md). Every framework that
+# is built is in the copy. Default: core.
 source "$(dirname "$0")/lib/common.sh"
 profile="${1:-core}"
-case "$profile" in core|extended) ;; *) die "usage: scripts/export-package.sh [core|extended]" ;; esac
+case "$profile" in core|extended|extended-plus) ;; *) die "usage: scripts/export-package.sh [core|extended|extended-plus]" ;; esac
+if [ "$profile" != core ]; then [ -d "$BUILD/FFmpegLGPL-$profile.xcframework" ] || die "FFmpegLGPL-$profile.xcframework is not built (scripts/build-all.sh)"; fi
 out="$ROOT/dist/package/MediaEngine"
 for f in FFmpegLGPL.xcframework LibASS.xcframework; do [ -d "$BUILD/$f" ] || die "$f is not built (scripts/build-all.sh)"; done
 mkdir -p "$out/Frameworks" "$out/Sources"
 
 rsync -a --delete --exclude .DS_Store "$ROOT/Sources/MediaEngine/" "$out/Sources/MediaEngine/"
-for f in FFmpegLGPL.xcframework FFmpegLGPL-extended.xcframework LibASS.xcframework; do
+for f in FFmpegLGPL.xcframework FFmpegLGPL-extended.xcframework FFmpegLGPL-extended-plus.xcframework LibASS.xcframework; do
   if [ -d "$BUILD/$f" ]; then rsync -a --delete --exclude .DS_Store "$BUILD/$f/" "$out/Frameworks/$f/"; else rm -rf "$out/Frameworks/$f"; fi
 done
 cp "$ROOT/LICENSE" "$out/LICENSE"

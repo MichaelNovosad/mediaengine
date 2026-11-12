@@ -7,7 +7,7 @@
     "license": "LGPL-2.1-or-later",
     "licenseFile": "COPYING.LGPLv2.1",
     "copyright": "Copyright (c) the FFmpeg developers (see the CREDITS file in the source archive)",
-    "notice": "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project. The libraries are linked dynamically (FFmpegLGPL.framework) and may be replaced by your own build.",
+    "notice": "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project. The libraries are linked dynamically (FFmpegLGPL.framework) and may be replaced by your own build. Our build changes FFmpeg in one place (2026-11-12): the DTS decoder decodes only the DTS core (third_party/patches/ffmpeg-0001-dts-core-only.diff, in the source pack).",
     "replaceable": true,
     "profile": "core"
   },

@@ -1,6 +1,6 @@
 {
   "name": "extended",
-  "description": "Adds the RealMedia demuxer and software decoders for codecs Apple does not decode (MPEG-1/2/4, H.263 and Flash video, WMV, RealVideo, VP6/VP8/VP9, Theora) and AV1 through dav1d. H.264 is never software-decoded: Hi10P is out of scope. VC-1 stays off until legal clearance (D-E8). The core binary already demuxes AVI, FLV, ASF and Ogg (container work needs no codec licence), but the plan reports those containers as needing this module (ANM-8: the Pro formats), so a host gates them like the codecs. Shipped as a variant binary (RESEARCH.md section 24, decision D-E11).",
+  "description": "Adds the RealMedia demuxer and software decoders for codecs Apple does not decode (MPEG-1/2/4, H.263 and Flash video, WMV, RealVideo, VP6/VP8/VP9, Theora) and AV1 through dav1d. H.264 is not decoded here: the `h264Software` profile decodes the H.264 profiles Apple does not (Hi10P). VC-1 stays off until legal clearance (D-E8). The core binary already demuxes AVI, FLV, ASF and Ogg (container work needs no codec licence), but the plan reports those containers as needing this module (ANM-8: the Pro formats), so a host gates them like the codecs. Shipped as a variant binary (RESEARCH.md section 24, decision D-E11).",
   "ffmpeg": {
     "libraries": [
       "avutil",
@@ -52,7 +52,7 @@
     },
     "mpeg4": {
       "status": "expired",
-      "note": "MPEG-4 Part 2 (Xvid/DivX); last patent reportedly expired 2026-07 (single source)"
+      "note": "MPEG-4 Part 2 (Xvid/DivX); last patent expired 2026-07-19 (two sources: Lexology, jxself.org; checked 2026-11-12)"
     },
     "msmpeg4": {
       "status": "needs-review",

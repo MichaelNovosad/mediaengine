@@ -10,6 +10,8 @@ enum HLSPlaylists {
         var frameRate: Double?
         var range: String?              // "PQ", "HLG" or nil for SDR
         var bandwidth: Int
+        /// Dolby Vision profile 8 on a device that decodes it: "dvh1.08.06/db1p" (Apple's HLS authoring specification).
+        var supplementalCodecs: String? = nil
     }
 
     struct AudioRendition {
@@ -60,6 +62,7 @@ enum HLSPlaylists {
                               "RESOLUTION=\(video.width)x\(video.height)"]
             if let rate = video.frameRate { attributes.append("FRAME-RATE=\(String(format: "%.3f", rate))") }
             if let range = video.range { attributes.append("VIDEO-RANGE=\(range)") }
+            if let supplemental = video.supplementalCodecs { attributes.append("SUPPLEMENTAL-CODECS=\(quoted(supplemental))") }
             if !audio.isEmpty { attributes.append("AUDIO=\"audio\"") }
             if !subtitles.isEmpty { attributes.append("SUBTITLES=\"subs\"") }
             lines.append("#EXT-X-STREAM-INF:" + attributes.joined(separator: ","))

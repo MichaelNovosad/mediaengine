@@ -10,7 +10,7 @@ Pinned sources: `third_party/sources.lock` (SHA-256 and key fingerprints, verifi
 ## Changing what is compiled in
 
 1. Edit `profiles/core.json` (or `extended`, `licensedAudio`; `host-tools.json` is developer-only). `scripts/gen-config.py` turns the lists (demuxers, muxers, parsers, bsfs, decoders, encoders, indevs, protocols) into configure flags and the license report. Nothing else needs editing.
-2. **Do not add decoders for pooled codecs to `core`** (H.264, HEVC, AAC, AC-3, VC-1, DTS...). Strategy agreed with the owner: Apple decodes what it can, own decoders only for royalty-free or expired codecs, the rest opt-in and off until a lawyer clears it (`docs/RESEARCH.md` section 3). H.264 Hi10P is out of scope. Ask the owner when unsure.
+2. **Do not add decoders for pooled codecs to `core`** (H.264, HEVC, AAC, AC-3, VC-1, DTS...). Strategy agreed with the owner: Apple decodes what it can, own decoders only for royalty-free or expired codecs, the rest opt-in and off until a lawyer clears it (`docs/RESEARCH.md` section 3). Since 2026-11-12 (owner): the DTS core (core-only, DTS-HD code removed) and H.264 for High 10, 4:2:2 and 4:4:4 go into opt-in profiles, never into `core`. Ask the owner when unsure.
 3. `scripts/build-all.sh core` rebuilds all five slices (macos, ios, ios-simulator, xros, xros-simulator, arm64) and packages `build/FFmpegLGPL.xcframework` (~2.5 min). **It also regenerates every fixture and ground-truth JSON** (not bit-reproducible): either commit them together or `git checkout Fixtures` afterwards.
 4. `scripts/check-licenses.sh` must pass (no GPL/nonfree strings or symbols). Then `scripts/verify.sh`.
 

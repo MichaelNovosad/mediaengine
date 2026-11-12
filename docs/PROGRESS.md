@@ -4,6 +4,12 @@
 
 ## Right now
 
+- **2026-11-12 (committed without compiling, at the app owner's word; the owner builds and tests):** Apple first: H.264, HEVC, AAC,
+  AC-3 and E-AC-3 go to an engine decoder only when this device's Apple decoder refuses the stream; Dolby Vision 5 and 8 go to Apple as
+  Dolby Vision; the DTS core (patched FFmpeg); `MediaEngine.disabledProfiles` for country rules; the variant `extended-plus`. RESEARCH
+  3.2 points 6 to 8. Compiled earlier in the day for the DTS/Hi10P part only; the Apple-first and Dolby Vision code is not compiled;
+  no test run, nothing played. Open: the core macOS install folder (empty since 2026-11-04; `scripts/build-ffmpeg.sh macos core`), test
+  files for Hi10P, HEVC 4:2:2 and Dolby Vision, the device check (app Jira EGA-102). Details: Done 2026-11-12 (two entries).
 - **State on 2026-11-08 (evening), everything committed (`6641e9c`, `6347151`, `195d700`; not pushed): network playback for the app (Eiga 0.2.0).** In one day, driven by the owner's movies on an SMB share (a router's USB disk): time-grid pieces for files without a usable index (`RemuxSession`, `MatroskaSeeker`); pieces sized by the measured link speed; remembered probes (`ProbeStore`); in-band SPS/PPS kept once a stream changes them (`AnnexB`, `PacketReader.inBandSets`: Blu-ray files lost their picture after the first GOP); transport and program streams seek a few frames early (`seeksByDecodeTime`); Blu-ray clip-file languages (`DiscInfo`, `Track.containerID`, `PlaybackSession(…trackLanguages:)`); a fragment cache answered without waiting for builds, with separate budgets for picture (48 MB) and sound of every track (24 MB); read-ahead that gives way to a jump; the loopback server notices a client that hung up (`ConnectionWatch`) and builds nothing for a request the player left for another piece; `playImmediately` at start, resume and after a jump; the item lets go before the server stops; the item's error log in the system log (category `player`); cover pictures sized from their header before FFmpeg's probe; fonts read once per session. Evidence and reasoning: RESEARCH sections 28 to 30. **Compiled only**: no test was run or written for any of it (the owner's rule), and the owner tests the app next.
 - **Next (owner's call):** the owner tries Eiga 0.2.0 against the share; if start, jumps and sound switches are still clearly worse than VLC, the plan is a direct player (the engine hands packets to `AVSampleBufferDisplayLayer` and `AVSampleBufferAudioRenderer`, no HLS), starting with a one-week spike: the app's `docs/OWN_PLAYER.md`. Open in the engine: DVD `.IFO` languages built 2026-11-10 (not checked against a real disc); a written analysis the owner asked for (the app's `docs/OWN_PLAYER.md` covers the player side); the libraries are still built for macOS/iOS 27.0 (linker warning; rebuild needs the owner's go).
 
@@ -79,6 +85,23 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
   Subtitles: they apply with a strange delay, as if they are downloaded each time I apply them."** Status: cause found and fixed (see Done,
   2026-11-11), compiled, not committed, not tried on the share.
 
+- 2026-11-12 (the app's owner) **"From now on we ignore the DTS and anime format restriction"**, then **"only DTS, not their new DTS-HD or
+  DTS:X"**. Decided in the chat: the DTS core only (DTS-HD and DTS:X tracks play their core), H.264 Hi10P in, both free in the app, the
+  DTS-HD code removed from the binary (RESEARCH 3.2 point 6, decisions log). Status: **recorded, nothing built.** Engine part of the plan:
+  opt-in profiles for the DTS core and for H.264 (never `core`), a patch in `third_party/patches` that leaves out XLL, LBR and the
+  extension substream and forces core-only decoding, `availableProfiles` detection, the planner (DTS to ALAC, the H.264 profiles Apple
+  does not decode to the software path), `SecurityTests.noPooledDecoders` and the planner tests updated, the patent profile document and
+  acknowledgements regenerated, the source pack with the patch, then the rebuild (`build-all.sh`, heavy: only when the owner says it is a
+  good moment). Waits for the owner's go. Then (owner) "do it one by one without a question": **built 2026-11-12, see Done.**
+  Then (owner) "investigate where this patent works; if it is US only, block DTS there until it expires; the same for Hi10P":
+  findings in RESEARCH 3.2 point 7; built `MediaEngine.disabledProfiles` (the app blocks DTS in the US App Store until 2027-02-07);
+  H.264 is not US-only (pool patents in about 100 countries), the owner decides.
+
+- 2026-11-12 (the app's owner) **"H.264, HEVC, AAC, AC-3, E-AC-3, Dolby Vision should be included 100%. Make it Apple first and then
+  with a fallback to ours. Review existing restrictions that you applied because of old data."** Plan: the app's
+  `docs/APPLE_FIRST_PLAN.md`; review: RESEARCH 3.2 point 8. Status: **built, committed without compiling** (the owner's word), see
+  Done 2026-11-12 (Apple first).
+
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
 ### Deferred after v1 (decided while working; revisit after the release)
@@ -107,6 +130,47 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-12 **Apple first, the engine's decoders as the fallback; Dolby Vision 5 and 8 through Apple** (the app's owner, Backlog
+  2026-11-12; committed without compiling at the owner's word). `Internal/AppleDecoding.swift` (a `VTDecompressionSession` for the
+  stream's own `avcC`/`hvcC` outside H.264 66/77/88/100 and HEVC 1/2/3; AudioToolbox's decoder list; AAC Main/SSR/LTP not Apple's
+  [believe]; `VTIsHardwareDecodeSupported(kCMVideoCodecType_DolbyVisionHEVC)`), `Codec.appleDecodes` (public, filled by the prober),
+  planner: H.264 and HEVC pass through when Apple decodes, else `h264Software` / new `hevcSoftware` (HEVC profile 4) on the software
+  path, else unsupported; AAC/AC-3/E-AC-3 pass through unless Apple cannot play them, then ALAC through new `audioFallback`; Dolby
+  Vision 5 unsupported on a device without Dolby Vision (`DeviceCapabilities.dolbyVision`); the probe cache key gains the Dolby Vision
+  flag and "apple1". Remux: `InitSegmentBuilder` keeps `dvcC`/`dvvC` (FFmpeg's unofficial strictness) for profiles 5 and 8 when the
+  device decodes Dolby Vision, `dvh1` sample entry for 5; the master playlist declares `dvh1.05.LL`, or `SUPPLEMENTAL-CODECS`
+  `dvh1.08.LL/db1p`/`db4h`, and `VIDEO-RANGE` from the base layer (Dolby Vision used to be declared SDR). `AudioTranscoder` pre-roll
+  for dts, aac, ac3, eac3 (DTS was planned for conversion but `canTranscode` lacked it, so `TrackChoices` would have dropped DTS
+  tracks). Profiles `hevcSoftware.json`, `audioFallback.json` (aac `accepted-risk`, ac3 and eac3 `expired`), MPEG-4 Part 2 status with
+  two sources; the variant renamed `extended-plus` (core + extended + dtsCore + h264Software + hevcSoftware + audioFallback) in every
+  script, the DocC article, INTEGRATION, PATENT_PROFILES (regenerated, `--check` passes). Tests written, not run:
+  `PlaybackPlannerTests.hevcRext`, `hi10pThroughApple`, `audioFallback`, `dolbyVision`; `SecurityTests.noPooledDecoders`. Measured
+  before (M1 Max, macOS 27.2): Apple's hardware decodes Hi10P (RESEARCH 3.3). **Not compiled, not tested, nothing played**; no Dolby
+  Vision, HEVC 4:2:2 or Hi10P test file here.
+- 2026-11-12 **The DTS core and H.264 Hi10P as opt-in profiles, and a run-time switch for modules** (the app's owner, Backlog 2026-11-12;
+  not committed). `third_party/patches/ffmpeg-0001-dts-core-only.diff` (the `dca` decoder keeps only the DTS core: `dca_xll.o` and
+  `dca_lbr.o` leave the decoder, their DSP routines leave `dcadsp.c`, the extension parsers leave `dca_core.c`, the `core_only` option is
+  gone because it is always on; two XLL coefficient tables stay in the shared `dcadata.c`, numbers without code), applied by
+  `scripts/fetch-sources.sh` (re-extracts when the patch set changes; `.patches` stamp). Profiles `dtsCore` and `h264Software`
+  (status `accepted-risk`), `licensedAudio` is TrueHD only. Variant `core+extended+dtsCore+h264Software` =
+  `build/FFmpegLGPL-extended-dts-h264.xcframework` (`VARIANTS` and `variant_suffix` in `scripts/lib/common.sh`, used by
+  `package-xcframework.sh`, `check-licenses.sh`, `write-build-info.sh`, `check-source-pack.sh`; `build-all.sh` builds it;
+  `export-package.sh extended-dts-h264`). `CodecProfile.dtsCore`, `.h264Software`; planner: DTS to ALAC needing `.dtsCore`, DTS Express
+  (profile 70) unsupported, H.264 profiles 110/122/244/44 to the software path needing `.h264Software`, other non-Apple H.264 profiles
+  `unsupportedProfile`; `MediaEngine.disabledProfiles` (thread-safe, `availableProfiles` leaves them out; the probe cache's key already
+  contains the profiles); speech extraction takes DTS when `.dtsCore` is there. Licence check: no DTS extension log texts in any framework.
+  Docs: PATENT_PROFILES regenerated (`accepted-risk`, exception point 6), NOTICES, acknowledgements (FFmpeg notice names the change and
+  its date, LGPL 2.1 section 2), REPLACING-FFMPEG, INTEGRATION, DocC, README, RESEARCH 3.2 points 6 and 7. **Evidence:** the patch
+  applies to the pinned archive (dry run and `fetch-sources.sh`); the variant built for five slices (2026-11-12, background priority)
+  and packaged; `check-licenses.sh` passes for it on five slices (`MEDIAENGINE_VARIANTS=core+extended+dtsCore+h264Software`); the macOS
+  `libavcodec.a` has the `dca` and `h264` decoders and no XLL or LBR code; `swift build --build-tests` without errors or warnings;
+  `check-public-api.sh`, `gen-patent-profiles.py --check`, `gen-acknowledgements.py --check` pass. **Not run:** every test (the owner's
+  rule; tests changed: `SecurityTests.noPooledDecoders` (also: no `core_only` option), `PlaybackPlannerTests.hi10p`, `dtsOnly`,
+  `dtsExpress`, `ProbeTests.licensedAudio`); no DTS or Hi10P file decoded yet (no Hi10P fixture can be made here: no 10-bit H.264
+  encoder without GPL x264). **Found, older:** the core macOS slice's install folder is empty since a core rebuild was stopped on
+  2026-11-04 16:19 during `configure`, so `check-licenses.sh` (all variants) and the source pack fail until
+  `scripts/build-ffmpeg.sh macos core` runs again (the shipped `FFmpegLGPL.xcframework` of 2026-10-30 is intact);
+  `write-build-info.sh` now writes "(not built)" for a missing slice instead of stopping.
 - 2026-11-11 **A subtitle track of a server movie is shown as soon as it is chosen** (the app's owner, Backlog 2026-11-11). Cause, read in
   the code: every choice of a track the engine draws went through `makeSubtitleRenderer`, which opened a new `PacketReader` on the movie's
   byte source only to read the stream's header and keep a reader at hand. For a movie on SMB that is a whole opening over the network:
@@ -168,6 +232,7 @@ toolchain; none blocks the release.
 | 2026-10-24 | Pro package C for the app; team = Michael Novosad (Personal Team) | Owner |
 | 2026-10-24 | FFmpeg 9.0.x (9.0.2 pinned) and a single merged framework `FFmpegLGPL` | Claude, from E-S1 evidence |
 | 2026-10-24 | Open: D-E11 packaging of optional codec profiles (plug-in frameworks vs variant products), decided in E4 | — |
+| 2026-11-12 | **The DTS core and H.264 Hi10P in, as opt-in profiles** (the app links them, free): plain DTS only, DTS-HD lossless, DTS Express and DTS:X code removed from the binary, DTS-HD tracks play their core; H.264 only for High 10, 4:2:2 and 4:4:4 on the software path. Replaces the 2026-10-24 Hi10P row for this. Risk accepted by the owner, not a legal clearance | Owner |
 
 ## Handoff notes (what a fresh session must know)
 

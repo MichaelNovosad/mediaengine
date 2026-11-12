@@ -1,6 +1,6 @@
 #!/bin/bash
 # LIC-3: the source pack that ships next to every release: the exact upstream source archives with their signatures and keys,
-# our patches (none), the build scripts and codec profiles, BUILD-INFO.txt (configure lines, tool versions), the notices, and
+# our patches (third_party/patches), the build scripts and codec profiles, BUILD-INFO.txt (configure lines, tool versions), the notices, and
 # the procedure for replacing the FFmpeg framework. Everything an LGPL recipient needs to rebuild the binaries.
 # usage: scripts/make-source-pack.sh [--label <name>] [--no-compress] [--out <dir>]
 #   default output: dist/MediaEngine-sources-<label>.tar.xz (+ .sha256); label = the date.
@@ -45,17 +45,18 @@ cp "$ROOT/docs/REPLACING-FFMPEG.md" "$ROOT/docs/PATENT_PROFILES.md" "$stage/" 2>
 [ -f "$BUILD/REQUIRED-FFMPEG-SYMBOLS.txt" ] && cp "$BUILD/REQUIRED-FFMPEG-SYMBOLS.txt" "$stage/"
 [ -f "$BUILD/BUILD-INFO.txt" ] || ./scripts/write-build-info.sh >/dev/null
 cp "$BUILD/BUILD-INFO.txt" "$stage/"
-for report in core extended; do [ -f "$BUILD/LICENSE-REPORT-$report.md" ] && cp "$BUILD/LICENSE-REPORT-$report.md" "$stage/"; done
+for report in core extended extended-plus; do [ -f "$BUILD/LICENSE-REPORT-$report.md" ] && cp "$BUILD/LICENSE-REPORT-$report.md" "$stage/"; done
 
 cat > "$stage/README.txt" <<TXT
 MediaEngine source pack ($label)
 
 This folder is the corresponding source of the binaries that ship with MediaEngine: FFmpeg (LGPL-2.1-or-later, dynamically
-linked as FFmpegLGPL.framework), dav1d (BSD-2-Clause, inside the extended variant of that framework) and the subtitle libraries
+linked as FFmpegLGPL.framework), dav1d (BSD-2-Clause, inside the extended variants of that framework; the extended-plus variant also decodes the DTS core
+and, where Apple's decoders refuse a stream, H.264, HEVC, AAC, AC-3 and E-AC-3; see PATENT_PROFILES.md and patches/) and the subtitle libraries
 libass, FreeType, HarfBuzz and FriBidi (LibASS.framework).
 
   sources/            the unmodified upstream archives with signatures and signing keys (ARCHIVES.txt lists names, URLs, SHA-256)
-  patches/            our changes to those sources as diffs (none)
+  patches/            our changes to those sources as diffs (applied by scripts/fetch-sources.sh)
   scripts/, profiles/ how the binaries are built: scripts/build-all.sh does everything; profiles decide what FFmpeg contains
   BUILD-INFO.txt      tool versions and the exact configure line of every binary
   REPLACING-FFMPEG.md how to rebuild or replace the framework, REQUIRED-FFMPEG-SYMBOLS.txt what a replacement must export

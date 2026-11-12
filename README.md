@@ -38,7 +38,7 @@ let info = try await source.probe()                    // container, tracks, cha
 info.container.isMatroskaFamily                        // true for .mkv / .webm
 info.audioTracks.map { ($0.language, $0.codec.displayName) }
 info.playbackPlan.path                                 // .native, .remux, .software or .unsupported
-info.requiredProfile                                   // which optional codec modules this file needs (.core, .extended, .licensedAudio)
+info.requiredProfile                                   // which optional codec modules this file needs (.core, .extended, .dtsCore, .h264Software, .licensedAudio)
 ```
 
 Bring your own storage (SMB, WebDAV, a cloud API) by implementing `ByteSource`: one blocking `read(at:into:)` and a `length`.

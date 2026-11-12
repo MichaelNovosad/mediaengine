@@ -22,6 +22,11 @@ final class AudioTranscoder: @unchecked Sendable {
         case "vorbis": 0.2      // one overlapping window; sample-exact after this (tested)
         // Legacy audio of the extended profile (MPEG audio layer II: one frame of filter-bank history).
         case "mp2": 0.1
+        // The DTS core (filter-bank and ADPCM history across frames) and the fallback decoders for what Apple cannot play
+        // (AAC: one overlapping 1024-sample window, more with SBR; AC-3/E-AC-3: one 256-sample overlap). Not measured: chosen
+        // with room, as for MP2 (2026-11-12; before this DTS was planned for conversion but never converted).
+        case "dts", "ac3", "eac3": 0.1
+        case "aac": 0.2
         default: 0
         }
     }

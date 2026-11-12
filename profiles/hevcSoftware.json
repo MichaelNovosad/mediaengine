@@ -1,0 +1,11 @@
+{
+  "name": "hevcSoftware",
+  "description": "A software HEVC decoder, used only when Apple's decoder refuses a stream (Apple first: the engine asks VideoToolbox for every HEVC track; typically HEVC 4:2:2 and 4:4:4 on chips without that support). Such video plays on the software path. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-12 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 8).",
+  "ffmpeg": {
+    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
+    "decoders": ["hevc"]
+  },
+  "codecStatus": {
+    "hevc": {"status": "accepted-risk", "note": "fallback only, when Apple's decoder refuses the stream; HEVC pools (Access Advance, VCL Advance) are active and Apple's licence does not cover this decoder"}
+  }
+}

@@ -65,9 +65,11 @@ enum Prober {
             case .video:
                 let (codec, details) = videoInfo(stream: stream, par: par)
                 track.codec = codec
+                track.codec.appleDecodes = AppleDecoding.video(par, codec: codec)      // Apple first (owner, 2026-11-12)
                 track.video = details
             case .audio:
                 track.codec = codecInfo(par: par, extra: nil)
+                track.codec.appleDecodes = AppleDecoding.audio(track.codec)
                 track.audio = audioInfo(par: par, codecName: track.codec.name, container: container.kind)
             case .subtitle:
                 track.codec = codecInfo(par: par, extra: nil)

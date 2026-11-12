@@ -13,7 +13,7 @@ same way, with a build that exports the same `ass_*` functions.
 
 - The source pack of the release (`MediaEngine-sources-*.tar.xz`): the exact upstream archives with their signatures, the build
   scripts, the codec profiles (`profiles/*.json`, which decide the FFmpeg `configure` flags), `BUILD-INFO.txt` with the
-  configure line of every binary, and the patches we apply (there are none). Written offer: we send the same material, free of
+  configure line of every binary, and the patches we apply (one, since 2026-11-12: the DTS decoder keeps only the core; `third_party/patches`, applied by `scripts/fetch-sources.sh`, so a rebuild with the scripts matches ours). Written offer: we send the same material, free of
   charge, to anyone who received the binary.
 - Xcode 27, `meson`, `ninja`, `cmake`, `gpg` (see `CLAUDE.md`), and a Mac.
 

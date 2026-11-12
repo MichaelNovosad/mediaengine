@@ -10,8 +10,10 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
   FFmpeg nor this package grants patent licences. **The integrator (the app publisher) is responsible for the patent licences
   of every profile and codec it enables and distributes**, in every territory where the app is available.
 - A profile is a separate binary variant (`FFmpegLGPL.xcframework` is `core`, `FFmpegLGPL-extended.xcframework` is
-  `core` + `extended`). An app that links only `core` contains none of the software decoders listed under `extended` and
-  `licensedAudio`. `MediaInfo.requiredProfile` tells the host which profile a file needs, so it can gate the feature.
+  `core` + `extended`, `FFmpegLGPL-extended-plus.xcframework` is `core` + `extended` + `dtsCore` + `h264Software` +
+  `hevcSoftware` + `audioFallback`).
+  An app that links only `core` contains none of the software decoders listed under the other profiles.
+  `MediaInfo.requiredProfile` tells the host which profile a file needs, so it can gate the feature.
 - The engine never decides what is allowed: the host app does.
 
 ## Launch default
@@ -21,10 +23,16 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
 2. **Our own decoders only for royalty-free or expired codecs** (the `extended` profile; statuses below).
 3. **Container work needs no codec licence** (reading and remuxing Matroska, AVI, FLV, RealMedia, MPEG-TS and so on); the
    containers of old formats are still reported as needing `extended` so a host can offer them as a paid feature.
-4. **Off by default and not built:** VC-1 and WMV3 (held back until cleared), DTS, DTS-HD and Dolby TrueHD (`licensedAudio`,
-   not part of the shipped binaries), Dolby Vision profile 7 conversion, a software H.264 decoder (so no Hi10P), Windows Media
-   Audio and RealAudio (the decoders are left out of version 1).
+4. **Off by default and not built:** VC-1 and WMV3 (held back until cleared), Dolby TrueHD (`licensedAudio`, not part of the
+   shipped binaries), DTS-HD lossless and DTS Express (removed from the source by our patch), Dolby Vision profile 7
+   conversion, Windows Media Audio and RealAudio (the decoders are left out of version 1).
 5. A module is switched on only after a lawyer's opinion and once there is revenue to pay a licensor who asks.
+6. **Exception, 2026-11-12:** the DTS core (`dtsCore`) and the engine's own decoders for what Apple's decoders refuse on a
+   device (`h264Software`, `hevcSoftware`, `audioFallback`: "Apple first", each stream is offered to Apple's decoder first) were
+   switched on by the first app's owner with the risk accepted, **without** a lawyer's opinion. They are separate opt-in
+   profiles: an integrator who links `extended-plus` takes the same decision for its own app.
+7. **Dolby Vision 5 and 8** are passed to Apple as Dolby Vision (`dvcC`/`dvvC`, `dvh1`) on devices that decode it (2026-11-12);
+   the engine decodes no Dolby Vision itself.
 
 ## Trademarks
 
@@ -43,6 +51,7 @@ required by the licences is in `third_party/NOTICES.md` and `MediaEngine.acknowl
 | `apple-licensed` | encoding done by Apple's AudioToolbox |
 | `needs-review` | the status is not established; the decoder is in the profile and is a candidate for removal |
 | `needs-clearance` | live licensing programmes; the decoder is **not** in any shipped binary |
+| `accepted-risk` | live licensing programmes are believed to exist; the decoder is in an opt-in profile that an app owner chose to ship without a lawyer's opinion |
 | `container` | a container or demuxer: no codec licence; grouped with `extended` for gating only |
 
 ## Profile `core`
@@ -72,7 +81,7 @@ Other components: demuxers: matroska, mov, mpegts, mpegps, avi, asf, flv, ogg, w
 
 ## Profile `extended`
 
-Adds the RealMedia demuxer and software decoders for codecs Apple does not decode (MPEG-1/2/4, H.263 and Flash video, WMV, RealVideo, VP6/VP8/VP9, Theora) and AV1 through dav1d. H.264 is never software-decoded: Hi10P is out of scope. VC-1 stays off until legal clearance (D-E8). The core binary already demuxes AVI, FLV, ASF and Ogg (container work needs no codec licence), but the plan reports those containers as needing this module (ANM-8: the Pro formats), so a host gates them like the codecs. Shipped as a variant binary (RESEARCH.md section 24, decision D-E11).
+Adds the RealMedia demuxer and software decoders for codecs Apple does not decode (MPEG-1/2/4, H.263 and Flash video, WMV, RealVideo, VP6/VP8/VP9, Theora) and AV1 through dav1d. H.264 is not decoded here: the `h264Software` profile decodes the H.264 profiles Apple does not (Hi10P). VC-1 stays off until legal clearance (D-E8). The core binary already demuxes AVI, FLV, ASF and Ogg (container work needs no codec licence), but the plan reports those containers as needing this module (ANM-8: the Pro formats), so a host gates them like the codecs. Shipped as a variant binary (RESEARCH.md section 24, decision D-E11).
 
 | Codec or format | Status | In this profile's binary | Note |
 |---|---|---|---|
@@ -86,7 +95,7 @@ Adds the RealMedia demuxer and software decoders for codecs Apple does not decod
 | mp2 | expired | yes | MPEG-1 Audio Layer II (MP2): the patents ran out with those of MP3 and MPEG-1; confirm in the LIC-6 review |
 | mpeg1video | expired | yes | MPEG-1 video; all patents expired |
 | mpeg2video | expired | yes | last US patent expired 2018-02-13 |
-| mpeg4 | expired | yes | MPEG-4 Part 2 (Xvid/DivX); last patent reportedly expired 2026-07 (single source) |
+| mpeg4 | expired | yes | MPEG-4 Part 2 (Xvid/DivX); last patent expired 2026-07-19 (two sources: Lexology, jxself.org; checked 2026-11-12) |
 | msmpeg4 | needs-review | yes | Microsoft-era codec; check before enabling |
 | rm | container | no (not compiled in) | RealMedia demuxer (extended only); the plan reports the container as needing the extended module (ANM-8) |
 | rv | needs-review | yes | RealVideo 1.0-4.0 (RMVB); RealNetworks codecs, status unverified, check before enabling |
@@ -101,17 +110,58 @@ FFmpeg decoders compiled in: mpeg1video, mpeg2video, mpeg4, msmpeg4v1, msmpeg4v2
 
 Other components: demuxers: rm.
 
-## Profile `licensedAudio`
+## Profile `dtsCore`
 
-DTS, DTS-HD and Dolby TrueHD decoders. Live third-party licensing programs; off by default until a lawyer clears them (D-E8, PlayerApp D-12).
+The original DTS core (DTS Coherent Acoustics, up to 5.1 channels), converted to Apple Lossless for playback. The FFmpeg source is patched (third_party/patches/ffmpeg-0001-dts-core-only.diff) so that the `dca` decoder decodes only the core: the DTS-HD lossless (XLL) and DTS Express (LBR) decoders are not compiled and the extension parsers are removed. DTS-HD and DTS:X tracks play the DTS core they carry; DTS Express has none and does not play. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-12 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 6).
 
 | Codec or format | Status | In this profile's binary | Note |
 |---|---|---|---|
-| dca | needs-clearance | yes | DTS family; licensing program active, expiry status unverified |
+| dca | accepted-risk | yes | DTS core only (patched); a DTS licensing programme is believed active; the expiry of the core's patents is unverified |
+
+FFmpeg decoders compiled in: dca.
+
+## Profile `h264Software`
+
+A software H.264 decoder, used only for the profiles Apple's decoders do not handle (High 10 'Hi10P', High 4:2:2, High 4:4:4); every other H.264 stream is still decoded by Apple. Such video plays on the software path. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-12 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 6).
+
+| Codec or format | Status | In this profile's binary | Note |
+|---|---|---|---|
+| h264 | accepted-risk | yes | only High 10, 4:2:2 and 4:4:4; the H.264 patent pool is believed active and Apple's licence does not cover this decoder |
+
+FFmpeg decoders compiled in: h264.
+
+## Profile `hevcSoftware`
+
+A software HEVC decoder, used only when Apple's decoder refuses a stream (Apple first: the engine asks VideoToolbox for every HEVC track; typically HEVC 4:2:2 and 4:4:4 on chips without that support). Such video plays on the software path. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-12 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 8).
+
+| Codec or format | Status | In this profile's binary | Note |
+|---|---|---|---|
+| hevc | accepted-risk | yes | fallback only, when Apple's decoder refuses the stream; HEVC pools (Access Advance, VCL Advance) are active and Apple's licence does not cover this decoder |
+
+FFmpeg decoders compiled in: hevc.
+
+## Profile `audioFallback`
+
+Our AAC, AC-3 and E-AC-3 decoders, used only when Apple cannot play a track (Apple first: AudioToolbox's decoders and the AAC object types Apple plays are checked for every track; typically AAC Main, SSR and LTP). Such sound is converted to Apple Lossless. Opt-in, in the `extended-plus` variant (owner, 2026-11-12; RESEARCH.md section 3.2, point 8).
+
+| Codec or format | Status | In this profile's binary | Note |
+|---|---|---|---|
+| aac | accepted-risk | yes | fallback only, when Apple cannot play the track; the AAC pool (Via LA) is active and evergreen |
+| ac3 | expired | yes | Dolby Digital; last patent expired 2017-03-20 (several sources) |
+| eac3 | expired | yes | Dolby Digital Plus; last US patent US 7,516,064 expired 2026-01-30 (reported by Phoronix and a forum; not a legal opinion) |
+
+FFmpeg decoders compiled in: aac, ac3, eac3.
+
+## Profile `licensedAudio`
+
+Dolby TrueHD (and MLP) decoders. Live third-party licensing programmes; off by default until a lawyer clears them (D-E8, PlayerApp D-12). The DTS core has its own profile, `dtsCore` (2026-11-12); DTS-HD lossless is not decoded in any build.
+
+| Codec or format | Status | In this profile's binary | Note |
+|---|---|---|---|
 | mlp | needs-clearance | yes | Meridian Lossless Packing, basis of TrueHD |
 | truehd | needs-clearance | yes | Dolby TrueHD; licensing program active, expiry status unverified |
 
-FFmpeg decoders compiled in: dca, truehd, mlp.
+FFmpeg decoders compiled in: truehd, mlp.
 
 ## Third-party libraries and their licences
 

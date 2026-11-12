@@ -13,6 +13,7 @@ This product uses libraries from the FFmpeg project under the GNU Lesser General
 | dav1d (AV1 decoder, extended variant only) | 1.5.4 | BSD-2-Clause | https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz (SHA-256 and signature in `sources.lock`) |
 
 - FFmpeg is built without `--enable-gpl` and `--enable-nonfree` and linked dynamically (`FFmpegLGPL.framework`). You may replace that framework with your own build of FFmpeg.
+- FFmpeg is modified in one place (2026-11-12): `third_party/patches/ffmpeg-0001-dts-core-only.diff` changes `libavcodec/dcadec.c`, `dca_core.c`, `dca_core.h`, `dcadsp.c` and `libavcodec/Makefile` so that the DTS decoder decodes only the DTS core (no DTS-HD lossless, DTS Express or DTS:X). The patch is in the source pack and is applied by `scripts/fetch-sources.sh`.
 - We do not own FFmpeg. Its authors are listed at https://ffmpeg.org/developer.html and in the source archive (`CREDITS`).
 - The configure line used for every released binary is in `BUILD-INFO.txt`, shipped next to the binaries together with the exact source archive and any patches (currently none).
 - The full text of the license is in the source archive (`COPYING.LGPLv2.1`).

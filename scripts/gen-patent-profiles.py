@@ -10,7 +10,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs/PATENT_PROFILES.md"
-PROFILES = ["core", "extended", "licensedAudio"]
+PROFILES = ["core", "extended", "dtsCore", "h264Software", "hevcSoftware", "audioFallback", "licensedAudio"]
 
 # FFmpeg component name -> key of codecStatus in the profile files.
 ALIASES = {
@@ -49,8 +49,10 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
   FFmpeg nor this package grants patent licences. **The integrator (the app publisher) is responsible for the patent licences
   of every profile and codec it enables and distributes**, in every territory where the app is available.
 - A profile is a separate binary variant (`FFmpegLGPL.xcframework` is `core`, `FFmpegLGPL-extended.xcframework` is
-  `core` + `extended`). An app that links only `core` contains none of the software decoders listed under `extended` and
-  `licensedAudio`. `MediaInfo.requiredProfile` tells the host which profile a file needs, so it can gate the feature.
+  `core` + `extended`, `FFmpegLGPL-extended-plus.xcframework` is `core` + `extended` + `dtsCore` + `h264Software` +
+  `hevcSoftware` + `audioFallback`).
+  An app that links only `core` contains none of the software decoders listed under the other profiles.
+  `MediaInfo.requiredProfile` tells the host which profile a file needs, so it can gate the feature.
 - The engine never decides what is allowed: the host app does.
 
 ## Launch default
@@ -60,10 +62,16 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
 2. **Our own decoders only for royalty-free or expired codecs** (the `extended` profile; statuses below).
 3. **Container work needs no codec licence** (reading and remuxing Matroska, AVI, FLV, RealMedia, MPEG-TS and so on); the
    containers of old formats are still reported as needing `extended` so a host can offer them as a paid feature.
-4. **Off by default and not built:** VC-1 and WMV3 (held back until cleared), DTS, DTS-HD and Dolby TrueHD (`licensedAudio`,
-   not part of the shipped binaries), Dolby Vision profile 7 conversion, a software H.264 decoder (so no Hi10P), Windows Media
-   Audio and RealAudio (the decoders are left out of version 1).
+4. **Off by default and not built:** VC-1 and WMV3 (held back until cleared), Dolby TrueHD (`licensedAudio`, not part of the
+   shipped binaries), DTS-HD lossless and DTS Express (removed from the source by our patch), Dolby Vision profile 7
+   conversion, Windows Media Audio and RealAudio (the decoders are left out of version 1).
 5. A module is switched on only after a lawyer's opinion and once there is revenue to pay a licensor who asks.
+6. **Exception, 2026-11-12:** the DTS core (`dtsCore`) and the engine's own decoders for what Apple's decoders refuse on a
+   device (`h264Software`, `hevcSoftware`, `audioFallback`: "Apple first", each stream is offered to Apple's decoder first) were
+   switched on by the first app's owner with the risk accepted, **without** a lawyer's opinion. They are separate opt-in
+   profiles: an integrator who links `extended-plus` takes the same decision for its own app.
+7. **Dolby Vision 5 and 8** are passed to Apple as Dolby Vision (`dvcC`/`dvvC`, `dvh1`) on devices that decode it (2026-11-12);
+   the engine decodes no Dolby Vision itself.
 
 ## Trademarks
 
@@ -82,6 +90,7 @@ required by the licences is in `third_party/NOTICES.md` and `MediaEngine.acknowl
 | `apple-licensed` | encoding done by Apple's AudioToolbox |
 | `needs-review` | the status is not established; the decoder is in the profile and is a candidate for removal |
 | `needs-clearance` | live licensing programmes; the decoder is **not** in any shipped binary |
+| `accepted-risk` | live licensing programmes are believed to exist; the decoder is in an opt-in profile that an app owner chose to ship without a lawyer's opinion |
 | `container` | a container or demuxer: no codec licence; grouped with `extended` for gating only |
 """
 

@@ -10,10 +10,10 @@ bad() { printf 'FAIL: %s\n' "$*" >&2; fail=1; }
 has()   { grep -E "$@" >/dev/null; }          # a matching line exists
 lacks() { ! grep -E "$@" >/dev/null; }        # no matching line exists
 
-# The core binary and every variant that was built (core+extended is required: the extended variant is what an app that
-# gates legacy formats links). Same rules for all: LGPL FFmpeg, no GPL or nonfree configuration, only av*/swr* exported.
-for variant_profile in core core+extended; do
-  variant=""; [ "$variant_profile" = core ] || variant="-$(echo "$variant_profile" | sed 's/^core+//')"
+# The core binary and every variant ($VARIANTS in lib/common.sh; all are required: the extended variant is what an app that
+# gates legacy formats links, extended-plus the one with the DTS core and the fallback decoders). Same rules for all: LGPL FFmpeg, no GPL or nonfree configuration, only av*/swr* exported.
+for variant_profile in $VARIANTS; do
+  variant="$(variant_suffix "$variant_profile")"
   for s in $SLICES; do
     inst="$BUILD/install/$s-$variant_profile"
     [ -d "$inst" ] || { bad "$s: $variant_profile not built"; continue; }
@@ -33,11 +33,15 @@ for variant_profile in core core+extended; do
       nm -gU "$fwbin" 2>/dev/null | lacks -i 'x264|x265|fdk' || bad "$s ($variant_profile): GPL/nonfree encoder symbols exported"
       nm -gU "$fwbin" 2>/dev/null | awk '{print $3}' | lacks -v '^_(av|swr)' || bad "$s ($variant_profile): exports symbols outside av*/swr*"
       otool -L "$fwbin" | tail -n +2 | lacks -v '(/System/Library/|/usr/lib/|@rpath/FFmpegLGPL)' || bad "$s ($variant_profile): links against non-system libraries"
-      if [ "$variant_profile" = core+extended ]; then
+      if [ "$variant_profile" != core ]; then
         fwres="$(dirname "$fwbin")"; [ -d "$fwres/Resources" ] && fwres="$fwres/Resources"
         [ -f "$fwres/licenses/dav1d-BSD-2-Clause.txt" ] || bad "$s ($variant_profile): the dav1d licence text is not inside the framework"
         strings -a "$fwbin" | has "dav1d" || bad "$s ($variant_profile): dav1d is not linked into the extended framework"
       fi
+      # Our patch (third_party/patches/ffmpeg-0001-dts-core-only.diff): only the DTS core is decoded. Log texts of the DTS-HD
+      # lossless and DTS Express decoders and of the core-extension search must not be in a framework.
+      strings -a "$fwbin" | lacks "Invalid XLL sub-header checksum|Tonal group chunk too short|XCH sync word not found" \
+        || bad "$s ($variant_profile): DTS extension code is in the framework (the core-only patch was not applied)"
     else
       bad "$s ($variant_profile): framework not packaged"
     fi

@@ -12,6 +12,7 @@ enum SpeechAudioExtractor {
 
     static func canDecode(_ codecName: String) -> Bool {
         systemCodecs.contains(codecName) || ["flac", "vorbis", "opus", "mp3", "alac"].contains(codecName) || codecName.hasPrefix("pcm_")
+            || (codecName == "dts" && MediaEngine.availableProfiles.contains(.dtsCore))     // the DTS core, in the opt-in build
     }
 
     /// Decodes the whole track; `progress` gets 0 to 1 as the file is read. Blocks: call it on a thread of its own.

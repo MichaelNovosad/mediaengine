@@ -1,12 +1,11 @@
 {
   "name": "licensedAudio",
-  "description": "DTS, DTS-HD and Dolby TrueHD decoders. Live third-party licensing programs; off by default until a lawyer clears them (D-E8, PlayerApp D-12).",
+  "description": "Dolby TrueHD (and MLP) decoders. Live third-party licensing programmes; off by default until a lawyer clears them (D-E8, PlayerApp D-12). The DTS core has its own profile, `dtsCore` (2026-11-12); DTS-HD lossless is not decoded in any build.",
   "ffmpeg": {
     "libraries": ["avutil", "avcodec", "avformat", "swresample"],
-    "decoders": ["dca", "truehd", "mlp"]
+    "decoders": ["truehd", "mlp"]
   },
   "codecStatus": {
-    "dca": {"status": "needs-clearance", "note": "DTS family; licensing program active, expiry status unverified"},
     "truehd": {"status": "needs-clearance", "note": "Dolby TrueHD; licensing program active, expiry status unverified"},
     "mlp": {"status": "needs-clearance", "note": "Meridian Lossless Packing, basis of TrueHD"}
   }

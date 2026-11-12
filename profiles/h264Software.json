@@ -1,0 +1,11 @@
+{
+  "name": "h264Software",
+  "description": "A software H.264 decoder, used only for the profiles Apple's decoders do not handle (High 10 'Hi10P', High 4:2:2, High 4:4:4); every other H.264 stream is still decoded by Apple. Such video plays on the software path. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-12 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 6).",
+  "ffmpeg": {
+    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
+    "decoders": ["h264"]
+  },
+  "codecStatus": {
+    "h264": {"status": "accepted-risk", "note": "only High 10, 4:2:2 and 4:4:4; the H.264 patent pool is believed active and Apple's licence does not cover this decoder"}
+  }
+}

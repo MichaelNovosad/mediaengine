@@ -6,7 +6,7 @@ extension MediaEngine {
         Acknowledgement(
             id: "ffmpeg", name: "FFmpeg (libavutil, libavcodec, libavformat, libswresample)", version: "9.0.2",
             usedFor: "Reading containers and decoding audio and video.",
-            license: "LGPL-2.1-or-later", copyright: "Copyright (c) the FFmpeg developers (see the CREDITS file in the source archive)", requiredNotice: "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project. The libraries are linked dynamically (FFmpegLGPL.framework) and may be replaced by your own build.",
+            license: "LGPL-2.1-or-later", copyright: "Copyright (c) the FFmpeg developers (see the CREDITS file in the source archive)", requiredNotice: "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project. The libraries are linked dynamically (FFmpegLGPL.framework) and may be replaced by your own build. Our build changes FFmpeg in one place (2026-11-12): the DTS decoder decodes only the DTS core (third_party/patches/ffmpeg-0001-dts-core-only.diff, in the source pack).",
             sourceURL: URL(string: "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz")!, sha256: "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
             isReplaceable: true, includedIn: .core,
             licenseText: #"""

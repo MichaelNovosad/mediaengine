@@ -5,7 +5,9 @@ import PackageDescription
 // Release manifests point `FFmpegLGPL` at a versioned, checksummed download instead.
 // MEDIAENGINE_SANITIZED_FFMPEG=1 swaps in the AddressSanitizer-instrumented macOS framework (scripts/check-sanitized.sh).
 // MEDIAENGINE_PROFILE=extended builds against the variant that also contains the legacy containers and software decoders
-// (scripts/package-xcframework.sh core+extended); the default is the core binary. Release manifests do the same per product.
+// (scripts/package-xcframework.sh core+extended), MEDIAENGINE_PROFILE=extended-plus against the one that also decodes the DTS
+// core and has fallback decoders for what Apple refuses (opt-in, docs/PATENT_PROFILES.md); the default is the core binary. Release manifests
+// do the same per product.
 let profile = Context.environment["MEDIAENGINE_PROFILE"] ?? "core"
 let ffmpegFramework = Context.environment["MEDIAENGINE_SANITIZED_FFMPEG"] == "1"
     ? "build/FFmpegLGPL-address.xcframework"

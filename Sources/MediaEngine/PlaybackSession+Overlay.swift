@@ -70,6 +70,7 @@ extension PlaybackSession {
         // reaches back only as far as most lines last.
         let local = byteSource is FileByteSource || byteSource is DataByteSource
         let seekLookback = local ? SubtitleRenderer.lookback : 8
+        let duration = info.duration
 
         // While the remuxer plays the file, its reading has the stream's header and blocks: the renderer starts without opening the file,
         // and opens it only if a stretch must be read from it (after a jump). Each choice of a subtitle track used to open the file again,
@@ -79,7 +80,7 @@ extension PlaybackSession {
             return try await Self.offMainThread {
                 let backend = try Self.makeOverlayBackend(parameters: parameters.pointer, isBitmap: isBitmap, codecName: codecName,
                                                           fonts: fonts, videoSize: videoSize)
-                let loader = DeferredEventSource { try reading(PacketReader(source: byteSource, cancellation: cancellation)) }
+                let loader = DeferredEventSource { try reading(PacketReader(source: byteSource, cancellation: cancellation, durationHint: duration)) }
                 return SubtitleRenderer(backend: backend, loader: loader, feed: feed, seekLookback: seekLookback, readsOverNetwork: !local,
                                         cancellation: cancellation, offset: shift)
             }
@@ -90,7 +91,7 @@ extension PlaybackSession {
                 source = try Self.makeTimeline(main: byteSource, info: info, ordered: ordered, linked: linked,
                                                overlay: (streamIndex, marker == streamIndex ? nil : marker), cancellation: cancellation).reader
             } else {
-                source = try PacketReader(source: byteSource, cancellation: cancellation)
+                source = try PacketReader(source: byteSource, cancellation: cancellation, durationHint: duration)
                 // A stream the probe found only near the end of the file (a DVD's subtitles): open it as the probe did.
                 if !source.hasStream(streamIndex) { source = try PacketReader(source: byteSource, cancellation: cancellation, quick: false) }
             }

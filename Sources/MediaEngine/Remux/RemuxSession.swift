@@ -189,7 +189,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             reader = packetSource
             timeline = packetSource as? TimelineReader
         } else {
-            reader = try PacketReader(source: source, cancellation: cancellation)
+            reader = try PacketReader(source: source, cancellation: cancellation, durationHint: info.duration)
             timeline = nil
         }
         let readerOpened = ContinuousClock.now

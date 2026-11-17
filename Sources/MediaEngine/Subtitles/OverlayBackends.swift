@@ -113,9 +113,13 @@ final class BitmapBackend: OverlayBackend {
     }
 
     func add(_ events: [OverlayEvent]) {
-        // Each window is decoded as one run from its start: PGS display sets build on the ones before them.
+        // Each window is decoded as one run from its start, in the order the file holds the packets: PGS display sets build on the
+        // ones before them, and in an MPEG transport stream (a Blu-ray) each segment of a display set is a packet of its own whose
+        // time differs from the others' (the composition is stamped with its display time, the palette and the picture earlier).
+        // Sorted by time, the composition came after the palette and wiped it ("Invalid palette id 0"), and no Blu-ray subtitle
+        // was drawn (the app's owner, 2026-11-17: Labyrinth). A Matroska block holds a whole display set, so order never mattered.
         avcodec_flush_buffers(context)
-        for event in events.sorted(by: { $0.start < $1.start }) { decode(event) }
+        for event in events { decode(event) }
         displays.sort { $0.start < $1.start }
     }
 

@@ -89,10 +89,12 @@ final class PacketReader: PacketSource {
 
     /// `quick` (the default) opens a file whose duration the engine knows already (see ``FormatContext/open(source:cancellation:quick:)``);
     /// a reader that needs FFmpeg's own duration passes `false`.
-    init(source: any ByteSource, cancellation: CancellationFlag, quick: Bool = true) throws {
+    /// `durationHint`: the length the session knows (the quick opening does not measure it), for jumps by byte position.
+    init(source: any ByteSource, cancellation: CancellationFlag, quick: Bool = true, durationHint: Double? = nil) throws {
         self.source = source
         self.cancellation = cancellation
         self.quick = quick
+        self.durationHint = durationHint
         dvd = (source as? DVDTitleByteSource)?.layout
         context = try FormatContext.open(source: source, cancellation: cancellation, quick: quick)
         guard let packet = av_packet_alloc() else { throw MediaError.engine(detail: "could not allocate packet") }
@@ -104,6 +106,7 @@ final class PacketReader: PacketSource {
     }
 
     private let quick: Bool
+    private let durationHint: Double?
     /// A DVD title (``DVDTitleByteSource``): its packets are put on the title's timeline cell by cell, and it seeks through the
     /// disc's time map; FFmpeg's own timestamps restart and jump between cells and its seeks by time land anywhere.
     private let dvd: DVDTitleLayout?
@@ -287,6 +290,23 @@ final class PacketReader: PacketSource {
             return
         }
         if untimedStreams.contains(index) { return try seekUntimed(stream: index, to: timestamp) }
+        if indexesKeyframes {
+            // No keyframe the reader knows within 20 s before the time: a jump by byte position, from the file's average byte rate.
+            let seconds = timeBase(index).seconds(timestamp)
+            let video = Int(av_find_default_stream_index(format))
+            let near = video >= 0 ? indexEntry(stream: video, atOrBefore: seconds) : nil
+            if near.map({ seconds - $0 > 20 }) ?? true, try interpolatedSeek(to: seconds) { return }
+        }
+        if indexesKeyframes, stream(index).pointee.codecpar.pointee.codec_type != AVMEDIA_TYPE_VIDEO {
+            // MPEG transport and program streams: FFmpeg's search for a time looks for packets of the stream it is asked about,
+            // and a subtitle stream's packets can be minutes apart, so each step of the search read on and on (a subtitle switch
+            // on a 27 GB Blu-ray stream over a network read for minutes and showed nothing: the app's owner, 2026-11-17). The
+            // file's own default stream (its video) is searched instead; the reader lands at or before the time and reads on.
+            let micro = timeBase(index).convert(timestamp + originTicks(index), to: Rational(num: 1, den: Int64(AV_TIME_BASE)))
+            let result = av_seek_frame(format, -1, micro, AVSEEK_FLAG_BACKWARD)
+            if result < 0 { throw FormatContext.openError(result, context.bridge) }
+            return
+        }
         try helpSeek(stream: index, to: timestamp)
         let result = av_seek_frame(format, Int32(index), timestamp + originTicks(index), AVSEEK_FLAG_BACKWARD)
         if result < 0 { throw FormatContext.openError(result, context.bridge) }
@@ -496,6 +516,45 @@ final class PacketReader: PacketSource {
         bytes[1] = UInt8((frame.frequencyIndex & 1) << 7 | frame.channelConfiguration << 3)
         parameters.pointee.extradata = bytes
         parameters.pointee.extradata_size = Int32(size)
+    }
+
+    /// A jump in an MPEG transport or program stream by byte position: the file's average byte rate gives a guess a few seconds
+    /// early; the first timed packet there says where it landed, and a guess that landed after the time steps back. FFmpeg's own
+    /// search for a time in such a file without an index read packet after packet: a jump in a 27 GB Blu-ray stream over a network
+    /// took 2 to 5 s, and a subtitle switch (a reader of its own, without the keyframes the remuxer had met) minutes (the app's
+    /// owner, 2026-11-17: Labyrinth). `false` when the file gives no length or duration to interpolate with.
+    private func interpolatedSeek(to seconds: Double) throws -> Bool {
+        // The length FFmpeg measured, else the one the session knows (a quick reopening skips FFmpeg's estimate: the first jumps in
+        // a Blu-ray stream, a subtitle reader's, then fell back to FFmpeg's slow search).
+        let measured = format.pointee.duration > 0 ? Double(format.pointee.duration) / Double(AV_TIME_BASE) : nil
+        guard let length = source.length, length > 0, let total = measured ?? durationHint, total > 0 else { return false }
+        let rate = Double(length) / total
+        guard rate.isFinite, rate > 0 else { return false }
+        let early = 6.0
+        var guess = Int64(max(0, (seconds - early) * rate))
+        for _ in 0..<5 {
+            guess = max(0, min(guess, length - 1))
+            if cancellation.isCancelled { throw MediaError.cancelled }
+            guard av_seek_frame(format, -1, guess, AVSEEK_FLAG_BYTE) >= 0, let landed = firstPacketTime() else { return false }
+            if landed <= seconds || guess == 0 {
+                return av_seek_frame(format, -1, guess, AVSEEK_FLAG_BYTE) >= 0
+            }
+            guess -= Int64((landed - seconds + early) * rate)
+        }
+        return false
+    }
+
+    /// The time (engine timeline) of the first packet with a timestamp from the read position, reading at most 2,000 packets.
+    private func firstPacketTime() -> Double? {
+        for _ in 0..<2_000 {
+            guard av_read_frame(format, packet) >= 0 else { return nil }
+            defer { av_packet_unref(packet) }
+            let stamp = packet.pointee.dts != Int64.min ? packet.pointee.dts : packet.pointee.pts
+            guard stamp != Int64.min else { continue }
+            let index = Int(packet.pointee.stream_index)
+            return timeBase(index).seconds(stamp - originTicks(index))
+        }
+        return nil
     }
 
     private enum Subpicture { case pending, complete(MediaPacket), single }

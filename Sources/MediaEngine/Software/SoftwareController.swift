@@ -74,9 +74,11 @@ public final class SoftwareController: PlaybackController {
 
     static func make(session: PlaybackSession) async throws -> SoftwareController {
         guard let video = session.info.videoTracks.first else { throw MediaError.unsupported(detail: "the file has no video") }
-        let byteSource = session.source.byteSource, cancellation = session.cancellation
+        let byteSource = session.source.byteSource, cancellation = session.cancellation, duration = session.info.duration
         let reader = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PacketReader, any Error>) in
-            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(with: Result { try PacketReader(source: byteSource, cancellation: cancellation) }) }
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try PacketReader(source: byteSource, cancellation: cancellation, durationHint: duration) })
+            }
         }
         let pipeline = try SoftwareVideoPipeline(reader: reader, stream: video.id, frameRate: video.video?.frameRate)
         let controller = SoftwareController(session: session, pipeline: pipeline, audioItem: try await session.makeAudioItem())
@@ -156,16 +158,18 @@ public final class SoftwareController: PlaybackController {
                     // The sound stopped by itself. A player that does not wait to minimise stalls (it cannot: it starts at a host
                     // time with the picture) drops its rate to 0 when its data runs out and stays there: after a switch to another
                     // sound track it waited for the new track's first piece and fell silent while the picture went on, until a jump
-                    // started both again (the app's owner, 2026-11-17). Hold the picture, and when the sound has data, start both
-                    // together where the picture stands (at most once a second).
-                    if !holdingForAudio {
-                        pipeline.synchronizer.setRate(0, time: pipeline.synchronizer.currentTime())
-                        holdingForAudio = true
-                    } else if sound.isPlaybackLikelyToKeepUp || sound.isPlaybackBufferFull || !sound.isPlaybackBufferEmpty,
-                              ContinuousClock.now - lastSoundRestart > .seconds(1) {
+                    // started both again (the app's owner, 2026-11-17). As VLC does (the owner's wish), the picture goes on and the
+                    // sound joins it where the picture will be, as soon as it has data (tried at most once a second).
+                    if holdingForAudio {
+                        pipeline.synchronizer.setRate(wantedRate, time: pipeline.synchronizer.currentTime())
+                        holdingForAudio = false
+                    }
+                    if sound.isPlaybackLikelyToKeepUp || sound.isPlaybackBufferFull || !sound.isPlaybackBufferEmpty,
+                       ContinuousClock.now - lastSoundRestart > .seconds(1) {
                         lastSoundRestart = ContinuousClock.now
-                        currentTime = max(pipeline.synchronizer.currentTime().seconds, 0)
-                        startClocks()
+                        let lead = 0.15
+                        let joinAt = CMTimeAdd(pipeline.synchronizer.currentTime(), CMTime(seconds: lead * Double(wantedRate), preferredTimescale: 90_000))
+                        audio.player.setRate(wantedRate, time: joinAt, atHostTime: hostTime(after: lead))
                     }
                 } else if !holdingForAudio, audio.item.isPlaybackBufferEmpty {
                     pipeline.synchronizer.setRate(0, time: pipeline.synchronizer.currentTime())          // the sound is buffering: hold the picture

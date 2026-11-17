@@ -13,6 +13,10 @@ Pinned sources: `third_party/sources.lock` (SHA-256 and key fingerprints, verifi
 2. **Do not add decoders for pooled codecs to `core`** (H.264, HEVC, AAC, AC-3, VC-1, DTS...). Strategy agreed with the owner: Apple decodes what it can, own decoders only for royalty-free or expired codecs, the rest opt-in and off until a lawyer clears it (`docs/RESEARCH.md` section 3). Since 2026-11-12 (owner): the DTS core (core-only, DTS-HD code removed) and H.264 for High 10, 4:2:2 and 4:4:4 go into opt-in profiles, never into `core`. Ask the owner when unsure.
 3. `scripts/build-all.sh core` rebuilds all three slices (macos, ios, ios-simulator, arm64; visionOS is not in this release, owner 2026-11-17) and packages `build/FFmpegLGPL.xcframework` (~2.5 min). **It also regenerates every fixture and ground-truth JSON** (not bit-reproducible): either commit them together or `git checkout Fixtures` afterwards.
 4. `scripts/check-licenses.sh` must pass (no GPL/nonfree strings or symbols). Then `scripts/verify.sh`.
+5. **Export for the app**: `scripts/export-package.sh extended-plus` (PlayerApp builds against `dist/package/MediaEngine`, not this tree).
+   Without it the app keeps the old framework: on 2026-11-17 a rebuilt VC-1 variant still gave "VC-1 needs an optional module that this
+   build does not include" in the app. Then Product > Clean Build Folder in Xcode. Switching a codec profile on or off end to end: skill
+   `engine-codec-profile`.
 
 ## Variants
 

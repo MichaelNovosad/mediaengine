@@ -411,6 +411,7 @@ toolchain; none blocks the release.
 | 2026-11-12 | **The DTS core and H.264 Hi10P in, as opt-in profiles** (the app links them, free): plain DTS only, DTS-HD lossless, DTS Express and DTS:X code removed from the binary, DTS-HD tracks play their core; H.264 only for High 10, 4:2:2 and 4:4:4 on the software path. Replaces the 2026-10-24 Hi10P row for this. Risk accepted by the owner, not a legal clearance | Owner |
 | 2026-11-17 | **VC-1 in, as an opt-in profile** (`vc1Software`: FFmpeg `vc1` and `wmv3`, in `extended-plus`, the app links it, free). Apple decodes no VC-1, so it is always our decoder. Risk accepted by the owner, not a legal clearance (RESEARCH 3.2 point 9); TrueHD and Dolby Vision 7 stay off | Owner (app) |
 | 2026-11-17 | **visionOS is not in this release** (the app's owner, "maybe for v2"): no visionOS slices, platform, samples or simulator runs; the state of that day is kept on the `visionos` branch, not updated until the owner says so. Replaces the visionOS part of the 2026-10-24 platform row | Owner (app) |
+| 2026-11-17 | **Tests alongside the implementation, a commit after each big piece without asking** (skill `commit-with-tests`): the narrow tests of the changed code run before the commit; broad checks, simulators and rebuilds still on the owner's word; never pushed. Replaces "commit only when asked" and "tests only on the owner's word" (2026-10-30) | Owner |
 
 ## Handoff notes (what a fresh session must know)
 

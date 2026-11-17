@@ -36,3 +36,24 @@ Pipeline: `PacketReader` (FFmpeg demux) -> `RemuxSession` (segment plan from key
 - CoreMedia -19602 on the first segment of an MPEG-TS or AVI file with H.264: the samples are still in Annex B form. `PacketReader` converts them (`AnnexB.swift`) and puts the parameter sets into the codec parameters at open; AAC with ADTS headers is handled there too. If a new container fails the same way, check `extradata` (avcC/hvcC start with byte 1) and the first bytes of a packet (`00 00 01` = Annex B).
 - A file that starts at 1.4 s instead of 0: the reader takes `format.start_time` off every timestamp (`originTicks`); look there before touching the session's shift.
 - FFmpeg's parser may overwrite `sample_rate`/`ch_layout` of codec parameters while packets are read; read parameters through `PacketReader.parameters(_:)`.
+
+## Loading over a network (2026-11-07 to 2026-11-17, the owner's share and server)
+
+- **AVPlayer gives up on a piece after about its own length** (`-12889 No response for media file in N s`, `-15628`): a piece must be
+  built well within its duration. Short pieces after long GOPs are the risky ones. Read piece times in the log (`index`: "Piece N built
+  in M ms [ahead] [after a jump]") before anything else; skill `engine-share-check` for measuring on a real file.
+- **Pre-roll must not re-read a GOP.** A converted track's decoder needs a little sound before the piece (`AudioTranscoder.prerollSeconds`:
+  DTS, AC-3, E-AC-3 0.1 s, AAC 0.2, Vorbis 0.2, Opus 0.5). Starting the read at the video keyframe before (start - pre-roll) read the
+  whole previous piece in films with 10 s GOPs (Lawrence of Arabia: every piece twice since DTS plays). `buildWindow` takes the pre-roll
+  from the previous window's stored packets, else from a keyframe at most `prerollReach` (1 s) before, else the decoder starts cold.
+- **The player asks far ahead of what it plays**: "the piece asked for last" (`FragmentCache.focus`) is not the playhead. What is kept
+  for later (stored sound packets) is anchored to the controllers' playhead (`notePlayhead`).
+- **Read-ahead:** one piece for sessions with video (big pieces, the picture's 48 MB budget); about 30 s for sound-only sessions (the
+  engine's own player). A read-ahead gives way to any waiting request whose fragment is not built (`requestWaiting`).
+- **A sound switch on the AVPlayer path stops the whole film about 0.8 s** even when the new track's pieces are in memory: AVPlayer's
+  own wait (also with `playImmediately` right after the switch: tried, no change). Only the direct player avoids it.
+- **Jumps in transport streams** go by byte position (`PacketReader.interpolatedSeek`), landing 2 to 5 s before the target; FFmpeg's
+  own search reads packet after packet and took minutes in a 27 GB Blu-ray stream over a network.
+- A changing PPS in a Blu-ray stream must stay in the samples (`PacketReader.inBandSets`), or the hardware decoder fails after the first
+  GOP (picture lost, sound on).
+- Details: RESEARCH 28 to 30, 32 and 33.

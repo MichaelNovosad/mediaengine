@@ -38,10 +38,11 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 - Every public symbol has DocC. API changes are checked with `swift package diagnose-api-breaking-changes` once 1.0 exists.
 - Logging with `os.Logger`; file names and paths are `.private`.
 - No new third-party component without checking its license against the LGPL-only rule and recording it in the license report.
-- Git: repo is created in E0. Commit only when asked. **No `Co-Authored-By: Claude` trailers** (standing instruction from the owner). Never commit media or build products.
+- Git: repo is created in E0. A finished big piece is committed without asking (owner, 2026-11-17; skill `commit-with-tests`), never pushed. **No `Co-Authored-By: Claude` trailers** (standing instruction from the owner). Never commit media or build products.
 
 ## Working rules
 
+- **Since 2026-11-17 (owner): tests are written alongside the implementation, the tests that cover the changed code run before a commit, and each finished big piece of work is committed without asking** (skill `commit-with-tests`). Broad checks (`scripts/check.sh`, `scripts/verify.sh`, simulators, UI and purchase tests, sanitizers, library rebuilds) still run only on the owner's word. The rule below is the older one, kept for what it says about light builds.
 - **Tests run only when the owner says so** (owner, 2026-10-30: running new tests is good practice, but it over-complicated the work). Without the owner's word a change is checked by compiling it (`swift build` for the package, at background priority) and nothing else; "commit" means compile, then commit; "check", "test" or "check and then commit" means the tests below. Every report says which tests were not run.
 - When the owner asks for tests: `scripts/check.sh` (about 30 s), `scripts/verify.sh --quick` before reporting a step done, `scripts/verify.sh` before a commit, `--sims` (simulators) and `--deep` (sanitizers, benchmark) only when the owner asks; tick the acceptance boxes with evidence and list what is unverified. The git hooks (`scripts/install-hooks.sh`) run the quick check on commit and `verify --quick` on push. Details: skill `engine-verify`.
 - Hardware-only items are tagged `[device]`; write a short device test script for the owner.
@@ -65,6 +66,13 @@ export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 - `engine-finish-step`: the end-of-step ritual (PROGRESS, criteria, RESEARCH, commit rules, no Claude trailer).
 - `engine-rebuild-ffmpeg`: changing profiles, rebuilding frameworks, the sanitized variant, licensing guard rails.
 - `engine-playback-debug`: debugging the HLS fMP4 remux path and the lessons already paid for.
+- `commit-with-tests`: tests with every change, the narrow tests before a commit, a commit after each big piece (owner, 2026-11-17).
+- `engine-share-check`: measuring the owner's real films from the mounted share with a temporary, muted program; reading the app's log.
+- `engine-software-player`: the engine's own player (software path): its clock rules, speed in debug builds, jumps, the sound it gets
+  from the remuxer.
+- `engine-codec-profile`: switching an opt-in codec profile on or off, from the profile JSON to the app (VC-1, DTS core).
+- `engine-disc-folders`: DVD and Blu-ray folders: titles from IFO files, the time map, disc subtitles, languages from IFO and CLPI.
+- In PlayerApp: `platform-scope` (which platforms are built; visionOS out since 2026-11-17 and how to bring it back).
 
 ## Status
 

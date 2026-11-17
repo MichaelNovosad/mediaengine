@@ -1,4 +1,5 @@
 internal import FFmpegLGPL
+import Accelerate
 import CoreVideo
 import Foundation
 
@@ -110,9 +111,12 @@ final class PixelBufferConverter {
     }
 
     // MARK: Planes
-
-    /// A sample at `depth` bits as the 10-bit value that sits in the upper bits of a 16-bit word (P010 and its relatives).
-    @inline(__always) private static func highAligned(_ value: UInt16, depth: Int) -> UInt16 { (value << UInt16(16 - depth)) & 0xFFC0 }
+    //
+    // The loops below run once per sample (two million per 1080p picture). They are plain `while` loops over pointers: in a debug
+    // build (the app run from Xcode) a `for x in 0..<width` loop goes through the generic range iterator for every sample, and the
+    // colour planes of one 1080p picture took longer than the picture lasts, so a VC-1 Blu-ray played two to sixteen pictures a
+    // second and dropped the rest (the app's owner, 2026-11-17: Lost in Translation). The usual case, 8-bit 4:2:0, goes through
+    // vImage, which is optimised in every build.
 
     private func copyLuma(_ frame: UnsafeMutablePointer<AVFrame>, to buffer: CVPixelBuffer, width: Int, height: Int, layout: Layout) {
         guard let destination = CVPixelBufferGetBaseAddressOfPlane(buffer, 0), let plane = frame.pointee.data.0 else { return }
@@ -124,8 +128,10 @@ final class PixelBufferConverter {
                 memcpy(destination + row * destinationStride, from, width)
             } else {
                 let line = destination.advanced(by: row * destinationStride).assumingMemoryBound(to: UInt16.self)
+                let shift = UInt16(16 - layout.sourceBits)
                 from.withMemoryRebound(to: UInt16.self, capacity: width) { samples in
-                    for x in 0..<width { line[x] = Self.highAligned(samples[x], depth: layout.sourceBits) }
+                    var x = 0
+                    while x < width { line[x] = (samples[x] &<< shift) & 0xFFC0; x += 1 }
                 }
             }
         }
@@ -140,7 +146,8 @@ final class PixelBufferConverter {
                 if layout.bits == 8 { memset(destination + row * destinationStride, 128, width * 2) }
                 else {
                     let line = destination.advanced(by: row * destinationStride).assumingMemoryBound(to: UInt16.self)
-                    for x in 0..<(width * 2) { line[x] = 512 << 6 }
+                    var x = 0
+                    while x < width * 2 { line[x] = 512 << 6; x += 1 }
                 }
             }
             return
@@ -153,29 +160,53 @@ final class PixelBufferConverter {
         let uStride = Int(frame.pointee.linesize.1), vStride = Int(frame.pointee.linesize.2)
         // Where in the source plane the chroma sample of buffer position (x, row) is (equal subsampling: the same place).
         let sameGrid = layout.chromaWidthShift == layout.sourceChromaWidthShift && layout.chromaHeightShift == layout.sourceChromaHeightShift
+        if sameGrid, layout.bits == 8, Self.interleave8(u: u, uStride: uStride, v: v, vStride: vStride, into: destination,
+                                                         stride: destinationStride, width: width, height: height) { return }
+        let widthShift = layout.chromaWidthShift, sourceWidthShift = layout.sourceChromaWidthShift
+        let shift = UInt16(16 - layout.sourceBits)
         for row in 0..<height {
             let sourceRow = sameGrid ? row : (row << layout.chromaHeightShift) >> layout.sourceChromaHeightShift
+            var x = 0
             if layout.bits == 8 {
                 let line = destination.advanced(by: row * destinationStride).assumingMemoryBound(to: UInt8.self)
                 let uRow = u + sourceRow * uStride, vRow = v + sourceRow * vStride
-                for x in 0..<width {
-                    let sx = sameGrid ? x : (x << layout.chromaWidthShift) >> layout.sourceChromaWidthShift
+                while x < width {
+                    let sx = sameGrid ? x : (x &<< widthShift) &>> sourceWidthShift
                     line[2 * x] = uRow[sx]; line[2 * x + 1] = vRow[sx]
+                    x += 1
                 }
             } else {
                 let line = destination.advanced(by: row * destinationStride).assumingMemoryBound(to: UInt16.self)
                 let sourceWidth = (Int(frame.pointee.width) + (1 << layout.sourceChromaWidthShift) - 1) >> layout.sourceChromaWidthShift
                 (u + sourceRow * uStride).withMemoryRebound(to: UInt16.self, capacity: sourceWidth) { uRow in
                     (v + sourceRow * vStride).withMemoryRebound(to: UInt16.self, capacity: sourceWidth) { vRow in
-                        for x in 0..<width {
-                            let sx = sameGrid ? x : (x << layout.chromaWidthShift) >> layout.sourceChromaWidthShift
-                            line[2 * x] = Self.highAligned(uRow[sx], depth: layout.sourceBits)
-                            line[2 * x + 1] = Self.highAligned(vRow[sx], depth: layout.sourceBits)
+                        while x < width {
+                            let sx = sameGrid ? x : (x &<< widthShift) &>> sourceWidthShift
+                            line[2 * x] = (uRow[sx] &<< shift) & 0xFFC0
+                            line[2 * x + 1] = (vRow[sx] &<< shift) & 0xFFC0
+                            x += 1
                         }
                     }
                 }
             }
         }
+    }
+
+    /// 8-bit chroma planes of the same size as the buffer's, interleaved into its CbCr plane by vImage. `false` if vImage refused.
+    private static func interleave8(u: UnsafeMutablePointer<UInt8>, uStride: Int, v: UnsafeMutablePointer<UInt8>, vStride: Int,
+                                    into destination: UnsafeMutableRawPointer, stride: Int, width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0 else { return true }
+        let uPlane = vImage_Buffer(data: UnsafeMutableRawPointer(u), height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: uStride)
+        let vPlane = vImage_Buffer(data: UnsafeMutableRawPointer(v), height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: vStride)
+        let status = withUnsafePointer(to: uPlane) { uPointer in
+            withUnsafePointer(to: vPlane) { vPointer in
+                var sources: [UnsafePointer<vImage_Buffer>?] = [uPointer, vPointer]
+                var channels: [UnsafeMutableRawPointer?] = [destination, destination + 1]
+                return vImageConvert_PlanarToChunky8(&sources, &channels, 2, 2, vImagePixelCount(width), vImagePixelCount(height),
+                                                     stride, vImage_Flags(kvImageNoFlags))
+            }
+        }
+        return status == kvImageNoError
     }
 
     // MARK: Colour and shape

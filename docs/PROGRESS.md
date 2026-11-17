@@ -4,12 +4,13 @@
 
 ## Right now
 
-- **2026-11-17 (committed at the app owner's word, compiled only):** DVD titles as one film with chapters, subtitles and track
-  switching; Blu-ray subtitles drawn and switched; jumps in transport and program streams by byte position; the VLC-style sound
-  rejoin in the engine's own player; **VC-1 switched on** (`vc1Software` in `extended-plus`; the FFmpeg rebuild was still running at
-  the commit). Next: finish the rebuild (`scripts/package-xcframework.sh core+extended+dtsCore+h264Software+hevcSoftware+audioFallback+vc1Software`,
-  `MEDIAENGINE_VARIANTS=… scripts/check-licenses.sh`), play Lost in Translation (VC-1, DTS, PGS) from the share, then the owner's
-  test. Details: Done 2026-11-17 (five entries).
+- **2026-11-17 (night, not committed): visionOS left out; VC-1 plays.** visionOS: no slices, platform, samples or simulator runs on
+  `main`; the `visionos` branch (at `441dcf6`, local) keeps the state before. `extended-plus` repackaged with three slices, licence check
+  passed, exported to `dist/package` (the app's copy was still the one of 2026-11-12 without VC-1: the owner's "VC-1 needs an optional
+  module"). Lost in Translation then fell behind and stopped after jumps; fixed the same night (RESEARCH 31): 24 pictures a second in a
+  debug build, jumps of 2 to 3 s over the share. Compiled (engine with tests, the app for macOS and the iOS simulator); no test run.
+  Left: a jump still waits about 2 s for the sound, which the software path reads a second time (the direct player would end that).
+  Details: Done 2026-11-17 (night, two entries).
 - **2026-11-12 (committed without compiling, at the app owner's word; the owner builds and tests):** Apple first: H.264, HEVC, AAC,
   AC-3 and E-AC-3 go to an engine decoder only when this device's Apple decoder refuses the stream; Dolby Vision 5 and 8 go to Apple as
   Dolby Vision; the DTS core (patched FFmpeg); `MediaEngine.disabledProfiles` for country rules; the variant `extended-plus`. RESEARCH
@@ -112,6 +113,10 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
   **"Yes, switch it on"** (VC-1, as for DTS: risk accepted, not a legal clearance). Plan: an opt-in profile `vc1Software` in
   `extended-plus`, FFmpeg rebuilt, the film played muted from the share. Status: see Done 2026-11-17 (VC-1).
 
+- 2026-11-17 (the app's owner) **"Exclude visionOS completely from this release … I don't want anything to be built for it right now
+  (just create a separate branch that will hold changes related to it but do not update it until I tell you to). We will continue to
+  work in main branch on iOS, iPadOS and macOS."** Status: see Done 2026-11-17 (visionOS out).
+
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
 ### Deferred after v1 (decided while working; revisit after the release)
@@ -140,6 +145,74 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-17 (night, very last) **Pieces read once again; the sound kept around the playhead** (the app's owner: "it plays a few
+  seconds and then is stuck", "loads the sound as if it never loaded before", "10 November was better"). `buildWindow` takes a converted
+  track's pre-roll from the window before when it is in memory and otherwise reads from a keyframe at most 1 s earlier
+  (`prerollReach`), instead of the keyframe before the pre-roll (a whole 10 s piece in Lawrence of Arabia, since DTS is converted);
+  `RemuxSession.notePlayhead` (called by both controllers through `PlaybackSession.notePlayhead`) anchors the trimming of the stored
+  sound; a conversion over 0.3 s is logged. RESEARCH 33. **Evidence** (temporary program, network-like source, muted): Lawrence's 10 s
+  pieces in about 2 s (the owner's log: 2.5 to 5.2 s), no stall in steady playback, a switch and a jump play on; Lost in Translation
+  without a stall in 40 s. Compiled. **Not run:** any test; not tried with Eiga's SMB client or on an iPhone. The temporary program's
+  folder `build/vc1diag` is still there (a safety check refused its removal): delete it by hand.
+- 2026-11-17 (night, last) **The engine's own player: sound read and converted 30 s ahead, every sound track kept in memory, the
+  picture never waits for the sound, the sound joins the picture with a seek** (the app's owner: "fix and implement improves now").
+  `RemuxSession`: `readAhead` builds and converts up to `soundLookahead` (30 s) for sessions without video (one piece with video),
+  gives way to a request that only needs converting (`requestWaiting`); `pendingTranscodes` kept under `soundPacketBudget` (48 MB,
+  `trimPendingTranscodes`), not dropped after conversion, cleared on `close`. `OverlayFeed.pictureHistory` 16 → 128 windows (within its
+  24 MB). `SoftwareController`: no hold of the picture for the sound; small drifts the picture follows, larger ones and a stopped sound
+  are joined by `joinSound` (pause, exact seek ahead of the picture, start on the host time; lead from the last seek's time); log lines
+  "Sound joins the picture…" (category `player`). RESEARCH 32. **Evidence** (temporary program, muted, from the share, debug build):
+  Lost in Translation, two sound switches: the picture 24 a second without a drop, the new track's pieces in 24 to 26 ms from memory,
+  one join each, in step after; a jump of 3.9 s into a part never read; Labyrinth through AVPlayer: switches and a jump play on.
+  **Left:** after a jump into a part never read, three or four sound drop-outs in the first 15 to 20 s (two readers on one link); an
+  AVPlayer-path switch still stops the film about 0.8 s (AVPlayer's own). **Not run:** any test; not tried in the app, on an iPhone,
+  with Eiga's SMB client, by ear. The temporary program's folder `build/vc1diag` is still there (git-ignored): its removal was refused
+  by a safety check because the session had used it as a working folder; delete it by hand.
+- 2026-11-17 (late night) **A new subtitle renderer's first frame counts as changed** (the app's owner: Lost in Translation's subtitles
+  "stuck with the first title"). After a switch of subtitle track the new renderer's first empty frames said `changed = false`, so a
+  host that redraws on `changed` (the app) kept the old track's line until the new track showed one. `SubtitleRenderer.frame(at:size:)`
+  now reports its first frame as changed. Evidence (temporary program, muted, from the share): switches 4 → 5 → 7 at 10:00, no frame
+  where the engine and an app redrawing on `changed` differ (before: the old line stayed 2 s and more). Engine compiled, exported.
+  **Open from the same request** (owner: sound sticks and jumps, especially after a jump; switch sound without stopping the picture;
+  keep every sound and subtitle track in memory while playing, cleared on close): the log shows the remux reads only one sound piece
+  ahead (`RemuxSession.readAhead`, `number + 1`) and converts DTS only when AVPlayer asks (`fragment(for:)`), pieces take 1.1 to 2.6 s
+  for 4.8 s (5 s right after a jump), and the raw packets of the other sound tracks are kept for 2 windows only (`pendingTranscodes`).
+  Plan: read and convert several pieces ahead, keep the raw packets of every sound track (and the picture subtitles) under a memory
+  budget for the session, never hold the picture for the sound. Not started.
+- 2026-11-17 (night) **VC-1 plays in the software player; jumps in transport streams land near the target** (the app's owner: "Yes,
+  fix it here", after the check below). `PixelBufferConverter`: 8-bit 4:2:0 chroma interleaved by vImage
+  (`vImageConvert_PlanarToChunky8`), the other per-sample loops as `while` loops with masking shifts (a debug build ran the generic range
+  iterator for every sample: 90 % of the feeding thread); `SoftwareVideoDecoder.receive(discardingBefore:lateBefore:)` passes over
+  pictures that are already late before converting them (counted as dropped, `takeSkippedLate()`); `PacketReader.interpolatedSeek`
+  closes in from both sides and lands 2 to 5 s before the target (it accepted a landing two minutes early); `SoftwareController` leaves
+  the clocks alone while a jump is under way (`seeking`, `seekGeneration`; play, pause and speed during a jump are kept for its end);
+  one log line per start or jump of the software player (category `player`: time to the first picture, the reader's jump, packets on
+  the way). RESEARCH 31. **Evidence** (temporary program, muted, from the owner's share, normal priority, debug build, removed
+  afterwards): Lost in Translation 24 pictures a second, none dropped (was 16 a second, 183 of 197 dropped); jumps to 62 % and 85 % in
+  2.7 and 3.1 s, then 24 a second (were 34 to 68 s, then none shown); The Neverending Story (VC-1 in Matroska) 24 a second, jumps 2.1
+  and 2.6 s; Labyrinth (H.264 through AVPlayer, the jump code shared) plays after jumps of 2.3 and 2.9 s. `swift build --build-tests`
+  (145 s) without new warnings; the app built for macOS and the iOS simulator against the exported copy. **Not run:** any test (the
+  10-bit and regridding paths of the converter changed: `ConformanceTests`, `SoftwarePipelineTests`, `InterlaceTests` cover them);
+  not tried: a release build, an iPhone, the app itself, Eiga's own SMB client, by ear.
+- 2026-11-17 (night) **visionOS out of this release; the app's engine with VC-1** (the app's owner, Backlog 2026-11-17). Removed on
+  `main`: the two visionOS slices (`SLICES` in `scripts/lib/common.sh`, the slice tables of `package-xcframework.sh`,
+  `package-subtitle-xcframework.sh`), `.visionOS` in `Package.swift` and both samples, the visionOS sample and simulator steps
+  (`check-samples.sh`, `verify.sh --sims`), the runtime check in `bootstrap.sh`, `visionOS 27` in three `#available` checks
+  (`SoftwareVideoPipeline`); docs (CLAUDE.md, README, CHANGELOG, INTEGRATION, REPLACING-FFMPEG, criteria BLD-1, BLD-4, API-1, PLT-1 to
+  PLT-4, DOC-2, E-S7, the three skills). Branch `visionos` at `441dcf6` (local, not pushed) keeps the state before. **Evidence:**
+  `package-xcframework.sh` for `extended-plus` (46 s, three slices); `MEDIAENGINE_VARIANTS=… check-licenses.sh` passed for macos, ios,
+  ios-simulator; `export-package.sh extended-plus` (the copy's framework has "SMPTE VC-1" and "Windows Media Video 9", the manifest
+  declares iOS and macOS only); `swift build --build-tests` (62 s), only the known linker warnings (core FFmpeg and LibASS built for
+  27.0). The core, extended, address and LibASS frameworks still carry the visionOS slices of their last build (not rebuilt; they lose
+  them at the next rebuild). No test run.
+  **Lost in Translation** (`BDMV/STREAM/00010.m2ts` on the share, muted, a temporary program in `build/vc1diag`): opens (0.1 s, 2.5 s
+  the first time), plan software, VC-1 Advanced 1920×1080 at 23.976, three DTS tracks to ALAC, four PGS tracks. **Does not play
+  properly:** at normal priority (debug build) about 16 pictures a second are decoded, so after 14 shown pictures every one is late and
+  dropped (183 of 197 in 12 s); after a jump to 40 % (0.7 s) no picture is decoded in the next 10 s. At background priority: about 2
+  pictures a second, and the jump took 68 s (it decodes from the keyframe before the target). FFmpeg 9.0.2's VC-1 decoder has no
+  threading (`vc1dec.c` 1403: `AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY`), so it decodes on one core. **Not known yet:** how much is the
+  debug build (pixel conversion, deinterlacer) against FFmpeg itself (a release build was not measured), whether the pictures are
+  interlaced (the host `ffprobe` has no VC-1 decoder), why nothing is decoded after a jump. Logs: `build/logs/vc1-diag-run*.log`.
 - 2026-11-17 (evening) **VC-1 switched on** (the app's owner: "Lost in Translation don't run", then "Yes, switch it on"; risk
   accepted like the DTS core, not a legal clearance; RESEARCH 3.2 point 9). Apple has no VC-1 decoder (no VC-1 codec type in the SDK's
   `CMFormatDescription.h`), so it is always ours: `profiles/vc1Software.json` (FFmpeg `vc1`, `wmv3`, the `vc1` parser),
@@ -337,6 +410,7 @@ toolchain; none blocks the release.
 | 2026-10-24 | Open: D-E11 packaging of optional codec profiles (plug-in frameworks vs variant products), decided in E4 | — |
 | 2026-11-12 | **The DTS core and H.264 Hi10P in, as opt-in profiles** (the app links them, free): plain DTS only, DTS-HD lossless, DTS Express and DTS:X code removed from the binary, DTS-HD tracks play their core; H.264 only for High 10, 4:2:2 and 4:4:4 on the software path. Replaces the 2026-10-24 Hi10P row for this. Risk accepted by the owner, not a legal clearance | Owner |
 | 2026-11-17 | **VC-1 in, as an opt-in profile** (`vc1Software`: FFmpeg `vc1` and `wmv3`, in `extended-plus`, the app links it, free). Apple decodes no VC-1, so it is always our decoder. Risk accepted by the owner, not a legal clearance (RESEARCH 3.2 point 9); TrueHD and Dolby Vision 7 stay off | Owner (app) |
+| 2026-11-17 | **visionOS is not in this release** (the app's owner, "maybe for v2"): no visionOS slices, platform, samples or simulator runs; the state of that day is kept on the `visionos` branch, not updated until the owner says so. Replaces the visionOS part of the 2026-10-24 platform row | Owner (app) |
 
 ## Handoff notes (what a fresh session must know)
 

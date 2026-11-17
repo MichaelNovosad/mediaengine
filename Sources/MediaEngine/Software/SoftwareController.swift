@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreMedia
 import Foundation
 import Observation
+import os
 
 /// Plays a file with the engine's own decoders: the pictures are decoded in software and shown on ``displayLayer`` (put
 /// it in a view with ``MediaVideoView``), the sound comes from AVPlayer through the engine's audio stream, and the two
@@ -44,9 +45,19 @@ public final class SoftwareController: PlaybackController {
     @ObservationIgnored private var wantedRate: Float = 1
     @ObservationIgnored private let videoEnded = LockedFlag()
     @ObservationIgnored private var audioFinished = false
-    @ObservationIgnored private var holdingForAudio = false
     @ObservationIgnored private var lastSoundRestart = ContinuousClock.now - .seconds(10)
+    /// The picture follows the sound over drifts up to this; a sound farther away (it came back late) joins the picture instead.
+    private static let followLimit = 0.25
+    /// A join of the sound is under way (``joinSound(_:picture:soundTime:wasPlaying:)``), and how far ahead of the picture it aims:
+    /// it grows when the sound was not ready in time.
+    @ObservationIgnored private var joiningSound = false
+    @ObservationIgnored private var joinLead = 0.6
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "player")
     @ObservationIgnored private var closed = false
+    /// A jump is under way (counted, so that a jump made while another waits for its sound is the one that starts the clocks).
+    @ObservationIgnored private var seekGeneration = 0
+    @ObservationIgnored private var seeking = false
+    @ObservationIgnored private var wantsToPlayAfterSeek = false
 
     private final class LockedFlag: @unchecked Sendable {
         private let lock = NSLock()
@@ -128,7 +139,42 @@ public final class SoftwareController: PlaybackController {
         audio?.player.setRate(wantedRate, time: time, atHostTime: host)
         pipeline.synchronizer.setRate(wantedRate, time: time, atHostTime: host)
         rate = wantedRate
-        holdingForAudio = false
+        lastSoundRestart = ContinuousClock.now            // the sound waits for its start time: not a sound that stopped
+    }
+
+    /// Brings the sound to the picture, which goes on meanwhile: the sound pauses, seeks exactly to where the picture will be a moment
+    /// later, and starts on the host time at which the picture gets there. `setRate(_:time:atHostTime:)` alone does not move an
+    /// HLS item that plays elsewhere: after a switch of sound track the sound went on 1.5 s behind the picture, and asking it again
+    /// every second changed nothing (2026-11-17).
+    private func joinSound(_ player: AVPlayer, picture: Double, soundTime: Double, wasPlaying: Bool) {
+        joiningSound = true
+        lastSoundRestart = ContinuousClock.now
+        let generation = seekGeneration
+        let target = picture + joinLead * Double(wantedRate)
+        let began = ContinuousClock.now
+        Self.logger.notice("Sound joins the picture at \(target, format: .fixed(precision: 2), privacy: .public) s (it was \(wasPlaying ? "playing" : "stopped", privacy: .public) at \(soundTime, format: .fixed(precision: 2), privacy: .public) s, the picture at \(picture, format: .fixed(precision: 2), privacy: .public) s)")
+        player.pause()
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 90_000), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            Task { @MainActor in self?.soundSought(to: target, finished: finished, generation: generation, began: began) }
+        }
+    }
+
+    private func soundSought(to target: Double, finished: Bool, generation: Int, began: ContinuousClock.Instant) {
+        joiningSound = false
+        guard finished, !closed, state == .playing, !seeking, generation == seekGeneration, let audio else { return }
+        let took = ContinuousClock.now - began
+        let seconds = Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18
+        let wait = (target - pipeline.synchronizer.currentTime().seconds) / Double(max(wantedRate, 0.1))
+        guard wait > 0.02 else {
+            // The picture got there first: aim farther ahead (by what the seek took) and try again with the next tick.
+            joinLead = min(max(seconds + 0.5, joinLead * 1.5), 4)
+            lastSoundRestart = ContinuousClock.now - .seconds(1)
+            Self.logger.notice("Sound was not ready before the picture reached \(target, format: .fixed(precision: 2), privacy: .public) s: trying again \(self.joinLead, format: .fixed(precision: 1), privacy: .public) s ahead")
+            return
+        }
+        audio.player.setRate(wantedRate, time: CMTime(seconds: target, preferredTimescale: 90_000), atHostTime: hostTime(after: wait))
+        lastSoundRestart = ContinuousClock.now
+        joinLead = min(max(seconds + 0.3, 0.6), 4)             // the next join aims as far ahead as this seek needed
     }
 
     private func stopClocks() {
@@ -143,37 +189,29 @@ public final class SoftwareController: PlaybackController {
         guard !closed else { return }
         let stats = pipeline.currentStatistics
         statistics = Statistics(decodedFrames: stats.decoded, displayedFrames: stats.queued, droppedFrames: stats.dropped)
-        guard state == .playing else { return }
+        // While a jump waits for its picture reader and its sound, the clocks are the jump's: the sound player is paused for it,
+        // and the rejoin below took that for a sound that stopped by itself, started both clocks from the old place, and after a
+        // jump that waited 53 s for its sound the picture clock stood 54 s past the target (2026-11-17, Lost in Translation).
+        guard state == .playing, !seeking else { return }
         let picture = pipeline.synchronizer.currentTime().seconds
+        session.notePlayhead(picture)
         if let audio {
             let sound = audio.item
             if !audioFinished, let length = duration ?? Optional(sound.duration.seconds), sound.currentTime().seconds >= min(length, sound.duration.seconds) - 0.15 { audioFinished = true }
             if !audioFinished {
-                if audio.player.timeControlStatus == .playing, audio.player.rate > 0 {
-                    if holdingForAudio { pipeline.synchronizer.setRate(wantedRate, time: audio.player.currentTime()); holdingForAudio = false }
-                    else if abs(audio.player.currentTime().seconds - picture) > 0.06 {
+                // The picture never waits for the sound (the app's owner, 2026-11-17: "change audio but still play video so that audio
+                // doesn't trigger a movie to stop"). While the sound plays, the picture follows it over small drifts; when the sound
+                // has stopped (its data ran out, a switch of track) or came back far from the picture, the picture goes on and the
+                // sound joins it where the picture is, as soon as it has data (at most once a second), as VLC does. Before, an empty
+                // sound buffer held the picture, and a sound that came back behind pulled the picture back with it.
+                let soundTime = audio.player.currentTime().seconds
+                let playing = audio.player.timeControlStatus == .playing && audio.player.rate > 0
+                if playing, abs(soundTime - picture) <= Self.followLimit {
+                    if abs(soundTime - picture) > 0.06 {
                         pipeline.synchronizer.setRate(wantedRate, time: audio.player.currentTime())      // the picture follows the sound
                     }
-                } else if audio.player.rate == 0 {
-                    // The sound stopped by itself. A player that does not wait to minimise stalls (it cannot: it starts at a host
-                    // time with the picture) drops its rate to 0 when its data runs out and stays there: after a switch to another
-                    // sound track it waited for the new track's first piece and fell silent while the picture went on, until a jump
-                    // started both again (the app's owner, 2026-11-17). As VLC does (the owner's wish), the picture goes on and the
-                    // sound joins it where the picture will be, as soon as it has data (tried at most once a second).
-                    if holdingForAudio {
-                        pipeline.synchronizer.setRate(wantedRate, time: pipeline.synchronizer.currentTime())
-                        holdingForAudio = false
-                    }
-                    if sound.isPlaybackLikelyToKeepUp || sound.isPlaybackBufferFull || !sound.isPlaybackBufferEmpty,
-                       ContinuousClock.now - lastSoundRestart > .seconds(1) {
-                        lastSoundRestart = ContinuousClock.now
-                        let lead = 0.15
-                        let joinAt = CMTimeAdd(pipeline.synchronizer.currentTime(), CMTime(seconds: lead * Double(wantedRate), preferredTimescale: 90_000))
-                        audio.player.setRate(wantedRate, time: joinAt, atHostTime: hostTime(after: lead))
-                    }
-                } else if !holdingForAudio, audio.item.isPlaybackBufferEmpty {
-                    pipeline.synchronizer.setRate(0, time: pipeline.synchronizer.currentTime())          // the sound is buffering: hold the picture
-                    holdingForAudio = true
+                } else if !joiningSound, ContinuousClock.now - lastSoundRestart > .seconds(1) {
+                    joinSound(audio.player, picture: picture, soundTime: soundTime, wasPlaying: playing)
                 }
             }
         }
@@ -195,6 +233,8 @@ public final class SoftwareController: PlaybackController {
     public func play() {
         switch state {
         case .ready, .paused:
+            // During a jump the clocks wait for it; it starts them when its picture and sound are there.
+            if seeking { wantsToPlayAfterSeek = true; return }
             state = .playing
             startClocks()
         case .ended:
@@ -206,6 +246,7 @@ public final class SoftwareController: PlaybackController {
 
     public func pause() {
         guard state == .playing else { return }
+        if seeking { wantsToPlayAfterSeek = false; state = .paused; return }      // the jump's clocks are stopped already
         currentTime = pipeline.synchronizer.currentTime().seconds
         stopClocks()
         state = .paused
@@ -214,13 +255,19 @@ public final class SoftwareController: PlaybackController {
     public func setRate(_ newRate: Float) {
         if newRate == 0 { pause(); return }
         wantedRate = min(max(newRate, 0.5), 2)
-        if state == .playing { startClocks() }
+        if state == .playing, !seeking { startClocks() }
     }
 
     public func seek(to time: TimeInterval) async {
         guard state != .failed, state != .loading else { return }
         let target = min(max(time, 0), duration ?? .greatestFiniteMagnitude)
-        let wasPlaying = state == .playing
+        // A jump made while another one waits keeps the first one's wish to play.
+        let wasPlaying = state == .playing || (seeking && wantsToPlayAfterSeek)
+        seekGeneration += 1
+        let generation = seekGeneration
+        seeking = true
+        joiningSound = false
+        wantsToPlayAfterSeek = wasPlaying
         stopClocks()
         videoEnded.set(false)
         audioFinished = false
@@ -228,7 +275,9 @@ public final class SoftwareController: PlaybackController {
         pipeline.synchronizer.setRate(0, time: CMTime(seconds: target, preferredTimescale: 90_000))
         await pipeline.start(at: target)
         if let audio { await audio.player.seek(to: CMTime(seconds: target, preferredTimescale: 90_000), toleranceBefore: .zero, toleranceAfter: .zero) }
-        if wasPlaying { state = .playing; startClocks() } else { state = .paused }
+        guard generation == seekGeneration, !closed else { return }              // a later jump took over
+        seeking = false
+        if wantsToPlayAfterSeek { state = .playing; startClocks() } else { state = .paused }
     }
 
     public var audioChoices: [TrackChoice] { session.audioChoices }

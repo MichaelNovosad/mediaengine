@@ -28,10 +28,12 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var prerollSeconds: Double = 0
     }
 
-    /// Source packets of a transcoded track waiting for the player to ask for them.
+    /// Source packets of a transcoded track, kept so that its fragment can be made (again) without reading the file: when the
+    /// player asks for that track, after a switch to it, or when its fragment has left the cache.
     private struct PendingTranscode {
         var packets: [MediaPacket]
         var preroll: [MediaPacket]
+        var bytes: Int { packets.reduce(0) { $0 + $1.data.count } + preroll.reduce(0) { $0 + $1.data.count } }
     }
 
     private struct CacheKey: Hashable { var stream: Int; var segment: Int }
@@ -138,8 +140,20 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private let waiting = Mutex<(next: Int, entries: [Int: Waiter])>((0, [:]))
     /// The file is read over a network (not a local file or memory): every piece read costs seconds.
     private let remote: Bool
-    /// Source packets of audio that still has to be transcoded; done only if the player asks for that track.
+    /// Source packets of every transcoded sound track, per window, under ``soundPacketBudget``: transcoded only when the player asks
+    /// for that track (or reads ahead in it), and kept afterwards, so that a switch to another sound track converts from memory
+    /// instead of reading the file again (the app's owner, 2026-11-17: "load every audio into memory while the movie is playing").
     private var pendingTranscodes: [CacheKey: PendingTranscode] = [:]
+    private var pendingBytes = 0
+    /// Memory for the source packets of the transcoded sound tracks. Three DTS tracks of a Blu-ray (about 0.56 MB/s together) keep
+    /// about a minute and a half around the playhead.
+    private static let soundPacketBudget = 48 * 1024 * 1024
+    /// How far ahead of the player's request a session without video (the engine's own player, whose sound comes from here) reads and
+    /// converts its sound. One piece was the whole margin: a piece that took longer than it plays (5 s for 4.8 s right after a jump,
+    /// over the owner's share) left the sound player without data, and the sound stopped and came back (2026-11-17).
+    private static let soundLookahead = 30.0
+    /// How far before the pre-roll a video keyframe may be for a piece to read from it when the window before is not in memory.
+    private static let prerollReach = 1.0
     /// Keyframe times (seconds) of the video stream, for seeking a little before a segment.
     private var videoKeyframes: [Double] = []
     /// Text subtitle tracks served as WebVTT renditions, and their cues once read (on first request).
@@ -171,6 +185,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private var builtCount = 0
     private let cacheBudget: Int
     private let requestEpoch = Mutex(0)
+    /// Where the player is playing (seconds on the plan's timeline), told by the controller. The player asks for pieces well ahead
+    /// of it, so "the piece asked for last" is not where it plays: the sound kept for a switch is kept around this.
+    private let playhead = Mutex<Double?>(nil)
     /// Test hook: rewrites the master playlist before it is served.
     nonisolated(unsafe) var masterTransform: ((String) -> String)?
 
@@ -410,6 +427,23 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Whether the session serves this stream (used by tests and the player item builder).
     func hasOutput(_ stream: Int) -> Bool { outputs[stream] != nil }
+
+    /// The controller's playing time (seconds on the plan's timeline).
+    func notePlayhead(_ seconds: Double) {
+        guard seconds.isFinite else { return }
+        playhead.withLock { $0 = seconds }
+    }
+
+    /// The piece that contains the playhead, if the controller told it.
+    private func playheadPiece() -> Int? {
+        guard let time = playhead.withLock({ $0 }), !plan.segments.isEmpty else { return nil }
+        var low = 0, high = plan.segments.count
+        while low < high {
+            let middle = (low + high) / 2
+            if plan.segments[middle].start <= time { low = middle + 1 } else { high = middle }
+        }
+        return max(low - 1, 0)
+    }
     /// Which windows have been read for subtitle cues so far (diagnostics and tests).
     var scannedSubtitleWindows: Set<Int> { queue.sync { subtitleWindows } }
     /// Bytes of finished fragments held in the cache right now (diagnostics and tests).
@@ -419,7 +453,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     func close() {
         cancellation.cancel()
-        queue.sync { fragments.withLock { $0.removeAll() } }
+        queue.sync {
+            fragments.withLock { $0.removeAll() }
+            pendingTranscodes.removeAll()
+            pendingBytes = 0
+        }
     }
 
     /// Reads packets from the start of the file until every stream has a handful. Video yields its whole first run
@@ -710,21 +748,41 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         return data.map { Resource(data: $0, contentType: output.kind == .video ? "video/mp4" : "audio/mp4") }
     }
 
-    /// Builds the next window while the player consumes this one, unless a newer request arrived. The build gives way as soon
-    /// as the player asks for a piece that is not built (a jump), so that the jump does not wait for a piece nobody wants.
+    /// Builds the next windows while the player consumes this one, until a newer request arrives, and converts the asked track in them,
+    /// so that the player's next requests find their fragments ready. A session with video reads one piece ahead (its pieces are big,
+    /// and the picture's budget holds a few); a session of sound only (the engine's own player) reads about ``soundLookahead`` seconds
+    /// ahead. A build gives way as soon as the player asks for a piece that is not built (a jump), so that the jump does not wait for a
+    /// piece nobody wants.
     private func readAhead(after number: Int, stream: Int, epoch: Int) {
         guard number + 1 < plan.segments.count else { return }
-        let next = CacheKey(stream: stream, segment: number + 1)
+        var last = number + 1
+        if videoIndex == nil {
+            var covered = plan.segments[last].duration
+            while last + 1 < plan.segments.count, covered < Self.soundLookahead, last - number < 16 {
+                last += 1
+                covered += plan.segments[last].duration
+            }
+        }
+        let through = last
         queue.async { [self] in
-            guard requestEpoch.withLock({ $0 }) == epoch, !cancellation.isCancelled,
-                  fragments.withLock({ $0.entries[next] == nil }), pendingTranscodes[next] == nil else { return }
-            let began = DispatchTime.now()
-            do {
-                try buildWindow(number + 1, ahead: true)
-                noteBuilt(number + 1, since: began, asked: false)
-            } catch let gaveWay as GaveWay {
-                Self.logger.notice("Piece \(number + 1, privacy: .public) read ahead stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player asked for piece \(gaveWay.wanted ?? -1, privacy: .public)")
-            } catch {}
+            for next in (number + 1)...through {
+                guard requestEpoch.withLock({ $0 }) == epoch, !cancellation.isCancelled else { return }
+                let key = CacheKey(stream: stream, segment: next)
+                if fragments.withLock({ $0.entries[key] != nil }) { continue }
+                let began = DispatchTime.now()
+                do {
+                    if pendingTranscodes[key] == nil {
+                        try buildWindow(next, ahead: true)
+                        noteBuilt(next, since: began, asked: false)
+                    }
+                    _ = try fragment(for: key)                  // a transcoded track: converted now, not when the player asks
+                } catch let gaveWay as GaveWay {
+                    Self.logger.notice("Piece \(next, privacy: .public) read ahead stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player asked for piece \(gaveWay.wanted ?? -1, privacy: .public)")
+                    return
+                } catch {
+                    return
+                }
+            }
         }
     }
 
@@ -795,17 +853,34 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         // Audio from separate files has its own reader and is built when asked for; a window of this file is not its business.
         let mainOutputs = outputs.filter { externalAudio[$0.key] == nil }
         let maxPreroll = mainOutputs.values.map(\.prerollSeconds).max() ?? 0
+        // The pre-roll of every stateful sound track from the window before, when all of them are in memory.
+        var storedPreroll: [Int: [MediaPacket]]?
+        if number > 0, maxPreroll > 0 {
+            var found: [Int: [MediaPacket]] = [:]
+            for (stream, output) in mainOutputs where output.prerollSeconds > 0 {
+                guard let before = pendingTranscodes[CacheKey(stream: stream, segment: number - 1)] else { found = [:]; break }
+                let base = reader.timeBase(stream)
+                found[stream] = before.packets.filter { base.seconds($0.pts) >= segment.start - output.prerollSeconds }
+            }
+            if !found.isEmpty { storedPreroll = found }
+        }
         if number == 0 {
             try reader.rewind()
         } else {
-            // A stateful audio decoder needs to hear a little before the segment: start from the keyframe at or
-            // before (start - pre-roll). Video packets before the segment keyframe are skipped below.
-            // Only a keyframe close before: without a complete index (time-grid pieces) the nearest known one can be near the
-            // start of the film, and seeking there would read everything up to the piece.
+            // A stateful audio decoder needs to hear a little before the segment (``AudioTranscoder/prerollSeconds(_:)``). When the
+            // window before was read (playing on), its packets are in memory and give that; the read starts at the piece. Otherwise
+            // from the keyframe at or before (start - pre-roll), but only one close before: with a video keyframe every 10 s (Lawrence
+            // of Arabia) that read the whole piece before again for a tenth of a second of DTS, every piece twice over the network
+            // (3 to 5 s a piece, the player stalling; the app's owner, 2026-11-17). Farther than that, the decoder starts cold on
+            // that one piece (after a jump), a few milliseconds of warm-up. Video packets before the segment keyframe are skipped below.
             var from = segment.start
-            if maxPreroll > 0 {
+            if maxPreroll > 0, storedPreroll == nil {
                 let wanted = segment.start - maxPreroll
-                from = videoKeyframes.last { $0 <= wanted && wanted - $0 <= 30 } ?? wanted
+                if videoIndex == nil {
+                    from = wanted                                  // sound only: a seek lands right there
+                } else if let keyframe = videoKeyframes.last(where: { $0 <= wanted }), wanted - keyframe <= Self.prerollReach {
+                    from = keyframe
+                }
             }
             // Transport and program streams are sought by decode time: start a few frames early (the reordering depth), or the
             // seek lands just after the piece's own keyframe and the piece starts at the next one, a GOP late (2026-11-08: Blu-ray
@@ -831,7 +906,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             if cancellation.isCancelled { throw MediaError.cancelled }
             // Every 16 packets (a fraction of a second over a network): whether the player still wants this piece.
             if read % 16 == 0 {
-                if ahead, let wanted = pieceWantedInstead(of: number) { throw GaveWay(wanted: wanted) }
+                if ahead, let wanted = requestWaiting(besides: number) { throw GaveWay(wanted: wanted) }
                 if let abandoned, abandoned(), let wanted = pieceWantedInstead(of: number) { throw GaveWay(wanted: wanted) }
             }
             read += 1
@@ -859,9 +934,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                 if !videoDone { packets[packet.stream, default: []].append(packet) }
             } else {
                 if seconds < segment.start && number > 0 {
-                    // Warm-up audio for a stateful decoder: the packets just before the segment, in order.
+                    // Warm-up audio for a stateful decoder: the packets just before the segment, in order (unless they are in memory).
                     let window = outputs[packet.stream]?.prerollSeconds ?? 0
-                    if window > 0, seconds >= segment.start - window { prerollPackets[packet.stream, default: []].append(packet) }
+                    if storedPreroll == nil, window > 0, seconds >= segment.start - window { prerollPackets[packet.stream, default: []].append(packet) }
                     continue
                 }
                 if seconds >= segment.end && !isLast { audioDone.insert(packet.stream); continue }
@@ -873,30 +948,57 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             reorder.repair(&video)
             packets[videoIndex] = video
         }
+        if let storedPreroll { prerollPackets = storedPreroll }
 
         subtitleWindows.insert(number)
         overlayFeed?.record(window: number, events: overlayEvents)
-        pendingTranscodes = pendingTranscodes.filter { abs($0.key.segment - number) <= 2 }      // keep only nearby windows
         for (stream, output) in mainOutputs {
             let list = packets[stream] ?? []
             let key = CacheKey(stream: stream, segment: number)
             if output.transcoder != nil, !list.isEmpty {
-                pendingTranscodes[key] = PendingTranscode(packets: list, preroll: prerollPackets[stream] ?? [])
+                let pending = PendingTranscode(packets: list, preroll: prerollPackets[stream] ?? [])
+                pendingBytes += pending.bytes - (pendingTranscodes[key]?.bytes ?? 0)
+                pendingTranscodes[key] = pending
                 continue
             }
             let data = output.writer.fragment(sequence: UInt32(number + 1), packets: list)
                 ?? output.writer.emptyFragment(sequence: UInt32(number + 1), atSeconds: segment.start)
             store(key, data)
         }
+        trimPendingTranscodes(keeping: number)
     }
 
-    /// The finished fragment for a track and segment: from the cache, or transcoded now from the stored packets.
+    /// Keeps the stored sound packets under their budget: the windows farthest from where the player plays go first (a window behind
+    /// it counts twice its distance: ahead is what plays next), never the window just read. It was the piece asked for last, which is
+    /// well ahead of the playhead, so the sound around the playhead, the part a switch of track needs, was dropped first and a switch
+    /// read the file again (the app's owner, 2026-11-17: "it still loads the sound as if it never loaded before"). Call on `queue`.
+    private func trimPendingTranscodes(keeping number: Int) {
+        guard pendingBytes > Self.soundPacketBudget else { return }
+        let anchor = playheadPiece() ?? fragments.withLock { $0.focus }
+        func distance(_ segment: Int) -> Int { segment < anchor ? (anchor - segment) * 2 : segment - anchor }
+        let victims = pendingTranscodes.keys.filter { $0.segment != number }.sorted { a, b in
+            let da = distance(a.segment), db = distance(b.segment)
+            return da != db ? da > db : a.segment < b.segment
+        }
+        for key in victims {
+            guard pendingBytes > Self.soundPacketBudget else { break }
+            if let removed = pendingTranscodes.removeValue(forKey: key) { pendingBytes -= removed.bytes }
+        }
+    }
+
+    /// The finished fragment for a track and segment: from the cache, or transcoded now from the stored packets (which stay, for a
+    /// later switch back or a fragment that left the cache).
     private func fragment(for key: CacheKey) throws -> Data? {
         if let hit = touch(key) { return hit }
-        guard let pending = pendingTranscodes.removeValue(forKey: key), let output = outputs[key.stream],
+        guard let pending = pendingTranscodes[key], let output = outputs[key.stream],
               let transcoder = output.transcoder else { return nil }
+        let began = DispatchTime.now()
         let encoded = try transcoder.transcode(pending.packets, preroll: pending.preroll, stream: key.stream)
         transcodeCount += 1
+        let took = Self.milliseconds(since: began)
+        if took > 300 {
+            Self.logger.notice("Sound of piece \(key.segment, privacy: .public), track \(key.stream, privacy: .public): converted in \(took, privacy: .public) ms")
+        }
         let data = output.writer.fragment(sequence: UInt32(key.segment + 1), packets: encoded)
             ?? output.writer.emptyFragment(sequence: UInt32(key.segment + 1), atSeconds: plan.segments[key.segment].start)
         store(key, data)
@@ -919,6 +1021,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private func liveWaiters(for number: Int) -> Int {
         let waiters = waiting.withLock { Array($0.entries.values) }
         return waiters.filter { $0.key.segment == number && !$0.abandoned() }.count
+    }
+
+    /// The piece a waiting request wants when nobody waits for `number` and its fragment is not built, even if it only needs
+    /// converting from stored packets: a read-ahead build gives way to it. (A switch of sound track asks for the new track's pieces
+    /// around the playhead, all in memory; it waited for the read-ahead's whole piece of the old track.) Call on `queue`.
+    private func requestWaiting(besides number: Int) -> Int? {
+        let waiters = waiting.withLock { Array($0.entries.values) }.filter { !$0.abandoned() }
+        guard !waiters.contains(where: { $0.key.segment == number }) else { return nil }
+        return waiters.first { waiter in fragments.withLock { $0.entries[waiter.key] == nil } }?.key.segment
     }
 
     /// The piece a waiting request wants when nobody waits for `number` and that piece is neither built nor waiting to be

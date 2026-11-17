@@ -95,20 +95,35 @@ final class SoftwareVideoDecoder {
         return framePeriod * Double(2 + max(repeatFields, 0)) / 2
     }
 
+    /// Pictures passed over by ``receive(discardingBefore:lateBefore:)`` because they were already late, since the last call of
+    /// ``takeSkippedLate()``. Only the feeding task touches the decoder.
+    private var skippedLate = 0
+
+    /// How many late pictures were passed over without being converted since the last call.
+    func takeSkippedLate() -> Int { defer { skippedLate = 0 }; return skippedLate }
+
     /// The next finished picture, or `nil` when the decoder needs more packets (or has none left). Pictures that end before
     /// `threshold` (less than half of them at or after it: the ones a seek decodes on the way to its target) are passed over
     /// without being converted; converting and deinterlacing them cost more than decoding them, and after a jump into a DVD
-    /// the picture came back seconds late in a debug build.
-    func receive(discardingBefore threshold: Double = -.infinity) -> DecodedFrame? {
+    /// the picture came back seconds late in a debug build. Pictures that end before `lateBefore` (the player's clock: they
+    /// would be dropped anyway) are passed over the same way and counted (``takeSkippedLate()``), so that a player that fell
+    /// behind catches up instead of converting picture after picture only to throw it away.
+    func receive(discardingBefore threshold: Double = -.infinity, lateBefore late: Double = -.infinity) -> DecodedFrame? {
         while avcodec_receive_frame(context, frame) >= 0 {
             defer { av_frame_unref(frame) }
-            if threshold > -.infinity, frame.pointee.best_effort_timestamp != Int64.min {
+            let isInterlaced = frame.pointee.flags & AV_FRAME_FLAG_INTERLACED != 0
+            if threshold > -.infinity || late > -.infinity, frame.pointee.best_effort_timestamp != Int64.min {
                 let duration = Self.displayDuration(packetDuration: frame.pointee.duration > 0 ? timeBase.seconds(frame.pointee.duration) : nil,
                                                     framePeriod: defaultDuration, repeatFields: Int(frame.pointee.repeat_pict))
-                if timeBase.seconds(frame.pointee.best_effort_timestamp) + duration / 2 < threshold { continue }
+                let start = timeBase.seconds(frame.pointee.best_effort_timestamp)
+                if start + duration / 2 < threshold { continue }
+                if start + duration < late {
+                    skippedLate += 1
+                    if isInterlaced { skipDeinterlacing(next: 50) }
+                    continue
+                }
             }
             if let aspect = containerAspect { frame.pointee.sample_aspect_ratio = aspect }
-            let isInterlaced = frame.pointee.flags & AV_FRAME_FLAG_INTERLACED != 0
             let topFieldFirst = frame.pointee.flags & AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
             let behind = skipping.withLock { count -> Bool in
                 guard count > 0 else { return false }

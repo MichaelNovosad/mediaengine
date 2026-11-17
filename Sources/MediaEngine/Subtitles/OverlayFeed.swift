@@ -47,8 +47,11 @@ final class OverlayFeed: Sendable {
     private let state = Mutex(State())
     /// Bytes of blocks kept at most; the windows read longest ago go first. Text tracks of a whole film take a few hundred KB.
     static let byteBudget = 24 * 1024 * 1024
-    /// Windows (about six seconds each) for which the blocks of unwatched picture streams are kept.
-    static let pictureHistory = 16
+    /// Windows (about five to ten seconds each) for which the blocks of unwatched picture streams are kept, within ``byteBudget``:
+    /// 16 at first, raised so that a switch to another picture track finds its blocks in memory for the last quarter of an hour or so
+    /// (the app's owner, 2026-11-17: "load every audio and subtitles into the memory while the movie is playing"). Blu-ray PGS tracks
+    /// take a few tens of KB a second together, so the byte budget, not this count, is what usually limits them.
+    static let pictureHistory = 128
     /// Seconds ahead of the playhead within which a window that has not been read yet is waited for (the player reads ahead).
     static let waitHorizon = 10.0
     /// The playhead is taken this much later when windows are matched to it: a player paused a hair before a window's end

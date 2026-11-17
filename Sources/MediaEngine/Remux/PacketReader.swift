@@ -518,11 +518,15 @@ final class PacketReader: PacketSource {
         parameters.pointee.extradata_size = Int32(size)
     }
 
-    /// A jump in an MPEG transport or program stream by byte position: the file's average byte rate gives a guess a few seconds
-    /// early; the first timed packet there says where it landed, and a guess that landed after the time steps back. FFmpeg's own
-    /// search for a time in such a file without an index read packet after packet: a jump in a 27 GB Blu-ray stream over a network
-    /// took 2 to 5 s, and a subtitle switch (a reader of its own, without the keyframes the remuxer had met) minutes (the app's
-    /// owner, 2026-11-17: Labyrinth). `false` when the file gives no length or duration to interpolate with.
+    /// A jump in an MPEG transport or program stream by byte position. The file's average byte rate gives a first guess a little
+    /// before the time; the first timed packet there says where it landed, and the search closes in from both sides (between the
+    /// last landing before the time and the first one after it) until it lands at most `slack` seconds before the time. FFmpeg's
+    /// own search for a time in such a file without an index read packet after packet: a jump in a 27 GB Blu-ray stream over a
+    /// network took 2 to 5 s, and a subtitle switch (a reader of its own, without the keyframes the remuxer had met) minutes (the
+    /// app's owner, 2026-11-17: Labyrinth). The first version accepted any landing before the time: in Lost in Translation (VC-1,
+    /// 5.2 MB/s on average) a jump to 55 % landed about two minutes early, and the picture and the sound each read 600 MB before
+    /// showing anything (53 s over the owner's share; 2026-11-17). `false` when the file gives no length or duration to interpolate
+    /// with, or no landing at or before the time was found.
     private func interpolatedSeek(to seconds: Double) throws -> Bool {
         // The length FFmpeg measured, else the one the session knows (a quick reopening skips FFmpeg's estimate: the first jumps in
         // a Blu-ray stream, a subtitle reader's, then fell back to FFmpeg's slow search).
@@ -530,18 +534,39 @@ final class PacketReader: PacketSource {
         guard let length = source.length, length > 0, let total = measured ?? durationHint, total > 0 else { return false }
         let rate = Double(length) / total
         guard rate.isFinite, rate > 0 else { return false }
-        let early = 6.0
-        var guess = Int64(max(0, (seconds - early) * rate))
-        for _ in 0..<5 {
+        // Aimed 2 s before the time and taken when it lands up to 5 s before it: the reader then reads on to the time, and the
+        // decoder or the remuxer starts at the first keyframe it meets.
+        let lead = 2.0, slack = 5.0
+        let aim = seconds - lead
+        var below: (position: Int64, time: Double)?          // the latest landing at or before the time
+        var above: (position: Int64, time: Double)?          // the earliest landing after it
+        var guess = Int64(max(0, aim * rate))
+        var tried = Set<Int64>()
+        for _ in 0..<8 {
             guess = max(0, min(guess, length - 1))
+            guard tried.insert(guess).inserted else { break }
             if cancellation.isCancelled { throw MediaError.cancelled }
-            guard av_seek_frame(format, -1, guess, AVSEEK_FLAG_BYTE) >= 0, let landed = firstPacketTime() else { return false }
-            if landed <= seconds || guess == 0 {
-                return av_seek_frame(format, -1, guess, AVSEEK_FLAG_BYTE) >= 0
+            guard av_seek_frame(format, -1, guess, AVSEEK_FLAG_BYTE) >= 0, let landed = firstPacketTime() else { break }
+            if landed <= seconds {
+                if below.map({ landed > $0.time }) ?? true { below = (guess, landed) }
+                if landed >= seconds - slack { break }
+            } else if guess == 0 {
+                below = (0, landed)                              // the time is before the file's first packet
+                break
+            } else if above.map({ landed < $0.time }) ?? true {
+                above = (guess, landed)
             }
-            guess -= Int64((landed - seconds + early) * rate)
+            if let low = below, let high = above, high.time > low.time, high.position > low.position {
+                let fraction = min(max((aim - low.time) / (high.time - low.time), 0.05), 0.95)
+                guess = low.position + Int64(Double(high.position - low.position) * fraction)
+            } else if let low = below {
+                guess = low.position + Int64((aim - low.time) * rate)
+            } else if let high = above {
+                guess = high.position - Int64((high.time - aim) * rate)
+            }
         }
-        return false
+        guard let below else { return false }
+        return av_seek_frame(format, -1, below.position, AVSEEK_FLAG_BYTE) >= 0
     }
 
     /// The time (engine timeline) of the first packet with a timestamp from the read position, reading at most 2,000 packets.

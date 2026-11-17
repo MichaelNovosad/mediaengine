@@ -155,6 +155,7 @@ public final class AVPlayerController: PlaybackController {
 
     private func refresh() {
         currentTime = max(item.currentTime().seconds.isFinite ? item.currentTime().seconds : 0, 0)
+        session.notePlayhead(currentTime)
         rate = player.rate
         switch item.status {
         case .failed:

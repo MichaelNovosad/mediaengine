@@ -2,6 +2,7 @@ internal import FFmpegLGPL
 import AVFoundation
 import CoreMedia
 import Foundation
+import os
 import Synchronization
 
 /// Reads, decodes and queues the pictures of one video stream for an `AVSampleBufferDisplayLayer`. The layer is attached to
@@ -25,7 +26,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     /// The clock the pictures follow (set its rate and time to play, pause or seek).
     let synchronizer: AVSampleBufferRenderSynchronizer
 
-    /// Hands the pictures to the layer's renderer, through the synchronizer. iOS, macOS and visionOS 27 have the synchronizer's Swift
+    /// Hands the pictures to the layer's renderer, through the synchronizer. iOS and macOS 27 have the synchronizer's Swift
     /// receiver (it waits until the renderer wants more and says why an enqueue was cancelled); 26, the minimum since 2026-11-04, has
     /// the classic calls of the same renderer.
     private final class Sink: @unchecked Sendable {
@@ -38,7 +39,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
         @MainActor
         init(renderer: AVSampleBufferVideoRenderer, synchronizer: AVSampleBufferRenderSynchronizer) {
             self.renderer = renderer
-            if #available(iOS 27, macOS 27, visionOS 27, *) {
+            if #available(iOS 27, macOS 27, *) {
                 receiver = synchronizer.sampleBufferReceiver(adding: renderer)
             } else {
                 synchronizer.addRenderer(renderer)
@@ -47,7 +48,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
         }
 
         func flush(removingDisplayedImage: Bool) async {
-            if #available(iOS 27, macOS 27, visionOS 27, *), let receiver = receiver as? AVSampleBufferVideoRenderer.Receiver {
+            if #available(iOS 27, macOS 27, *), let receiver = receiver as? AVSampleBufferVideoRenderer.Receiver {
                 await receiver.flush(removingDisplayedImage: removingDisplayedImage)
                 return
             }
@@ -59,7 +60,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
 
         /// Waits until the renderer wants more, then queues the picture; `.stop` ends the feeding (a flush, an error, a cancel).
         func enqueue(_ sample: sending CMSampleBuffer) async -> Outcome {
-            if #available(iOS 27, macOS 27, visionOS 27, *), let receiver = receiver as? AVSampleBufferVideoRenderer.Receiver {
+            if #available(iOS 27, macOS 27, *), let receiver = receiver as? AVSampleBufferVideoRenderer.Receiver {
                 do {
                     switch try await receiver.enqueue(CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: sample)) {
                     case .enqueued, .enqueuedWithDecodeFailures: return .enqueued
@@ -90,6 +91,10 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     private let endHandler = Mutex<(@Sendable () -> Void)?>(nil)
     private let task = Mutex<Task<Void, Never>?>(nil)
     private let lateTolerance = 0.12
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "player")
+    private static func milliseconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds) * 1000 + Int(duration.components.attoseconds / 1_000_000_000_000_000)
+    }
 
     @MainActor
     init(reader: PacketReader, stream: Int, frameRate: Double?) throws {
@@ -122,9 +127,11 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
         await sink.flush(removingDisplayedImage: false)
         let discardBefore = max(time, 0)
         decoder.flush()
+        let began = ContinuousClock.now
         if discardBefore <= 0 { try? reader.rewind() } else { try? reader.seek(stream: stream, to: reader.timeBase(stream).ticks(seconds: discardBefore)) }
         reader.limit(to: [stream])
-        let feeding = Task.detached(priority: .userInitiated) { [self] in await feed(from: discardBefore) }
+        let positioned = ContinuousClock.now - began
+        let feeding = Task.detached(priority: .userInitiated) { [self] in await feed(from: discardBefore, began: began, positioned: positioned) }
         task.withLock { $0 = feeding }
     }
 
@@ -143,18 +150,24 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
 
     // MARK: The feeding task
 
-    private func feed(from discardBefore: Double) async {
+    private func feed(from discardBefore: Double, began: ContinuousClock.Instant, positioned: Duration) async {
         var first = true
         var formatDescription: CMVideoFormatDescription?
         var sentEnd = false
+        var packetsBeforeFirst = 0
         while !Task.isCancelled {
             // The next picture at or after the seek target, in presentation order.
             var next: DecodedFrame?
             while next == nil {
-                if let frame = decoder.receive(discardingBefore: discardBefore) {
+                let lateBefore = !first && synchronizer.rate > 0 ? synchronizer.currentTime().seconds - lateTolerance : -.infinity
+                let frame = decoder.receive(discardingBefore: discardBefore, lateBefore: lateBefore)
+                let skipped = decoder.takeSkippedLate()
+                if skipped > 0 { statistics.withLock { $0.decoded += skipped; $0.dropped += skipped } }
+                if let frame {
                     if frame.time + frame.duration / 2 >= discardBefore { next = frame }
                     continue
                 }
+                if first { packetsBeforeFirst += 1 }
                 if sentEnd { break }
                 guard let packet = try? reader.next() else { sentEnd = true; decoder.send(nil); continue }
                 if packet.stream == stream { decoder.send(packet) }
@@ -171,6 +184,10 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
                 continue
             }
             guard let sample = makeSample(frame, formatDescription: &formatDescription, immediately: first) else { continue }
+            if first {
+                let waited = ContinuousClock.now - began
+                Self.logger.notice("Software video from \(discardBefore, format: .fixed(precision: 1), privacy: .public) s: first picture at \(frame.time, format: .fixed(precision: 2), privacy: .public) s after \(Self.milliseconds(waited), privacy: .public) ms (reader positioned in \(Self.milliseconds(positioned), privacy: .public) ms, \(packetsBeforeFirst, privacy: .public) packets read on the way)")
+            }
             first = false
             switch await sink.enqueue(sample) {
             case .enqueued:

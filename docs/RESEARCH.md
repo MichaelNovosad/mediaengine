@@ -572,3 +572,75 @@ interpolation seek for transport streams with small reads, like `MatroskaSeeker`
 chunk at a time on one connection; on a link with a long round trip, two to four requests in flight would raise the speed.
 **Verified:** compiled (engine; the app for macOS, started for 7 s). No test run or written (the owner's rule), and none of the four
 movies played again here.
+
+## 31. VC-1 in the software player: a slow debug build, jumps that landed minutes early (2026-11-17)
+
+Lost in Translation (`BDMV/STREAM/00010.m2ts` on the owner's share: VC-1 Advanced 1080p at 23.976, three DTS tracks, four PGS;
+32 GB over 102 min, about 5.2 MB/s on average), played muted through the engine with a temporary program, macOS, debug build.
+- **Decoding speed.** At normal priority the software player decoded about 16 pictures a second and showed 14 in 12 s (every later one
+  late and dropped). A 5 s stack sample of the feeding thread: 90 % in `PixelBufferConverter.copyChroma` (2508 of 2795 samples), most of it
+  in the generic range iterator of `for x in 0..<width` (a debug build does not specialise it), FFmpeg's VC-1 decoder a small part.
+  FFmpeg 9.0.2's `vc1` decoder has no threading (`vc1dec.c` 1403: `AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY`), so it runs on one core. After
+  the change (8-bit chroma through `vImageConvert_PlanarToChunky8`, the other per-sample loops as `while` loops with masking shifts,
+  late pictures passed over before they are converted): 24 pictures a second, none dropped, the same build.
+- **Jumps.** The byte-position jump of transport streams (`PacketReader.interpolatedSeek`, built the same morning) accepted any landing
+  before the target: at 55 % of this file the average byte rate put it about two minutes early, and the picture reader read 2,830 video
+  packets and the remuxer about as much for the sound (53 s over the share). It now closes in from both sides and lands 2 to 5 s before
+  the target (at most 8 tries): 17 to 42 video packets, jumps of 2.1 to 3.1 s (Lost in Translation, The Neverending Story in Matroska),
+  and 2.3 to 2.9 s in Labyrinth through AVPlayer. What is left of a jump is mostly the sound piece (1.7 to 2.2 s): the software path reads
+  the file twice, once for the picture and once in the remuxer for the sound; at 5.2 MB/s that is more than the owner's router gives
+  (3 to 8 MB/s). One reading for both would be the direct player (the app's `docs/OWN_PLAYER.md`).
+- **Clock during a jump.** `SoftwareController.tick` went on during a jump that waited for its sound; the sound rejoin of the same day
+  took the paused sound player for one that stopped by itself and started both clocks from the old place, so after a 53 s wait the
+  picture clock stood 54 s past the target and every picture was dropped. The tick now leaves the clocks alone while a jump is under way;
+  a jump made during another one starts the clocks, and play, pause and speed changes during a jump are kept for its end.
+- Measured at background priority before the change: about 2 pictures a second (the one decoding core is an efficiency core there).
+  Not measured: a release build, an iPhone (one core decodes 1080p VC-1 there too), interlaced VC-1, Eiga's own SMB client (it has no
+  page cache of the system's; the second reading may cost more than over the Finder mount).
+
+## 32. The engine's own player: sound that sticks, sound switches, tracks in memory (2026-11-17)
+
+The app's owner, Lost in Translation (software path: VC-1 decoded by the engine, three DTS tracks converted to ALAC and played by
+AVPlayer from the remuxer's sound-only HLS stream): "sound sometimes jumps, stuck then immediately plays, especially after a jump";
+"subtitles stuck with the first title"; "change audio but still play video"; "load every audio and subtitles into memory".
+- **Subtitles.** A new subtitle renderer (another track chosen) reported its first empty frames as unchanged, and the app redraws on
+  `changed` only, so the old track's line stayed. `SubtitleRenderer.frame(at:size:)` now reports its first frame as changed.
+- **Sound starved.** The owner's log: the remuxer read one piece ahead (`readAhead`, `number + 1`) and converted DTS only when AVPlayer
+  asked; pieces took 1.1 to 2.6 s for 4.8 s and 5 s right after a jump, so the sound ran dry. Now a session of sound only reads and
+  converts about 30 s ahead (`soundLookahead`), a session with video still one piece; a read-ahead gives way to any request whose
+  fragment is not built, also one that only needs converting (a switch).
+- **Sound tracks in memory.** The source packets of every transcoded sound track were kept for two windows; now under a 48 MB budget
+  (`soundPacketBudget`, farthest from the playhead first), and they stay after conversion. Measured: a switch to another DTS track
+  gets its pieces in 24 to 26 ms (converted from memory, no read). Unwatched picture subtitles are kept for 128 windows within the feed's
+  24 MB (was 16).
+- **The picture never waits for the sound** (`SoftwareController.tick`): an empty sound buffer held the picture before. Now the picture
+  goes on; the picture follows the sound over drifts up to 0.25 s; a sound that stopped or is farther away joins the picture.
+- **Joining needs a seek.** `AVPlayer.setRate(_:time:atHostTime:)` started a stopped HLS item but did not move it: after a switch the
+  sound played on 1.45 s behind and asking again every second changed nothing (and each request is a possible audible hiccup). Now the
+  sound pauses, seeks exactly to where the picture will be (0.6 to 4 s ahead, from the last seek's time) and starts on the host time the
+  picture gets there. Measured: one join per switch, in step afterwards.
+- **What is left.** Right after a jump into a part never read (and at the start), the sound still dropped out three or four times in
+  the first 15 to 20 s while the picture went on: both readers (the picture's and the remuxer's) fetch the same bytes, about 10 MB/s
+  for this 5.2 MB/s stream, which is what the owner's router gives at best; once the remuxer is ahead, macOS's cache serves the picture
+  reader and the sound stays in step. One reading for both is the direct player (the app's `docs/OWN_PLAYER.md`). On the AVPlayer path
+  (Labyrinth), a sound switch still stops the whole film about 0.8 to 0.9 s: AVPlayer's own wait, also with `playImmediately` right
+  after the switch (tried, no change, removed).
+
+## 33. Pieces read twice for a tenth of a second of DTS; sound kept around the wrong place (2026-11-17)
+
+The app's owner, over Eiga's SMB connection (Lawrence of Arabia: H.264 with a keyframe every 10.4 s, six DTS tracks): "it always
+plays a few seconds and then is stuck until the piece loads"; "it loads the sound as if it never loaded before"; "on 10 November it
+was better". The owner's log: pieces of 10.4 s (29 MB) built in 2.5 to 5.2 s, nearly all only when the player asked, one given up by
+the player after 2.75 s (-12889).
+- **Why 10 November was better.** DTS was not played then (it is since 2026-11-12, RESEARCH 3.2 point 6). A converted track's decoder
+  wants pre-roll (DTS 0.1 s, `AudioTranscoder.prerollSeconds`), and `buildWindow` got it by starting from the video keyframe before
+  (start - pre-roll): in this film the whole piece before, so every piece read 58 MB instead of 29. Now the pre-roll comes from the
+  previous window's packets in memory when it was read (playing on), and after a jump from a keyframe at most 1 s before it, else the
+  decoder starts cold on that one piece (`prerollReach`).
+- **Sound kept around the wrong place.** The stored sound packets (RESEARCH 32) were trimmed around the piece the player asked for
+  last; the player asks far ahead of what it plays, so the sound at the playhead, what a switch needs, went first. The controllers now
+  tell the remuxer where they play (`PlaybackSession.notePlayhead`) and the trimming keeps around that.
+- **Measured** (temporary program, muted, the share's file read through a byte source that looks like a server's, debug build):
+  Lawrence: 10.4 s pieces in about 2.0 s (6 s pieces in 1.0 to 1.7 s), playing on after a sound switch and a jump of 1.7 s, 4 s
+  without movement in 40 s, all at the start and the jump; no conversion over 0.3 s. Lost in Translation: 0 s without movement in 40 s,
+  one join of the sound after a switch, a jump of 4.0 s. Not measured: Eiga's own SMB client (no system cache), an iPhone.

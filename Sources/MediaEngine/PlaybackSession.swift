@@ -258,6 +258,12 @@ public final class PlaybackSession: @unchecked Sendable {
 
     // MARK: Internals
 
+    /// Tells the remuxer where the player plays (seconds), so that what it keeps in memory stays around there. Controllers call it
+    /// as their time moves.
+    func notePlayhead(_ seconds: Double) {
+        state.withLock { $0.remux }?.notePlayhead(seconds)
+    }
+
     func startRemux() async throws -> RemuxSession {
         let existing = try state.withLock { state -> RemuxSession? in
             if state.isClosed { throw MediaError.cancelled }

@@ -4,6 +4,12 @@
 
 ## Right now
 
+- **2026-11-17 (committed at the app owner's word, compiled only):** DVD titles as one film with chapters, subtitles and track
+  switching; Blu-ray subtitles drawn and switched; jumps in transport and program streams by byte position; the VLC-style sound
+  rejoin in the engine's own player; **VC-1 switched on** (`vc1Software` in `extended-plus`; the FFmpeg rebuild was still running at
+  the commit). Next: finish the rebuild (`scripts/package-xcframework.sh core+extended+dtsCore+h264Software+hevcSoftware+audioFallback+vc1Software`,
+  `MEDIAENGINE_VARIANTS=… scripts/check-licenses.sh`), play Lost in Translation (VC-1, DTS, PGS) from the share, then the owner's
+  test. Details: Done 2026-11-17 (five entries).
 - **2026-11-12 (committed without compiling, at the app owner's word; the owner builds and tests):** Apple first: H.264, HEVC, AAC,
   AC-3 and E-AC-3 go to an engine decoder only when this device's Apple decoder refuses the stream; Dolby Vision 5 and 8 go to Apple as
   Dolby Vision; the DTS core (patched FFmpeg); `MediaEngine.disabledProfiles` for country rules; the variant `extended-plus`. RESEARCH
@@ -102,6 +108,10 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
   `docs/APPLE_FIRST_PLAN.md`; review: RESEARCH 3.2 point 8. Status: **built, committed without compiling** (the owner's word), see
   Done 2026-11-12 (Apple first).
 
+- 2026-11-17 (the app's owner) **"Lost in Translation don't run, why? We should have a possibility to play it"**, then
+  **"Yes, switch it on"** (VC-1, as for DTS: risk accepted, not a legal clearance). Plan: an opt-in profile `vc1Software` in
+  `extended-plus`, FFmpeg rebuilt, the film played muted from the share. Status: see Done 2026-11-17 (VC-1).
+
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
 ### Deferred after v1 (decided while working; revisit after the release)
@@ -130,6 +140,31 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-17 (evening) **VC-1 switched on** (the app's owner: "Lost in Translation don't run", then "Yes, switch it on"; risk
+  accepted like the DTS core, not a legal clearance; RESEARCH 3.2 point 9). Apple has no VC-1 decoder (no VC-1 codec type in the SDK's
+  `CMFormatDescription.h`), so it is always ours: `profiles/vc1Software.json` (FFmpeg `vc1`, `wmv3`, the `vc1` parser),
+  `CodecProfile.vc1Software` (detected from the binary), the planner sends `vc1` and `wmv3` video to the software path (was
+  `pendingLegalClearance`); the `extended-plus` variant gains it (`scripts/lib/common.sh`, `build-all.sh`, `write-build-info.sh`,
+  `export-package.sh`, `gen-patent-profiles.py`; `docs/PATENT_PROFILES.md` regenerated, DocC and INTEGRATION updated);
+  `PlaybackPlannerTests.legacyVideo` and `SecurityTests.noPooledDecoders` expect the new rule (written, not run). Evidence so far:
+  `swift build` (core variant) passes; the FFmpeg rebuild of `extended-plus` was running when the owner said "commit": the macOS slice
+  contains `ff_vc1_decoder` and `ff_wmv3_decoder` and no TrueHD (`nm`), its licence report lists both as accepted-risk. **Not yet:**
+  the other slices and the package, `check-licenses.sh`, the film played. No test run.
+- 2026-11-17 (late) **Blu-ray subtitles, jumps in transport streams, the VLC-style sound switch** (the app's owner: Labyrinth's
+  subtitles do not change or show, its first opening did not start, every jump waits a second or two; "do as VLC: continue the
+  video while the audio changes"). (1) `BitmapBackend.add` decodes a window's packets in file order: it sorted them by time, and in
+  a transport stream each PGS segment is its own packet with its own time, so the composition came after the palette and wiped it
+  ("Invalid palette id 0"); no Blu-ray subtitle was drawn. (2) `PacketReader.interpolatedSeek`: in MPEG transport and program
+  streams without a known keyframe within 20 s before the time, a jump goes by byte position from the average byte rate (a guess 6 s
+  early, checked and stepped back), and a seek for a stream that is not video searches the file's default stream: FFmpeg's search
+  read packet after packet (a subtitle reader's jump in a 27 GB stream read for minutes). (3) `PacketReader(durationHint:)`: the
+  session's length for readers opened quickly (they do not measure it), passed by the remuxer, the subtitle readers and the software
+  player. (4) `SoftwareController.tick`: a sound player that stopped (after a sound switch) is brought back in at the picture's
+  time while the picture goes on, as VLC does, instead of holding the picture. Evidence on the owner's share (temporary programs,
+  removed): the subtitle reader's jump to 10:00 takes no measurable time; Labyrinth's Russian (2), English and English (2)
+  subtitles draw (4, 4 and 16 lines between 9:50 and 11:20) and switch during playback; a jump played again after 1.4 s; in the
+  owner's own run with the byte-position jump, pieces after jumps were built in 120 to 140 ms (were 1.7 to 5.2 s). Not checked:
+  the VLC-style switch by ear; an iPhone; from the server.
 - 2026-11-17 **DVD subtitles and track switching** (the app's owner, after trying part 3: "subtitles aren't seen", then "subtitles
   and audio don't change", then "switching audio during playback mutes until a jump"; the owner then: "it works correctly now").
   (1) A DVD title's subtitle streams are made from the information files before FFmpeg's first look
@@ -301,6 +336,7 @@ toolchain; none blocks the release.
 | 2026-10-24 | FFmpeg 9.0.x (9.0.2 pinned) and a single merged framework `FFmpegLGPL` | Claude, from E-S1 evidence |
 | 2026-10-24 | Open: D-E11 packaging of optional codec profiles (plug-in frameworks vs variant products), decided in E4 | — |
 | 2026-11-12 | **The DTS core and H.264 Hi10P in, as opt-in profiles** (the app links them, free): plain DTS only, DTS-HD lossless, DTS Express and DTS:X code removed from the binary, DTS-HD tracks play their core; H.264 only for High 10, 4:2:2 and 4:4:4 on the software path. Replaces the 2026-10-24 Hi10P row for this. Risk accepted by the owner, not a legal clearance | Owner |
+| 2026-11-17 | **VC-1 in, as an opt-in profile** (`vc1Software`: FFmpeg `vc1` and `wmv3`, in `extended-plus`, the app links it, free). Apple decodes no VC-1, so it is always our decoder. Risk accepted by the owner, not a legal clearance (RESEARCH 3.2 point 9); TrueHD and Dolby Vision 7 stay off | Owner (app) |
 
 ## Handoff notes (what a fresh session must know)
 

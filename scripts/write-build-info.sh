@@ -19,7 +19,7 @@ patches="$(find "$ROOT/third_party/patches" -name '*.diff' 2>/dev/null | wc -l |
   echo "Binaries:"
   echo "  FFmpegLGPL.xcframework           FFmpeg $(lock_field ffmpeg 2), LGPL-2.1-or-later, profile core; dynamic framework, replaceable (see REPLACING-FFMPEG.md)"
   echo "  FFmpegLGPL-extended.xcframework  the same FFmpeg with the extended profile and dav1d $(lock_field dav1d 2) (BSD-2-Clause) linked in"
-  echo "  FFmpegLGPL-extended-plus.xcframework  the extended variant plus dtsCore (the DTS core only, patched) and the fallbacks for what Apple refuses: h264Software, hevcSoftware, audioFallback"
+  echo "  FFmpegLGPL-extended-plus.xcframework  the extended variant plus dtsCore (the DTS core only, patched) and the fallbacks for what Apple refuses: h264Software, hevcSoftware, audioFallback, and VC-1 (vc1Software)"
   echo "  LibASS.xcframework               libass $(lock_field libass 2) ISC, FreeType $(lock_field freetype 2) FTL, HarfBuzz $(lock_field harfbuzz 2) MIT, FriBidi $(lock_field fribidi 2) LGPL-2.1; built by scripts/build-subtitle-libs.sh"
   echo
   for variant in $VARIANTS; do
@@ -43,5 +43,5 @@ patches="$(find "$ROOT/third_party/patches" -name '*.diff' 2>/dev/null | wc -l |
 } > "$info"
 cp "$BUILD/install/macos-core/LICENSE-REPORT.md" "$BUILD/LICENSE-REPORT-core.md" 2>/dev/null || true
 cp "$BUILD/install/macos-core+extended/LICENSE-REPORT.md" "$BUILD/LICENSE-REPORT-extended.md" 2>/dev/null || true
-cp "$BUILD/install/macos-core+extended+dtsCore+h264Software+hevcSoftware+audioFallback/LICENSE-REPORT.md" "$BUILD/LICENSE-REPORT-extended-plus.md" 2>/dev/null || true
+cp "$BUILD/install/macos-core+extended+dtsCore+h264Software+hevcSoftware+audioFallback+vc1Software/LICENSE-REPORT.md" "$BUILD/LICENSE-REPORT-extended-plus.md" 2>/dev/null || true
 log "BUILD-INFO.txt written ($(wc -l < "$info" | tr -d ' ') lines)"

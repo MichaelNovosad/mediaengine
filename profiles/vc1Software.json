@@ -1,0 +1,13 @@
+{
+  "name": "vc1Software",
+  "description": "A software VC-1 decoder (SMPTE 421M: Simple, Main and Advanced profiles; `wmv3` is VC-1 Main profile in Windows Media files). Apple has no VC-1 decoder on any of its platforms, so such video plays on the software path. Used by Blu-ray discs and HD DVD era films. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-17 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 9).",
+  "ffmpeg": {
+    "libraries": ["avutil", "avcodec", "avformat", "swresample"],
+    "parsers": ["vc1"],
+    "decoders": ["vc1", "wmv3"]
+  },
+  "codecStatus": {
+    "vc1": {"status": "accepted-risk", "note": "a VC-1 pool is believed active (its terms reportedly run to 2027); about 94.7 % of the pool's patents were reported expired by July 2025, the rest unverified; Apple's licence does not cover this decoder"},
+    "wmv3": {"status": "accepted-risk", "note": "VC-1 Main profile in Windows Media files; same position as vc1"}
+  }
+}

@@ -38,16 +38,17 @@ struct SecurityTests {
         #expect(names.contains("matroska,webm") && names.contains("mov,mp4,m4a,3gp,3g2,mj2"))
     }
 
-    @Test("no decoders for patent-pooled codecs: never VC-1, TrueHD; MPEG-2 only in the extended builds; H.264, HEVC, AAC, AC-3, E-AC-3 and the DTS core only in the opt-in extended-plus build")
+    @Test("no decoders for patent-pooled codecs: never TrueHD; MPEG-2 only in the extended builds; H.264, HEVC, AAC, AC-3, E-AC-3, the DTS core and VC-1 only in the opt-in extended-plus build")
     func noPooledDecoders() {
         let profiles = MediaEngine.availableProfiles
-        var never: [AVCodecID] = [AV_CODEC_ID_VC1, AV_CODEC_ID_TRUEHD]
+        var never: [AVCodecID] = [AV_CODEC_ID_TRUEHD]
         if !profiles.contains(.extended) { never.append(AV_CODEC_ID_MPEG2VIDEO) }   // expired, and part of the extended profile
         // Opt-in (owner, 2026-11-12): the DTS core, and the fallbacks for what Apple's decoders refuse (Apple first).
         if !profiles.contains(.h264Software) { never.append(AV_CODEC_ID_H264) }
         if !profiles.contains(.hevcSoftware) { never.append(AV_CODEC_ID_HEVC) }
         if !profiles.contains(.audioFallback) { never += [AV_CODEC_ID_AAC, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3] }
         if !profiles.contains(.dtsCore) { never.append(AV_CODEC_ID_DTS) }
+        if !profiles.contains(.vc1Software) { never += [AV_CODEC_ID_VC1, AV_CODEC_ID_WMV3] }   // owner, 2026-11-17
         for id in never {
             #expect(avcodec_find_decoder(id) == nil, "decoder present for \(String(cString: avcodec_get_name(id)))")
         }

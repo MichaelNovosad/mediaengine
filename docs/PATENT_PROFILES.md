@@ -11,7 +11,7 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
   of every profile and codec it enables and distributes**, in every territory where the app is available.
 - A profile is a separate binary variant (`FFmpegLGPL.xcframework` is `core`, `FFmpegLGPL-extended.xcframework` is
   `core` + `extended`, `FFmpegLGPL-extended-plus.xcframework` is `core` + `extended` + `dtsCore` + `h264Software` +
-  `hevcSoftware` + `audioFallback`).
+  `hevcSoftware` + `audioFallback` + `vc1Software`).
   An app that links only `core` contains none of the software decoders listed under the other profiles.
   `MediaInfo.requiredProfile` tells the host which profile a file needs, so it can gate the feature.
 - The engine never decides what is allowed: the host app does.
@@ -23,7 +23,7 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
 2. **Our own decoders only for royalty-free or expired codecs** (the `extended` profile; statuses below).
 3. **Container work needs no codec licence** (reading and remuxing Matroska, AVI, FLV, RealMedia, MPEG-TS and so on); the
    containers of old formats are still reported as needing `extended` so a host can offer them as a paid feature.
-4. **Off by default and not built:** VC-1 and WMV3 (held back until cleared), Dolby TrueHD (`licensedAudio`, not part of the
+4. **Off by default and not built:** Dolby TrueHD (`licensedAudio`, not part of the
    shipped binaries), DTS-HD lossless and DTS Express (removed from the source by our patch), Dolby Vision profile 7
    conversion, Windows Media Audio and RealAudio (the decoders are left out of version 1).
 5. A module is switched on only after a lawyer's opinion and once there is revenue to pay a licensor who asks.
@@ -31,6 +31,8 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
    device (`h264Software`, `hevcSoftware`, `audioFallback`: "Apple first", each stream is offered to Apple's decoder first) were
    switched on by the first app's owner with the risk accepted, **without** a lawyer's opinion. They are separate opt-in
    profiles: an integrator who links `extended-plus` takes the same decision for its own app.
+   **Exception, 2026-11-17:** VC-1 and WMV3 (`vc1Software`; Apple decodes no VC-1, so it is always the engine's decoder),
+   switched on by the same owner in the same way, risk accepted, without a lawyer's opinion.
 7. **Dolby Vision 5 and 8** are passed to Apple as Dolby Vision (`dvcC`/`dvvC`, `dvh1`) on devices that decode it (2026-11-12);
    the engine decodes no Dolby Vision itself.
 
@@ -81,7 +83,7 @@ Other components: demuxers: matroska, mov, mpegts, mpegps, avi, asf, flv, ogg, w
 
 ## Profile `extended`
 
-Adds the RealMedia demuxer and software decoders for codecs Apple does not decode (MPEG-1/2/4, H.263 and Flash video, WMV, RealVideo, VP6/VP8/VP9, Theora) and AV1 through dav1d. H.264 is not decoded here: the `h264Software` profile decodes the H.264 profiles Apple does not (Hi10P). VC-1 stays off until legal clearance (D-E8). The core binary already demuxes AVI, FLV, ASF and Ogg (container work needs no codec licence), but the plan reports those containers as needing this module (ANM-8: the Pro formats), so a host gates them like the codecs. Shipped as a variant binary (RESEARCH.md section 24, decision D-E11).
+Adds the RealMedia demuxer and software decoders for codecs Apple does not decode (MPEG-1/2/4, H.263 and Flash video, WMV, RealVideo, VP6/VP8/VP9, Theora) and AV1 through dav1d. H.264 is not decoded here: the `h264Software` profile decodes the H.264 profiles Apple does not (Hi10P). VC-1 is not here: it has its own opt-in profile, `vc1Software` (owner, 2026-11-17). The core binary already demuxes AVI, FLV, ASF and Ogg (container work needs no codec licence), but the plan reports those containers as needing this module (ANM-8: the Pro formats), so a host gates them like the codecs. Shipped as a variant binary (RESEARCH.md section 24, decision D-E11).
 
 | Codec or format | Status | In this profile's binary | Note |
 |---|---|---|---|
@@ -151,6 +153,17 @@ Our AAC, AC-3 and E-AC-3 decoders, used only when Apple cannot play a track (App
 | eac3 | expired | yes | Dolby Digital Plus; last US patent US 7,516,064 expired 2026-01-30 (reported by Phoronix and a forum; not a legal opinion) |
 
 FFmpeg decoders compiled in: aac, ac3, eac3.
+
+## Profile `vc1Software`
+
+A software VC-1 decoder (SMPTE 421M: Simple, Main and Advanced profiles; `wmv3` is VC-1 Main profile in Windows Media files). Apple has no VC-1 decoder on any of its platforms, so such video plays on the software path. Used by Blu-ray discs and HD DVD era films. Opt-in, in the `extended-plus` variant. Switched on by the app's owner on 2026-11-17 with the risk accepted, not after a lawyer's opinion (RESEARCH.md section 3.2, point 9).
+
+| Codec or format | Status | In this profile's binary | Note |
+|---|---|---|---|
+| vc1 | accepted-risk | yes | a VC-1 pool is believed active (its terms reportedly run to 2027); about 94.7 % of the pool's patents were reported expired by July 2025, the rest unverified; Apple's licence does not cover this decoder |
+| wmv3 | accepted-risk | yes | VC-1 Main profile in Windows Media files; same position as vc1 |
+
+FFmpeg decoders compiled in: vc1, wmv3.
 
 ## Profile `licensedAudio`
 

@@ -3,7 +3,7 @@
 # then bundles the five slices into build/FFmpegLGPL.xcframework.
 # usage: scripts/package-xcframework.sh [profiles joined by +]      (default: core; "core+extended" makes the extended variant)
 # The extended variant becomes build/FFmpegLGPL-extended.xcframework (same framework and module name inside, so Swift code
-# does not change; Package.swift picks it with MEDIAENGINE_PROFILE=extended, see RESEARCH.md section 24). "core+extended+dtsCore+h264Software+hevcSoftware+audioFallback"
+# does not change; Package.swift picks it with MEDIAENGINE_PROFILE=extended, see RESEARCH.md section 24). "core+extended+dtsCore+h264Software+hevcSoftware+audioFallback+vc1Software"
 # becomes build/FFmpegLGPL-extended-plus.xcframework (MEDIAENGINE_PROFILE=extended-plus; variant_suffix in lib/common.sh).
 # Dynamic linking keeps the LGPL promise: a customer can swap the framework for their own build.
 # FFMPEG_SANITIZE=address packages the instrumented macOS slice (from build-ffmpeg.sh) as a separate

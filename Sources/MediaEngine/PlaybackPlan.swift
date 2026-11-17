@@ -27,6 +27,9 @@ public struct CodecProfile: OptionSet, Sendable, Hashable, Codable {
     /// AAC, AC-3 and E-AC-3 decoders of the engine, used only when Apple cannot play a track (AAC Main, SSR, LTP; a missing system
     /// decoder); the sound is converted to Apple Lossless. Opt-in: the integrator weighs the patent position (AAC).
     public static let audioFallback = CodecProfile(rawValue: 1 << 6)
+    /// A software VC-1 decoder (VC-1 and WMV 9, which is VC-1 in Windows Media files). Apple decodes no VC-1, so such video always
+    /// plays on the software path. Opt-in: the integrator weighs the patent position (`docs/PATENT_PROFILES.md`).
+    public static let vc1Software = CodecProfile(rawValue: 1 << 7)
 }
 
 /// What the engine does with one track.
@@ -262,7 +265,9 @@ enum PlaybackPlanner {
              "wmv1", "wmv2", "theora", "h263", "h263i", "h263p", "flv1", "vp6", "vp6f", "vp6a", "rv10", "rv20", "rv30", "rv40":
             return Decision(treatment: .software(.extended), needs: .extended)
         case "vc1", "wmv3":
-            return unavailable(.pendingLegalClearance, "\(track.codec.displayName) video is held back until its licensing is cleared.")
+            // Apple decodes no VC-1 (CoreMedia has no VC-1 codec type), so it is always the engine's own decoder (opt-in
+            // `vc1Software`; switched on by the app's owner on 2026-11-17, risk accepted).
+            return Decision(treatment: .software(.vc1Software), needs: .vc1Software)
         default:
             return unavailable(.unknownCodec, "The video format \(name) is not supported.")
         }

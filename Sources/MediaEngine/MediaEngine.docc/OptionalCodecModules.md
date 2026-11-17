@@ -13,6 +13,7 @@ package is delivered in variants that contain them or not.
 | `h264Software` | a software H.264 decoder, used when Apple's decoder refuses a stream (High 10 "Hi10P", High 4:2:2, High 4:4:4) | the *extended-plus* variant only (opt-in; patent position is yours to weigh) |
 | `hevcSoftware` | a software HEVC decoder, used when Apple's decoder refuses a stream (range extensions: 4:2:2, 4:4:4) | the *extended-plus* variant only (opt-in; patent position is yours to weigh) |
 | `audioFallback` | AAC, AC-3 and E-AC-3 decoders, used when Apple cannot play a track (AAC Main, SSR, LTP) | the *extended-plus* variant only (opt-in; AAC's patent position is yours to weigh) |
+| `vc1Software` | a software VC-1 decoder (VC-1 and WMV 9; Apple decodes no VC-1, so such video always plays on the software path) | the *extended-plus* variant only (opt-in; patent position is yours to weigh) |
 | `licensedAudio` | Dolby TrueHD | no (patent licensing; off until cleared) |
 
 **Apple first.** Apple's own decoders decode H.264, HEVC, AAC, AC-3 and E-AC-3 in every variant; the engine only repackages them.

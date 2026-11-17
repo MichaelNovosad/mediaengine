@@ -8,7 +8,7 @@ struct PlaybackPlannerTests {
     private let coreOnly = DeviceCapabilities(hardwareAV1: true, availableProfiles: .core)
     private let withExtended = DeviceCapabilities(hardwareAV1: false, availableProfiles: [.core, .extended])
     private let everything = DeviceCapabilities(hardwareAV1: false,
-                                                availableProfiles: [.core, .extended, .dtsCore, .h264Software, .licensedAudio])
+                                                availableProfiles: [.core, .extended, .dtsCore, .h264Software, .vc1Software, .licensedAudio])
 
     private func plan(_ tracks: [Track], in container: Container? = nil, _ caps: DeviceCapabilities? = nil) -> PlaybackPlan {
         PlaybackPlanner.plan(container: container ?? matroska, tracks: tracks, capabilities: caps ?? coreOnly)
@@ -113,15 +113,21 @@ struct PlaybackPlannerTests {
         #expect(playable.requiredProfile == .extended)
     }
 
-    @Test("legacy video needs the extended module; VC-1 waits for legal clearance")
+    @Test("legacy video needs the extended module; VC-1 needs its own opt-in module")
     func legacyVideo() {
         for codec in ["vp9", "mpeg4", "mpeg2video", "theora"] {
             #expect(plan([video(codec)], coreOnly).blockingReason?.requires == .extended, "\(codec)")
             #expect(plan([video(codec)], withExtended).path == .software, "\(codec)")
         }
-        let vc1 = plan([video("vc1")], withExtended)
-        #expect(vc1.path == .unsupported)
-        #expect(vc1.blockingReason?.code == .pendingLegalClearance)
+        for codec in ["vc1", "wmv3"] {
+            let held = plan([video(codec)], withExtended)
+            #expect(held.path == .unsupported, "\(codec)")
+            #expect(held.blockingReason?.code == .needsCodecProfile, "\(codec)")
+            #expect(held.blockingReason?.requires == .vc1Software, "\(codec)")
+            let playable = plan([video(codec)], everything)
+            #expect(playable.path == .software, "\(codec)")
+            #expect(playable.requiredProfile.contains(.vc1Software), "\(codec)")
+        }
     }
 
     @Test("audio decisions: passthrough or lossless ALAC transcode")

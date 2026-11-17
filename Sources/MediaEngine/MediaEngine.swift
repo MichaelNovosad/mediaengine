@@ -16,8 +16,8 @@ public enum MediaEngine {
 
     /// The codec profiles this build contains, found by asking the linked FFmpeg which decoders it has: `.core` always,
     /// `.extended` in the extended variant (legacy containers and software decoders), `.dtsCore`, `.h264Software`,
-    /// `.hevcSoftware` and `.audioFallback` in the `extended-plus` variant (the DTS core, and the engine's own decoders for
-    /// what Apple's decoders refuse on this device: Apple first), `.licensedAudio`
+    /// `.hevcSoftware`, `.audioFallback` and `.vc1Software` in the `extended-plus` variant (the DTS core, the engine's own
+    /// decoders for what Apple's decoders refuse on this device: Apple first, and VC-1, which Apple does not decode), `.licensedAudio`
     /// in a build with the TrueHD decoder. Which binary an app links is decided when it picks the package variant
     /// (`docs/RESEARCH.md` section 24); a host that gates features by profile reads ``MediaInfo/requiredProfile``.
     /// Profiles in ``disabledProfiles`` are left out.
@@ -44,6 +44,7 @@ public enum MediaEngine {
         if avcodec_find_decoder_by_name("hevc") != nil { profiles.insert(.hevcSoftware) }
         if avcodec_find_decoder_by_name("aac") != nil, avcodec_find_decoder_by_name("ac3") != nil,
            avcodec_find_decoder_by_name("eac3") != nil { profiles.insert(.audioFallback) }
+        if avcodec_find_decoder_by_name("vc1") != nil { profiles.insert(.vc1Software) }
         if avcodec_find_decoder_by_name("truehd") != nil { profiles.insert(.licensedAudio) }
         return profiles
     }()

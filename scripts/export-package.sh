@@ -7,7 +7,7 @@
 # usage: scripts/export-package.sh [core|extended|extended-plus]
 # The optional argument is the variant the exported package links by default (MEDIAENGINE_PROFILE still overrides it): `core` for apps
 # that play what Apple decodes, `extended` for apps that also want the software decoders and legacy containers, `extended-plus`
-# for apps that also decode the DTS core and have fallback decoders for what Apple refuses (opt-in; docs/PATENT_PROFILES.md). Every framework that
+# for apps that also decode the DTS core and VC-1 and have fallback decoders for what Apple refuses (opt-in; docs/PATENT_PROFILES.md). Every framework that
 # is built is in the copy. Default: core.
 source "$(dirname "$0")/lib/common.sh"
 profile="${1:-core}"

@@ -10,7 +10,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs/PATENT_PROFILES.md"
-PROFILES = ["core", "extended", "dtsCore", "h264Software", "hevcSoftware", "audioFallback", "licensedAudio"]
+PROFILES = ["core", "extended", "dtsCore", "h264Software", "hevcSoftware", "audioFallback", "vc1Software", "licensedAudio"]
 
 # FFmpeg component name -> key of codecStatus in the profile files.
 ALIASES = {
@@ -50,7 +50,7 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
   of every profile and codec it enables and distributes**, in every territory where the app is available.
 - A profile is a separate binary variant (`FFmpegLGPL.xcframework` is `core`, `FFmpegLGPL-extended.xcframework` is
   `core` + `extended`, `FFmpegLGPL-extended-plus.xcframework` is `core` + `extended` + `dtsCore` + `h264Software` +
-  `hevcSoftware` + `audioFallback`).
+  `hevcSoftware` + `audioFallback` + `vc1Software`).
   An app that links only `core` contains none of the software decoders listed under the other profiles.
   `MediaInfo.requiredProfile` tells the host which profile a file needs, so it can gate the feature.
 - The engine never decides what is allowed: the host app does.
@@ -62,7 +62,7 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
 2. **Our own decoders only for royalty-free or expired codecs** (the `extended` profile; statuses below).
 3. **Container work needs no codec licence** (reading and remuxing Matroska, AVI, FLV, RealMedia, MPEG-TS and so on); the
    containers of old formats are still reported as needing `extended` so a host can offer them as a paid feature.
-4. **Off by default and not built:** VC-1 and WMV3 (held back until cleared), Dolby TrueHD (`licensedAudio`, not part of the
+4. **Off by default and not built:** Dolby TrueHD (`licensedAudio`, not part of the
    shipped binaries), DTS-HD lossless and DTS Express (removed from the source by our patch), Dolby Vision profile 7
    conversion, Windows Media Audio and RealAudio (the decoders are left out of version 1).
 5. A module is switched on only after a lawyer's opinion and once there is revenue to pay a licensor who asks.
@@ -70,6 +70,8 @@ exactly what is compiled into each profile. Strategy and sources: `docs/RESEARCH
    device (`h264Software`, `hevcSoftware`, `audioFallback`: "Apple first", each stream is offered to Apple's decoder first) were
    switched on by the first app's owner with the risk accepted, **without** a lawyer's opinion. They are separate opt-in
    profiles: an integrator who links `extended-plus` takes the same decision for its own app.
+   **Exception, 2026-11-17:** VC-1 and WMV3 (`vc1Software`; Apple decodes no VC-1, so it is always the engine's decoder),
+   switched on by the same owner in the same way, risk accepted, without a lawyer's opinion.
 7. **Dolby Vision 5 and 8** are passed to Apple as Dolby Vision (`dvcC`/`dvvC`, `dvh1`) on devices that decode it (2026-11-12);
    the engine decodes no Dolby Vision itself.
 

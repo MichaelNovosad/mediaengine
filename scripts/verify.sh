@@ -4,8 +4,8 @@
 #   scripts/verify.sh --quick   sources, licenses, API hygiene, ground truth, docs, build with zero warnings, unit, playback and
 #                               isolated test passes on macOS, the extended variant, source pack, framework swap (about 6 minutes)
 #   scripts/verify.sh           + package traits and the sample apps built for macOS (about 8 minutes)
-#   scripts/verify.sh --sims    + the sample apps for iOS and visionOS and the iPhone, iPad, iPhone Duo and visionOS simulators
-#                               (boots four simulators, the heaviest part: ask first)
+#   scripts/verify.sh --sims    + the sample apps for iOS and the iPhone, iPad and iPhone Duo simulators
+#                               (boots three simulators, the heaviest part: ask first)
 #   scripts/verify.sh --deep    + AddressSanitizer (with instrumented FFmpeg), ThreadSanitizer, UBSan and the benchmark gate
 # For the quick loop while coding use scripts/check.sh (about 30 s). Every step prints how long it took.
 source "$(dirname "$0")/lib/common.sh"
@@ -22,7 +22,7 @@ sim_id() { # <device name> <runtime, e.g. "iOS 27.0">
   xcrun simctl list devices available -j | python3 -I -c '
 import json, re, sys
 name, runtime = sys.argv[1], sys.argv[2]
-def key(s): return re.sub(r"[^a-z0-9]", "", s.lower()).replace("xros", "visionos")
+def key(s): return re.sub(r"[^a-z0-9]", "", s.lower())
 want = key(runtime)
 for rt, devs in json.load(sys.stdin)["devices"].items():
     if key(rt.split("SimRuntime.")[-1]) == want:
@@ -47,7 +47,7 @@ simulator_tests() { # <platform label> <derived data suffix> <scheme destination
   xcodebuild build-for-testing -scheme MediaEngine -destination "id=$first" -derivedDataPath "$derived" \
     > "$logdir/$label-build.log" 2>&1 || { tail -30 "$logdir/$label-build.log"; die "$label build failed"; }
   check_warnings "$logdir/$label-build.log"
-  # One simulator at a time, each shut down afterwards: four booted simulators next to the owner's own work were too much.
+  # One simulator at a time, each shut down afterwards: several booted simulators next to the owner's own work were too much.
   local i failed=0
   for i in "${!ids[@]}"; do
     rm -rf "$logdir/${labels[$i]}.xcresult"
@@ -85,10 +85,9 @@ if [ "$tier" != quick ]; then
   begin_step "sample apps build for macOS (API-1, DOC-2)"; ./scripts/check-samples.sh --macos-only >/dev/null
 fi
 if [ "$tier" = sims ]; then
-  begin_step "sample apps build for iOS and visionOS (API-1, DOC-2)"; ./scripts/check-samples.sh >/dev/null
-  begin_step "simulators: iPhone, iPad, iPhone Duo, then visionOS (one at a time)"
+  begin_step "sample apps build for iOS (API-1, DOC-2)"; ./scripts/check-samples.sh >/dev/null
+  begin_step "simulators: iPhone, iPad, iPhone Duo (one at a time)"
   simulator_tests ios ios "iphone|iPhone 18 Pro Max|iOS 27.0" "ipad|iPad Air 13-inch (M4)|iOS 27.0" "iphone-duo|iPhone Duo|iOS 27.1"
-  simulator_tests visionos xros "visionos|Apple Vision Pro|visionOS 27.0"
 fi
 if [ "$tier" = deep ]; then
   begin_step "benchmark against the stored baseline (PRF-1; a regression over 10% fails)"; ./scripts/bench.sh >/dev/null

@@ -3,7 +3,7 @@ import SwiftUI
 
 #if canImport(UIKit)
 import UIKit
-/// The plain view that shows the picture of a ``PlaybackController``, for UIKit (iPhone, iPad, visionOS) apps. It
+/// The plain view that shows the picture of a ``PlaybackController``, for UIKit (iPhone, iPad) apps. It
 /// draws no controls: build them yourself or use `AVPlayerViewController` with ``AVPlayerController/player``.
 @MainActor
 public final class MediaVideoLayerHost: UIView {

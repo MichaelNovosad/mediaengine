@@ -23,7 +23,7 @@ same way, with a build that exports the same `ass_*` functions.
 export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
 scripts/fetch-sources.sh                          # downloads the pinned archives and verifies SHA-256 and signatures
 # (offline: put the archives from the source pack into build/downloads/<name>-<version>/ first)
-scripts/build-ffmpeg.sh macos core                # one slice; repeat for ios ios-simulator xros xros-simulator
+scripts/build-ffmpeg.sh macos core                # one slice; repeat for ios ios-simulator
 scripts/package-xcframework.sh core               # build/FFmpegLGPL.xcframework (dynamic framework, install name @rpath/FFmpegLGPL.framework/...)
 ```
 
@@ -36,7 +36,7 @@ packaged with `scripts/package-xcframework.sh core+extended`.
 
 ```bash
 APP=/path/to/YourApp.app
-rm -rf "$APP/Contents/Frameworks/FFmpegLGPL.framework"                  # iOS and visionOS: "$APP/Frameworks/..."
+rm -rf "$APP/Contents/Frameworks/FFmpegLGPL.framework"                  # iOS: "$APP/Frameworks/..."
 cp -R build/frameworks/macos/FFmpegLGPL.framework "$APP/Contents/Frameworks/"
 codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/FFmpegLGPL.framework"   # or your own identity
 codesign --force --sign - --timestamp=none "$APP"                       # re-sign the app (signatures cover the embedded framework)

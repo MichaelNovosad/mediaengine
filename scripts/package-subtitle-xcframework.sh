@@ -1,6 +1,6 @@
 #!/bin/bash
 # Links the static subtitle libraries (libass, FreeType, HarfBuzz, FriBidi) of every slice into ONE dynamic framework
-# (LibASS), then bundles the five slices into build/LibASS.xcframework.
+# (LibASS), then bundles the three slices into build/LibASS.xcframework.
 # usage: scripts/package-subtitle-xcframework.sh
 # Dynamic linking keeps the LGPL promise for FriBidi: a customer can replace the framework with their own build.
 source "$(dirname "$0")/lib/common.sh"
@@ -17,8 +17,6 @@ plist() { # <slice> → Info.plist on stdout
     macos) platform=MacOSX; minkey=LSMinimumSystemVersion ;;
     ios) platform=iPhoneOS; minkey=MinimumOSVersion ;;
     ios-simulator) platform=iPhoneSimulator; minkey=MinimumOSVersion ;;
-    xros) platform=XROS; minkey=MinimumOSVersion ;;
-    xros-simulator) platform=XRSimulator; minkey=MinimumOSVersion ;;
   esac
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

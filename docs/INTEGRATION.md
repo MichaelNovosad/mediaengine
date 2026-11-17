@@ -62,8 +62,8 @@ ordered chapters. Full ASS and picture subtitles come from `makeSubtitleRenderer
 
 ## 6. Platforms, App Store, privacy
 
-- iOS and iPadOS 27.0, macOS 27.0 (Apple silicon), visionOS 27.0. tvOS is not supported. Mac Catalyst is not supported (use the macOS
-  destination). **visionOS has been verified in the simulator only.**
+- iOS and iPadOS 26.0, macOS 26.0 (Apple silicon). visionOS is not in this release. tvOS is not supported. Mac Catalyst is not
+  supported (use the macOS destination).
 - Both frameworks carry a privacy manifest (no tracking, no collected data, no required-reason API use). The engine opens a loopback
   HTTP listener (127.0.0.1, random port, random path prefix) for the system player to read the remuxed stream; it needs no entitlement on
   macOS. On iOS the app transport security and the local-network prompt behaviour for this listener are verified in the simulators; the

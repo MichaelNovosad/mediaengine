@@ -19,12 +19,12 @@ Three kinds of test pass exist (`scripts/lib/tests.sh`): **unit** (everything ex
 | One suite or test | `scripts/check.sh <name>` (or `swift test --filter <name>`) | seconds |
 | Before saying a step is done | `scripts/verify.sh --quick` (sources, licenses, API hygiene, ground truth, build, unit + playback + isolated passes) | ~2 min |
 | Before a commit or milestone | `scripts/verify.sh` (quick + package traits + sample apps for macOS) | ~8 min at background priority |
-| Simulators (ask the owner first) | `scripts/verify.sh --sims` (full + iOS/visionOS samples + iPhone, iPad, iPhone Duo and visionOS simulators, one at a time, each shut down after) | ~10 min |
+| Simulators (ask the owner first) | `scripts/verify.sh --sims` (full + iOS samples + iPhone, iPad and iPhone Duo simulators, one at a time, each shut down after) | ~10 min |
 | Memory, threads, FFmpeg internals; releases (ask the owner first) | `scripts/verify.sh --deep` (full + benchmark gate + AddressSanitizer with instrumented FFmpeg, ThreadSanitizer, UBSan) | ~15 min |
 | One sanitizer | `scripts/check-sanitized.sh address\|thread\|undefined` (the instrumented FFmpeg is rebuilt on `--rebuild` and whenever `profiles/core.json` or `build-ffmpeg.sh` is newer than it; a stale one fails tests for the wrong reason) | 1-3 min each |
 | A flaky test | `scripts/flake-hunt.sh <runs> --filter <SuiteOrTest>` (failure counts per test) | runs x test time |
 | Benchmarks against the stored baseline (PRF-1) | `scripts/bench.sh` (3 runs of `BenchmarkTests` on a synthetic 1080p file; `--record` stores this machine's baseline in `Benchmarks/baseline.json`); part of `--deep` | ~1 min |
-| Documentation, samples, source pack, framework swap | `scripts/check-docs.sh` (DocC, zero warnings), `scripts/check-samples.sh` (QuickStart and Player for macOS, iOS, visionOS), `scripts/check-source-pack.sh`, `scripts/test-framework-swap.sh`; all run inside `verify.sh` | 0.5-3 min each |
+| Documentation, samples, source pack, framework swap | `scripts/check-docs.sh` (DocC, zero warnings), `scripts/check-samples.sh` (QuickStart and Player for macOS and iOS), `scripts/check-source-pack.sh`, `scripts/test-framework-swap.sh`; all run inside `verify.sh` | 0.5-3 min each |
 | Generated documents and data | `scripts/gen-patent-profiles.py` (docs/PATENT_PROFILES.md), `scripts/gen-acknowledgements.py` (Sources/MediaEngine/Acknowledgements.generated.swift): `--check` is part of `check.sh` and `verify.sh`; regenerate after changing a profile or a pin |
 | Decoder conformance | `scripts/fetch-conformance.sh` downloads 64 libvpx/libaom vectors into `build/conformance` (pinned in `third_party/conformance.lock`); `ConformanceTests` need the extended build (`MEDIAENGINE_PROFILE=extended swift test --scratch-path .build-extended --filter ConformanceTests`) |
 

@@ -16,7 +16,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build"
 MIN_OS="26.0"             # the oldest system the libraries run on (26.0 since 2026-11-04, the app's minimum)
-SLICES="macos ios ios-simulator xros xros-simulator"
+SLICES="macos ios ios-simulator"   # visionOS left out of this release (owner, 2026-11-17); its scripts are kept on the `visionos` branch
 # The FFmpeg binaries (profiles joined by +). Each becomes build/FFmpegLGPL<suffix>.xcframework (variant_suffix below).
 VARIANTS="${MEDIAENGINE_VARIANTS:-core core+extended core+extended+dtsCore+h264Software+hevcSoftware+audioFallback+vc1Software}"   # MEDIAENGINE_VARIANTS narrows it (checks of one variant)
 # The file-name suffix of a variant: "" for core, "-extended", and "-extended-plus" for the variant with the DTS core and the
@@ -39,7 +39,6 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 slice_sdk() {
   case "$1" in
     macos) echo macosx ;; ios) echo iphoneos ;; ios-simulator) echo iphonesimulator ;;
-    xros) echo xros ;; xros-simulator) echo xrsimulator ;;
     *) die "unknown slice '$1' (expected: $SLICES)" ;;
   esac
 }
@@ -48,8 +47,6 @@ slice_target() {
     macos) echo "arm64-apple-macos$MIN_OS" ;;
     ios) echo "arm64-apple-ios$MIN_OS" ;;
     ios-simulator) echo "arm64-apple-ios$MIN_OS-simulator" ;;
-    xros) echo "arm64-apple-xros$MIN_OS" ;;
-    xros-simulator) echo "arm64-apple-xros$MIN_OS-simulator" ;;
     *) die "unknown slice '$1'" ;;
   esac
 }

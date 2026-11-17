@@ -1,6 +1,6 @@
 #!/bin/bash
 # Links the static FFmpeg libraries of every slice into ONE dynamic framework (FFmpegLGPL),
-# then bundles the five slices into build/FFmpegLGPL.xcframework.
+# then bundles the three slices into build/FFmpegLGPL.xcframework.
 # usage: scripts/package-xcframework.sh [profiles joined by +]      (default: core; "core+extended" makes the extended variant)
 # The extended variant becomes build/FFmpegLGPL-extended.xcframework (same framework and module name inside, so Swift code
 # does not change; Package.swift picks it with MEDIAENGINE_PROFILE=extended, see RESEARCH.md section 24). "core+extended+dtsCore+h264Software+hevcSoftware+audioFallback+vc1Software"
@@ -26,8 +26,6 @@ plist() { # <slice> <min key/value lines> → Info.plist on stdout
     macos) platform=MacOSX; minkey=LSMinimumSystemVersion ;;
     ios) platform=iPhoneOS; minkey=MinimumOSVersion ;;
     ios-simulator) platform=iPhoneSimulator; minkey=MinimumOSVersion ;;
-    xros) platform=XROS; minkey=MinimumOSVersion ;;
-    xros-simulator) platform=XRSimulator; minkey=MinimumOSVersion ;;
   esac
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

@@ -11,7 +11,7 @@ player.replaceCurrentItem(with: item)                    // AVPlayerViewControll
 ```
 
 Run it on the Mac with `swift run --package-path Samples/QuickStart`, or open `Samples/QuickStart/Package.swift` in Xcode and choose an
-iPhone, iPad, Mac or Apple Vision Pro destination. Choose an MKV or WebM file when the file picker opens.
+iPhone, iPad or Mac destination. Choose an MKV or WebM file when the file picker opens.
 
 In your own app: add the package (File > Add Package Dependencies), `import MediaEngine`, and use the three lines above; nothing
 else has to be configured. Files that need the optional codec module (old AVI, FLV, RealMedia, MPEG-2, VP9, AV1 on devices without

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds static FreeType, HarfBuzz, FriBidi and libass for one slice from the pinned sources.
 # usage: scripts/build-subtitle-libs.sh <slice>
-#   slices: macos ios ios-simulator xros xros-simulator   (all arm64)
+#   slices: macos ios ios-simulator   (all arm64)
 # Everything goes to build/install/subs-<slice>; scripts/package-subtitle-xcframework.sh links it into LibASS.framework.
 # Licences: libass ISC, FreeType under the FreeType License (FTL option), HarfBuzz MIT, libunibreak zlib, FriBidi LGPL-2.1 (it stays in a
 # dynamic framework, so it can be replaced). No GPL component is involved.

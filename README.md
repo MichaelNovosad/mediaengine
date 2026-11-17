@@ -1,24 +1,23 @@
 # MediaEngine (working title)
 
-A Swift-native media engine for Apple platforms (iOS, iPadOS, macOS, visionOS 27). It opens Matroska/WebM and other containers AVFoundation cannot, and hands the result to AVPlayer (system UI, AirPlay, PiP, HDR) or to a software-decode renderer. Built on our own LGPL-only FFmpeg.
+A Swift-native media engine for Apple platforms (iOS, iPadOS, macOS 26). It opens Matroska/WebM and other containers AVFoundation cannot, and hands the result to AVPlayer (system UI, AirPlay, PiP, HDR) or to a software-decode renderer. Built on our own LGPL-only FFmpeg.
 
 Status: the engine is feature-complete for version 1 (milestones E0 to E6 as far as they can be done without devices and a lawyer): an MKV plays through AVPlayer with tracks, subtitles, chapters, ordered chapters and an overlay renderer for full ASS and picture subtitles; files Apple cannot decode (legacy containers and codecs, VP8, VP9, AV1 on older chips) play through the software player. What needs hardware or a lawyer is listed in `docs/PROGRESS.md`. Planning, criteria and decisions: `CLAUDE.md`, `docs/`.
 
 ## Platforms
 
-iOS and iPadOS 27.0, macOS 27.0 (Apple silicon) and visionOS 27.0. **visionOS has been verified in the simulator only; it has not been
-verified on hardware** (nobody with a headset has run the device script yet). tvOS and Mac Catalyst are not supported (on a Mac use the macOS
-destination). AirPlay, Picture in Picture and phone performance are not yet measured on devices.
+iOS and iPadOS 26.0, macOS 26.0 (Apple silicon). visionOS is not in this release (it may come back later; the `visionos` branch keeps
+its state of 2026-11-17). tvOS and Mac Catalyst are not supported (on a Mac use the macOS destination). AirPlay, Picture in Picture and phone performance are not yet measured on devices.
 
 ## Build and verify
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-27.app/Contents/Developer
-scripts/build-all.sh      # fetch + verify sources, build 5 slices, package build/FFmpegLGPL.xcframework and build/LibASS.xcframework (about 4 minutes)
+scripts/build-all.sh      # fetch + verify sources, build 3 slices (macOS, iOS, iOS simulator), package build/FFmpegLGPL.xcframework and build/LibASS.xcframework (about 4 minutes)
 scripts/check.sh          # the quick loop: build with zero warnings + unit tests (about 30 s, background priority, silent)
 scripts/verify.sh --quick # sources, licences, docs, API hygiene, ground truth, all macOS test passes, extended variant (about 6 minutes)
 scripts/verify.sh         # + package traits and the sample apps for macOS (about 8 minutes)
-scripts/verify.sh --sims  # + iOS and visionOS samples and the iPhone, iPad, iPhone Duo and visionOS simulators, one at a time
+scripts/verify.sh --sims  # + iOS samples and the iPhone, iPad and iPhone Duo simulators, one at a time
 scripts/verify.sh --deep  # + benchmark gate and AddressSanitizer (instrumented FFmpeg), ThreadSanitizer and UBSan
 scripts/install-hooks.sh  # git hooks: quick check on commit, verify --quick on push
 MEDIAENGINE_BENCH_FILE=/path/movie.mkv swift test --filter BenchmarkTests   # open time, seeks, memory, A/V continuity on a real file
@@ -101,7 +100,7 @@ ForEach(MediaEngine.acknowledgements) { item in            // FFmpeg, libass, Fr
 - `scripts/make-source-pack.sh`: the source pack for a release (exact archives, build scripts, `BUILD-INFO.txt`), checked by `scripts/check-source-pack.sh`.
 - `docs/INTEGRATION.md` (integration guide), `docs/VERSIONING.md` (versioning and support, draft), `CHANGELOG.md`; the DocC documentation (symbols, the "Play an MKV in five minutes" tutorial, articles) builds with `scripts/check-docs.sh`.
 - `docs/PATENT_PROFILES.md`: every codec of each profile with its royalty status (draft for a lawyer); `docs/DECISION_D-E1_LICENSE.md`: the open licence question.
-- `Samples/QuickStart` (the five lines as a SwiftUI app) and `Samples/Player` (system or software player, audio and subtitle menus, external subtitles, profile gating, licences screen) for iOS, macOS and visionOS (`scripts/check-samples.sh`).
+- `Samples/QuickStart` (the five lines as a SwiftUI app) and `Samples/Player` (system or software player, audio and subtitle menus, external subtitles, profile gating, licences screen) for iOS and macOS (`scripts/check-samples.sh`).
 
 ## Layout
 

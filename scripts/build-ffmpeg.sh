@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds static FFmpeg libraries for one slice from the pinned source.
 # usage: scripts/build-ffmpeg.sh <slice> [profile...]     (default profile: core)
-#   slices: macos ios ios-simulator xros xros-simulator   (all arm64)
+#   slices: macos ios ios-simulator   (all arm64)
 # FFMPEG_SANITIZE=address builds an instrumented macOS slice for the sanitizer pass (scripts/check-sanitized.sh).
 # Out-of-tree: nothing is built inside the downloaded source directory.
 source "$(dirname "$0")/lib/common.sh"

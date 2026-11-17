@@ -3,8 +3,8 @@ import Foundation
 import Testing
 import MediaEngine
 
-/// API-1: the quick start of the README, line for line, on every platform the package supports (macOS and the iOS, iPadOS and
-/// visionOS simulators run this same test). Plain `import MediaEngine`, no `@testable`: only what an app can use.
+/// API-1: the quick start of the README, line for line, on every platform the package supports (macOS and the iOS and iPadOS
+/// simulators run this same test). Plain `import MediaEngine`, no `@testable`: only what an app can use.
 @Suite("Quick start")
 struct QuickStartTests {
     @Test("an MKV opens with three lines and AVFoundation reads the item the engine made")

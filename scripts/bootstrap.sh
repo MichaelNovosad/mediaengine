@@ -11,8 +11,6 @@ check() { # <label> <command> <brew formula>
 log "build tools"
 check meson meson meson; check ninja ninja ninja; check cmake cmake cmake; check gpg gpg gnupg; check rustc rustc rustup
 [ -d "$DEVELOPER_DIR" ] && echo "  ok       Xcode    $DEVELOPER_DIR" || { echo "  MISSING  Xcode 27 at $DEVELOPER_DIR"; exit 1; }
-xcrun simctl list runtimes | grep -i -E 'xros|visionos' >/dev/null && echo "  ok       visionOS simulator runtime" \
-  || echo "  MISSING  visionOS runtime (xcodebuild -downloadPlatform visionOS; about 7.5 GB)"
 if [ -n "$missing" ]; then
   if [ "$install" -eq 1 ]; then brew install $missing; else echo "Run: scripts/bootstrap.sh --install"; exit 1; fi
 fi

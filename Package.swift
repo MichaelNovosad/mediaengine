@@ -15,7 +15,7 @@ let ffmpegFramework = Context.environment["MEDIAENGINE_SANITIZED_FFMPEG"] == "1"
 
 let package = Package(
     name: "MediaEngine",
-    platforms: [.iOS("26.0"), .macOS("26.0"), .visionOS("26.0")],
+    platforms: [.iOS("26.0"), .macOS("26.0")],
     products: [
         .library(name: "MediaEngine", targets: ["MediaEngine"]),
     ],

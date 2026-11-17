@@ -21,13 +21,13 @@ All notable changes. The project follows `docs/VERSIONING.md`. Dates are the day
 ### Licences and release
 - `MediaEngine.acknowledgements` (generated from the pins), source pack and `BUILD-INFO.txt`, the procedure and a test for replacing
   `FFmpegLGPL.framework`, patent profile document (draft), licence decision memo (open).
-- DocC with a tutorial and articles; `Samples/QuickStart` for iOS, macOS and visionOS.
+- DocC with a tutorial and articles; `Samples/QuickStart` for iOS and macOS.
 
 ### Quality
 - 64 official VP8, VP9 and AV1 conformance streams decode bit-exact; unit, playback, resource and sanitizer passes in `scripts/verify.sh`;
   benchmark baseline with a 10% regression gate.
 
 ### Known limits
-- visionOS verified in the simulator only; AirPlay, Picture in Picture and phone performance not yet measured on devices.
+- visionOS is not in this release (owner, 2026-11-17; the `visionos` branch keeps it). AirPlay, Picture in Picture and phone performance not yet measured on devices.
 - H.264 Hi10P is out of scope; VC-1, DTS and TrueHD, WMA and RealAudio, Dolby Vision profile 7 conversion and inverse telecine are not in
   version 1 (`docs/PROGRESS.md`, "Deferred after v1").

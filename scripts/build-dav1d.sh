@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the static dav1d AV1 decoder (BSD-2-Clause) for one slice from the pinned source; FFmpeg's `libdav1d` wrapper
 # (profile extended) links it into the extended variant. Out of tree, with a meson cross file written here.
-# usage: scripts/build-dav1d.sh <slice>      slices: macos ios ios-simulator xros xros-simulator   (all arm64)
+# usage: scripts/build-dav1d.sh <slice>      slices: macos ios ios-simulator   (all arm64)
 source "$(dirname "$0")/lib/common.sh"
 
 slice="${1:?usage: build-dav1d.sh <slice>}"

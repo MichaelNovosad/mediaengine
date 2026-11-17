@@ -45,6 +45,7 @@ public final class SoftwareController: PlaybackController {
     @ObservationIgnored private let videoEnded = LockedFlag()
     @ObservationIgnored private var audioFinished = false
     @ObservationIgnored private var holdingForAudio = false
+    @ObservationIgnored private var lastSoundRestart = ContinuousClock.now - .seconds(10)
     @ObservationIgnored private var closed = false
 
     private final class LockedFlag: @unchecked Sendable {
@@ -150,6 +151,21 @@ public final class SoftwareController: PlaybackController {
                     if holdingForAudio { pipeline.synchronizer.setRate(wantedRate, time: audio.player.currentTime()); holdingForAudio = false }
                     else if abs(audio.player.currentTime().seconds - picture) > 0.06 {
                         pipeline.synchronizer.setRate(wantedRate, time: audio.player.currentTime())      // the picture follows the sound
+                    }
+                } else if audio.player.rate == 0 {
+                    // The sound stopped by itself. A player that does not wait to minimise stalls (it cannot: it starts at a host
+                    // time with the picture) drops its rate to 0 when its data runs out and stays there: after a switch to another
+                    // sound track it waited for the new track's first piece and fell silent while the picture went on, until a jump
+                    // started both again (the app's owner, 2026-11-17). Hold the picture, and when the sound has data, start both
+                    // together where the picture stands (at most once a second).
+                    if !holdingForAudio {
+                        pipeline.synchronizer.setRate(0, time: pipeline.synchronizer.currentTime())
+                        holdingForAudio = true
+                    } else if sound.isPlaybackLikelyToKeepUp || sound.isPlaybackBufferFull || !sound.isPlaybackBufferEmpty,
+                              ContinuousClock.now - lastSoundRestart > .seconds(1) {
+                        lastSoundRestart = ContinuousClock.now
+                        currentTime = max(pipeline.synchronizer.currentTime().seconds, 0)
+                        startClocks()
                     }
                 } else if !holdingForAudio, audio.item.isPlaybackBufferEmpty {
                     pipeline.synchronizer.setRate(0, time: pipeline.synchronizer.currentTime())          // the sound is buffering: hold the picture

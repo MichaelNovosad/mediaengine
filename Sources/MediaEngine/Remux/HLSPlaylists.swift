@@ -68,8 +68,11 @@ enum HLSPlaylists {
             lines.append("#EXT-X-STREAM-INF:" + attributes.joined(separator: ","))
             lines.append(videoPlaylist)
         } else if let first = audio.first {
-            // Audio-only: the first rendition doubles as the only variant.
-            lines.append("#EXT-X-STREAM-INF:BANDWIDTH=256000,CODECS=\(quoted(first.codecs))" + (subtitles.isEmpty ? "" : ",SUBTITLES=\"subs\""))
+            // Sound only (the software player's sound): the first rendition doubles as the only variant, and the variant names the
+            // audio group, so that the player plays the rendition that is chosen. Without the group the variant's own sound (the
+            // first track) went on playing whatever was chosen: the choice changed, the sound did not (the app's owner, 2026-11-17:
+            // a DVD's sound tracks).
+            lines.append("#EXT-X-STREAM-INF:BANDWIDTH=256000,CODECS=\(quoted(first.codecs)),AUDIO=\"audio\"" + (subtitles.isEmpty ? "" : ",SUBTITLES=\"subs\""))
             lines.append(audioPlaylist(first.id))
         }
         return lines.joined(separator: "\n") + "\n"

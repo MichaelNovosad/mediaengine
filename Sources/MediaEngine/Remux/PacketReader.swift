@@ -93,29 +93,39 @@ final class PacketReader: PacketSource {
         self.source = source
         self.cancellation = cancellation
         self.quick = quick
+        dvd = (source as? DVDTitleByteSource)?.layout
         context = try FormatContext.open(source: source, cancellation: cancellation, quick: quick)
         guard let packet = av_packet_alloc() else { throw MediaError.engine(detail: "could not allocate packet") }
         self.packet = packet
         try prepareStreams()
         adoptRememberedIndex()
         let name = String(cString: format.pointee.iformat.pointee.name)
-        indexesKeyframes = name == "mpegts" || name == "mpeg"
+        indexesKeyframes = (name == "mpegts" || name == "mpeg") && dvd == nil
     }
 
     private let quick: Bool
+    /// A DVD title (``DVDTitleByteSource``): its packets are put on the title's timeline cell by cell, and it seeks through the
+    /// disc's time map; FFmpeg's own timestamps restart and jump between cells and its seeks by time land anywhere.
+    private let dvd: DVDTitleLayout?
+    /// The cell the last packet came from.
+    private var dvdCell = 0
+    /// DVD subtitles still being put together, per stream: the start of one subtitle and the size its first two bytes give.
+    private var subpictures: [Int: (data: Data, expected: Int, pts: Int64, position: Int64)] = [:]
+    private static let ninetyKilohertz = Rational(num: 1, den: 90_000)
     /// MPEG transport and program streams have no index, and FFmpeg's seek in them searches the file by jumping about in it
     /// unless its index already brackets the target: the reader adds every video keyframe it reads, so the next piece's
     /// seek lands almost at once.
     private var indexesKeyframes = false
     /// FFmpeg seeks this file by decode time (MPEG transport and program streams): a keyframe shown at time t is decoded a few
     /// frames before t, so a seek to t lands just after it.
-    var seeksByDecodeTime: Bool { indexesKeyframes }
+    var seeksByDecodeTime: Bool { indexesKeyframes || dvd != nil }
 
     /// Whether the file is Matroska or WebM (FFmpeg's demuxer name).
     var isMatroska: Bool { String(cString: format.pointee.iformat.pointee.name).contains("matroska") }
 
     /// Where the file's timeline starts, in seconds (see `originTicks`): the engine's timeline is the file's minus this.
     var originSeconds: Double {
+        if dvd != nil { return 0 }                                      // a DVD title's timeline is made by the reader
         let start = format.pointee.start_time
         guard start != Int64.min, start > 1_000 else { return 0 }
         return Double(start) / 1_000_000
@@ -190,6 +200,7 @@ final class PacketReader: PacketSource {
     /// files cut from a longer one at wherever the cut was). Every timestamp the reader hands out has this taken off, so the
     /// engine sees a timeline from zero; seeks and the keyframe list add and take it off the same way.
     private func originTicks(_ index: Int) -> Int64 {
+        if dvd != nil { return 0 }
         let start = format.pointee.start_time
         guard start != Int64.min, start > 1_000 else { return 0 }          // under a millisecond, or unknown (and negative leads are handled by the shift)
         return timeBase(index).ticks(seconds: Double(start) / 1_000_000)
@@ -220,6 +231,11 @@ final class PacketReader: PacketSource {
     /// Keyframes of a stream from the container's index (time in the stream's time base, byte position when known),
     /// in time order. The index is loaded by a seek to the end first, since Matroska reads its Cues lazily.
     func keyframeIndex(stream index: Int, loadingIndexUpTo duration: Double? = nil) -> [(timestamp: Int64, position: Int64?)] {
+        if let dvd {
+            // The disc's time map: a video object unit starts (with a keyframe) at each of these points.
+            let base = timeBase(index)
+            return dvd.titleSeekPoints(read: DVDTitleLayout.reader(source)).map { (base.ticks(seconds: $0.time), $0.logical) }
+        }
         if let duration { _ = try? seek(stream: index, to: timeBase(index).ticks(seconds: duration)) }
         let st = stream(index)
         let count = avformat_index_get_entries_count(st)
@@ -250,6 +266,8 @@ final class PacketReader: PacketSource {
     func rewind() throws {
         context = try FormatContext.open(source: source, cancellation: cancellation, quick: quick)
         clock = [:]
+        dvdCell = 0
+        subpictures = [:]
         cuesLoaded = false
         applyStreamLimit()
         applyPreparedParameters()
@@ -259,6 +277,15 @@ final class PacketReader: PacketSource {
 
     /// Positions the reader at the last keyframe at or before `timestamp` of the given stream.
     func seek(stream index: Int, to timestamp: Int64) throws {
+        if let dvd {
+            // The last point of the disc's time map at or before the time: a video object unit that starts with a keyframe.
+            let point = dvd.seekPoint(atOrBefore: timeBase(index).seconds(timestamp), read: DVDTitleLayout.reader(source))
+            let result = av_seek_frame(format, -1, point.logical, AVSEEK_FLAG_BYTE)
+            if result < 0 { throw FormatContext.openError(result, context.bridge) }
+            if let cell = dvd.cellIndex(containingLogical: point.logical) { dvdCell = cell }
+            subpictures = [:]
+            return
+        }
         if untimedStreams.contains(index) { return try seekUntimed(stream: index, to: timestamp) }
         try helpSeek(stream: index, to: timestamp)
         let result = av_seek_frame(format, Int32(index), timestamp + originTicks(index), AVSEEK_FLAG_BACKWARD)
@@ -282,6 +309,15 @@ final class PacketReader: PacketSource {
                 if stamp != Int64.min { av_add_index_entry(st, packet.pointee.pos, stamp, 0, 0, Int32(AVINDEX_KEYFRAME)) }
             }
 
+            if dvd != nil, let st = format.pointee.streams[Int(packet.pointee.stream_index)],
+               st.pointee.codecpar.pointee.codec_id == AV_CODEC_ID_DVD_SUBTITLE {
+                switch subpicture(stream: Int(packet.pointee.stream_index)) {
+                case .pending: continue
+                case .complete(let whole): return whole
+                case .single: break
+                }
+            }
+
             var pts = packet.pointee.pts
             var dts = packet.pointee.dts
             var duration = max(packet.pointee.duration, 0)
@@ -294,6 +330,11 @@ final class PacketReader: PacketSource {
             }
             var payloadOffset = 0
             let streamIndex = Int(packet.pointee.stream_index)
+            if let dvd, pts != Int64.min {
+                if packet.pointee.pos >= 0, let cell = dvd.cellIndex(containingLogical: packet.pointee.pos) { dvdCell = cell }
+                pts = titleTicks(pts, layout: dvd, stream: streamIndex)
+                if dts != Int64.min { dts = titleTicks(dts, layout: dvd, stream: streamIndex) }
+            }
             // Raw AAC: number the frames ourselves. (After a seek FFmpeg invents timestamps for the file, so a stream known
             // to be untimed keeps using ours.)
             if adtsStreams.contains(streamIndex), pts != Int64.min, !untimedStreams.contains(streamIndex), let frame = adtsFrame() {
@@ -455,6 +496,43 @@ final class PacketReader: PacketSource {
         bytes[1] = UInt8((frame.frequencyIndex & 1) << 7 | frame.channelConfiguration << 3)
         parameters.pointee.extradata = bytes
         parameters.pointee.extradata_size = Int32(size)
+    }
+
+    private enum Subpicture { case pending, complete(MediaPacket), single }
+
+    /// A DVD subtitle that spans several packets, put together. FFmpeg's demuxer joins them with its parser only in streams it made
+    /// itself; a DVD title's subtitle streams are made by `FormatContext` (so that they are known from the start), and their later
+    /// packets also have no timestamp, so they were dropped: a subtitle larger than one packet came out cut or not at all (the app's
+    /// owner, 2026-11-17: subtitles that did not show or switch; Häxan's drawn three times). A subtitle's first two bytes give its
+    /// size; its packets follow one another in the stream.
+    private func subpicture(stream index: Int) -> Subpicture {
+        let size = Int(packet.pointee.size)
+        guard size > 0, let bytes = packet.pointee.data else { return .pending }
+        if var partial = subpictures[index] {
+            partial.data.append(bytes, count: size)
+            guard partial.data.count >= partial.expected else { subpictures[index] = partial; return .pending }
+            subpictures[index] = nil
+            return .complete(MediaPacket(stream: index, data: partial.data.prefix(partial.expected), pts: partial.pts, dts: partial.pts,
+                                         duration: 0, isKeyframe: true, position: partial.position))
+        }
+        guard size >= 2 else { return .pending }
+        let expected = Int(bytes[0]) << 8 | Int(bytes[1])
+        guard expected > size else { return .single }
+        // The start of a longer subtitle: it needs its time (a later part met on its own, after a jump, is passed over).
+        let stamp = packet.pointee.pts != Int64.min ? packet.pointee.pts : packet.pointee.dts
+        guard stamp != Int64.min, let dvd else { return .pending }
+        if packet.pointee.pos >= 0, let cell = dvd.cellIndex(containingLogical: packet.pointee.pos) { dvdCell = cell }
+        subpictures[index] = (Data(bytes: bytes, count: size), expected, titleTicks(stamp, layout: dvd, stream: index), packet.pointee.pos)
+        return .pending
+    }
+
+    /// A DVD title's packet time on the title's timeline (``DVDTitleLayout/placement(cell:fallback:read:)``): the cell's
+    /// timestamps, unwrapped near its start, moved by the cell's offset.
+    private func titleTicks(_ ticks: Int64, layout: DVDTitleLayout, stream index: Int) -> Int64 {
+        let base = timeBase(index)
+        let raw = base.convert(ticks, to: Self.ninetyKilohertz)
+        let place = layout.placement(cell: dvdCell, fallback: raw, read: DVDTitleLayout.reader(source))
+        return Self.ninetyKilohertz.convert(DVDTitleLayout.unwrap(raw, near: place.anchor) + place.offset, to: base)
     }
 
     /// Seeks by byte position through an index made by reading the file once.

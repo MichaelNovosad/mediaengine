@@ -151,7 +151,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
             // The next picture at or after the seek target, in presentation order.
             var next: DecodedFrame?
             while next == nil {
-                if let frame = decoder.receive() {
+                if let frame = decoder.receive(discardingBefore: discardBefore) {
                     if frame.time + frame.duration / 2 >= discardBefore { next = frame }
                     continue
                 }
@@ -166,6 +166,8 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
             statistics.withLock { $0.decoded += 1 }
             if !first, synchronizer.rate > 0, frame.time + frame.duration < synchronizer.currentTime().seconds - lateTolerance {
                 statistics.withLock { $0.dropped += 1 }
+                // Catch up: the next two seconds or so are converted without deinterlacing, then it is tried again.
+                if frame.wasDeinterlaced { decoder.skipDeinterlacing(next: 50) }
                 continue
             }
             guard let sample = makeSample(frame, formatDescription: &formatDescription, immediately: first) else { continue }

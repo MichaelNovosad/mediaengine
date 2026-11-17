@@ -130,6 +130,49 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-17 **DVD subtitles and track switching** (the app's owner, after trying part 3: "subtitles aren't seen", then "subtitles
+  and audio don't change", then "switching audio during playback mutes until a jump"; the owner then: "it works correctly now").
+  (1) A DVD title's subtitle streams are made from the information files before FFmpeg's first look
+  (`FormatContext.prepareDVDSubtitles`, `DVDStructure.Title.subtitleStreams`, `pictureHeight`), with the disc's colours as the
+  decoder's setup text (`DVDTitleLayout.subtitleSetup`, YCrCb to RGB): a program stream shows a subtitle stream only with its
+  first subtitle. (2) `PacketReader` joins a DVD subtitle that spans several packets (FFmpeg's parser runs only in streams its
+  demuxer made, and the later packets have no timestamp, so they were dropped). (3) The software player's sound-only master
+  playlist names the audio group on its variant (`HLSPlaylists.master`): before, the first sound track went on playing whatever was
+  chosen. (4) `SoftwareController.tick` starts the sound again when AVPlayer stopped by itself (it does not wait to minimise stalls,
+  and after a switch it ran out of data and stayed silent). The remux logs when the player asks for a sound track's playlist.
+  Checked with the owner's discs on the Mac (temporary programs, removed) and by the owner on the device. No unit test.
+- 2026-11-17 **A DVD title plays as one film; the frozen DVD picture** (part 2 of EGA-117 with EGA-14; not committed).
+  `DVDTitleByteSource` (public: a title's cells out of its title set's stream files, read as one file) and `DVDTitleLayout`
+  (cells in that byte stream, seek points from the time map, a placement per cell). `PacketReader` switches to a DVD mode for
+  such a source: packets go on the title's timeline (each cell's start from its navigation pack, `vobu_s_ptm`; a cell whose
+  timestamps run on from the cell before keeps its offset, one that jumps starts where the one before ends; 33-bit timestamps
+  unwrapped), seeks go by byte to the last time-map point at or before the time, the keyframe list is the time map, the file's
+  own start is not taken off. The prober takes the title's length and chapters (on the title's timeline). Found on two real discs:
+  timestamps run on across cells, and the cells' listed times drift from them (Häxan: +0.8 s by 14 min, +6 s at the end, so
+  105.2 min instead of 105.1); time-map entry n is at (n+1) × the step (checked against the navigation packs).
+  **The frozen picture** (the owner: "they play audio but the video is stuck"): at normal priority a VOB decoded 134 pictures in
+  9 s and showed 12; a stack sample put 83 % of the picture thread in `Deinterlacer.clean`; a release build showed 266 of 269, so
+  it is the unoptimised deinterlacer of a debug build (Xcode runs) falling behind and every late picture being dropped. Now: after
+  a late picture the next 50 are converted without deinterlacing (`SoftwareVideoDecoder.skipDeinterlacing`), and pictures before a
+  seek target are not converted at all (`receive(discardingBefore:)`). Evidence (temporary program, debug build, normal priority,
+  the files on the mounted share read through `DVDTitleByteSource`, removed afterwards): Häxan 105.2 min, 22 chapters; Az ember
+  tragédiája 159.4 min, 16 chapters; both play from 0 (142 to 175 of about 150 pictures shown in 6 s) and after jumps to 30 min,
+  the last minute and back to 5 min (100 to 120 pictures in the next 4 s, the time where it was asked). **Not checked:** the sound
+  across cell boundaries by ear, an iPhone, a server source; no unit test. Next: the app (part 3).
+- 2026-11-17 **DVD structure reader, part 1 of a DVD title played as one film** (the app's owner chose "full film first": Jira
+  EGA-117 with EGA-14). `DVDStructure` (public): from `VIDEO_TS.IFO` and each `VTS_xx_0.IFO`, the titles in the disc's order, each
+  with its title set, length (sum of its cells), chapter starts (chapter table, then program map), cells in play order with their
+  sector range in the title set's stream files read as one (angle 1 only), the subtitle palette (16 colours, YCrCb) and the time map
+  (step and sectors, for jumps); `mainTitle` (the longest), `streamFileNames(titleSet:)`, `informationFileName(titleSet:)`. Layout
+  from public descriptions of DVD-Video (the format book is licensed and was not read); every read bounds-checked. `swift build`
+  without errors or warnings. **Checked against two real discs on the owner's share** (a temporary program, removed): every title's
+  cells cover its title set's stream files exactly (Häxan's film: sectors 0 to 2,382,286 of 2,382,287 in `VTS_02_1` to `_5`; Az ember
+  tragédiája: 0 to 3,539,680 of 3,539,681 in `VTS_01_1` to `_7`; titles that share a set split it without gap or overlap); the lengths
+  agree with the time maps (Häxan 105.1 min = 1,578 entries of 4 s; Az ember 159.4 min = 1,912 of 5 s) and with what the engine
+  measured on 2026-11-12 (Häxan's 4.5 min intro = 273 s); main titles: Häxan 105.1 min with 22 chapters (the owner saw 14 h),
+  Az ember 159.4 min with 16; the extras: Häxan's 1968 version 76.6 min, an 8.2 min extra, Az ember 22.8, 2.2 and 0.2 min; palettes
+  look like YCrCb (white `EB8080`, black `108080`). No test written or run. Next parts: a byte source that reads a title set's VOB files as one, and a packet reader that plays a title's cells on
+  one timeline (length, start, jumps from the time map); then the app.
 - 2026-11-12 (late) **DVD parts open** (the app's owner: Az ember tragédiája and Häxan do not run on iOS). Two causes, found by
   playing the owner's VOB files muted through the engine with a temporary diagnostic program (removed): (1) the later VOB files of a
   title (`VTS_01_5`, `VTS_01_6`) show their DVD subtitle streams only near the end of the file, which the quick reopening does not read

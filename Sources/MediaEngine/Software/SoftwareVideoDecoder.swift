@@ -79,6 +79,14 @@ final class SoftwareVideoDecoder {
     /// What to do with interlaced pictures from now on.
     func setDeinterlacing(_ mode: Deinterlacing) { deinterlacing.withLock { $0 = mode } }
 
+    /// Pictures still to be converted without deinterlacing because the player fell behind (``skipDeinterlacing(next:)``).
+    private let skipping = Mutex(0)
+
+    /// Converts the next pictures without deinterlacing: the player is late, and a moving picture with some combing is better than a
+    /// frozen one. The deinterlacer is our own Swift code; in a debug build it is several times slower and an SD DVD's pictures came
+    /// out later than the sound, so every one was dropped and the picture stood still (the app's owner, 2026-11-12).
+    func skipDeinterlacing(next count: Int) { skipping.withLock { $0 = max($0, count) } }
+
     /// How long a picture stays on screen when the file does not say: one frame period, and half a period more for every field
     /// the stream asks to repeat (soft telecine: `repeat_pict` counts field periods, so 3:2 pulldown flags lengthen a picture
     /// the way a television would show it, and a 24 fps film keeps its rhythm instead of being played at 30).
@@ -87,14 +95,27 @@ final class SoftwareVideoDecoder {
         return framePeriod * Double(2 + max(repeatFields, 0)) / 2
     }
 
-    /// The next finished picture, or `nil` when the decoder needs more packets (or has none left).
-    func receive() -> DecodedFrame? {
+    /// The next finished picture, or `nil` when the decoder needs more packets (or has none left). Pictures that end before
+    /// `threshold` (less than half of them at or after it: the ones a seek decodes on the way to its target) are passed over
+    /// without being converted; converting and deinterlacing them cost more than decoding them, and after a jump into a DVD
+    /// the picture came back seconds late in a debug build.
+    func receive(discardingBefore threshold: Double = -.infinity) -> DecodedFrame? {
         while avcodec_receive_frame(context, frame) >= 0 {
             defer { av_frame_unref(frame) }
+            if threshold > -.infinity, frame.pointee.best_effort_timestamp != Int64.min {
+                let duration = Self.displayDuration(packetDuration: frame.pointee.duration > 0 ? timeBase.seconds(frame.pointee.duration) : nil,
+                                                    framePeriod: defaultDuration, repeatFields: Int(frame.pointee.repeat_pict))
+                if timeBase.seconds(frame.pointee.best_effort_timestamp) + duration / 2 < threshold { continue }
+            }
             if let aspect = containerAspect { frame.pointee.sample_aspect_ratio = aspect }
             let isInterlaced = frame.pointee.flags & AV_FRAME_FLAG_INTERLACED != 0
             let topFieldFirst = frame.pointee.flags & AV_FRAME_FLAG_TOP_FIELD_FIRST != 0
-            let clean = isInterlaced && deinterlacing.withLock { $0 } == .automatic
+            let behind = skipping.withLock { count -> Bool in
+                guard count > 0 else { return false }
+                count -= 1
+                return true
+            }
+            let clean = isInterlaced && deinterlacing.withLock { $0 } == .automatic && !behind
             guard let buffer = try? converter.convert(frame, deinterlaceTopFieldFirst: clean ? topFieldFirst : nil) else { continue }
             let stamp = frame.pointee.best_effort_timestamp
             guard stamp != Int64.min else { continue }

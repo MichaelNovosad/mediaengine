@@ -596,6 +596,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         if path.hasPrefix("audio-") {
             if path.hasSuffix(".m3u8"), let id = Int(path.dropFirst("audio-".count).dropLast(".m3u8".count)),
                outputs[id]?.kind == .audio {
+                // The player asks for a sound track's playlist when it starts playing that track (at the start, and at a switch).
+                Self.logger.info("Sound track \(id, privacy: .public): the player asked for its playlist")
                 return text(mediaPlaylist(stream: id))
             }
             let parts = path.dropFirst("audio-".count).split(separator: "-", maxSplits: 1)

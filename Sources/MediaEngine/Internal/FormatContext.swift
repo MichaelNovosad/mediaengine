@@ -58,12 +58,46 @@ final class FormatContext {
         }
         let context = FormatContext(bridge: bridge, format: format, io: io)
 
+        if let layout = (source as? DVDTitleByteSource)?.layout { prepareDVDSubtitles(format, layout: layout) }
         measureAttachedPictures(format)
         let infoResult = avformat_find_stream_info(format, nil)
         if bridge.cancellation.isCancelled { throw MediaError.cancelled }
         if infoResult < 0, format.pointee.nb_streams == 0 { throw openError(infoResult, bridge) }
         guard format.pointee.nb_streams > 0 else { throw MediaError.corrupt(detail: "no tracks") }
         return context
+    }
+
+    /// A DVD title's subtitle streams, made before FFmpeg looks at the stream: the program stream shows a subtitle stream only when its
+    /// first subtitle comes, which can be minutes in, so the first look found none and the film's subtitles were not offered (the
+    /// app's owner, 2026-11-17: Az ember tragédiája). The disc's information files list them; FFmpeg's program stream demuxer files
+    /// a packet under the stream whose id is its substream (`0x20 +` the number), whether it made that stream or not. Every opening
+    /// of the title makes them in the same order, first, so the stream numbers agree between the look and the readers. Each gets the
+    /// subtitle canvas and the disc's colours.
+    private static func prepareDVDSubtitles(_ format: UnsafeMutablePointer<AVFormatContext>, layout: DVDTitleLayout) {
+        let setup = Array(layout.subtitleSetup.utf8)
+        func giveSetup(_ parameters: UnsafeMutablePointer<AVCodecParameters>) {
+            guard parameters.pointee.extradata_size == 0, let memory = av_mallocz(setup.count + 64) else { return }    // 64: FFmpeg's input padding
+            memory.copyMemory(from: setup, byteCount: setup.count)
+            parameters.pointee.extradata = memory.assumingMemoryBound(to: UInt8.self)
+            parameters.pointee.extradata_size = Int32(setup.count)
+        }
+        var present = Set<Int>()
+        for index in 0..<Int(format.pointee.nb_streams) {
+            guard let stream = format.pointee.streams[index] else { continue }
+            present.insert(Int(stream.pointee.id))
+            if stream.pointee.codecpar.pointee.codec_id == AV_CODEC_ID_DVD_SUBTITLE { giveSetup(stream.pointee.codecpar) }
+        }
+        for id in layout.subtitleStreamIDs where !present.contains(id) {
+            guard let stream = avformat_new_stream(format, nil) else { continue }
+            stream.pointee.id = Int32(id)
+            stream.pointee.time_base = AVRational(num: 1, den: 90_000)
+            let parameters = stream.pointee.codecpar!
+            parameters.pointee.codec_type = AVMEDIA_TYPE_SUBTITLE
+            parameters.pointee.codec_id = AV_CODEC_ID_DVD_SUBTITLE
+            parameters.pointee.width = 720
+            parameters.pointee.height = Int32(layout.pictureHeight)
+            giveSetup(parameters)
+        }
     }
 
     /// A cover picture (a file attachment shown as a still video stream, as Matroska covers are) is in memory once the file is open.

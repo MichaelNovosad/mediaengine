@@ -4,7 +4,9 @@
 
 ## Right now
 
-- **2026-11-17 (night, not committed): visionOS left out; VC-1 plays.** visionOS: no slices, platform, samples or simulator runs on
+- **2026-11-18: the AVPlayer path's picture layer is made only when a view asks for it** (an AVFoundation deadlock found in the app's
+  tests; Done 2026-11-18). Exported to `dist/package` (extended-plus).
+- **2026-11-17 (night, committed since: `c071398`, `5b7ea9e`): visionOS left out; VC-1 plays.** visionOS: no slices, platform, samples or simulator runs on
   `main`; the `visionos` branch (at `441dcf6`, local) keeps the state before. `extended-plus` repackaged with three slices, licence check
   passed, exported to `dist/package` (the app's copy was still the one of 2026-11-12 without VC-1: the owner's "VC-1 needs an optional
   module"). Lost in Translation then fell behind and stopped after jumps; fixed the same night (RESEARCH 31): 24 pictures a second in a
@@ -145,6 +147,19 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-18 **`AVPlayerController.videoLayer` is made on first use** (the app's review 2026-11-18, N1; the app's owner: "Fix N1
+  first"). The app's queue test `PlayQueuePlaybackTests.plays` hung in a deadlock inside AVFoundation (sampled twice): the main
+  thread, in AVPlayer's own rate-change callback, held `com.apple.avplayer.ivars` and waited for the CoreMedia player queue, while that
+  queue told an `AVPlayerLayer` about a new presentation size (`_updateReadyForDisplay`, `_cachedPresentationSizeOfCurrentItem`) and
+  the layer waited for `avplayer.ivars`. The only layer in that test was the one every `AVPlayerController` made in its init, which
+  the app never shows (it draws AVPlayer films with its own layer on the Mac and `AVPlayerViewController` on iOS; `MediaVideoView` is
+  the only user). It is now made the first time `videoLayer` is read (`MediaVideoLayerHost.layer(for:)`), so a controller nothing shows
+  has no layer watching its player. **Evidence:** `VideoLayerTests` (new: no layer until asked, the same one after, on the controller's
+  player) and `QuickStartTests` pass (3 tests); exported (`export-package.sh extended-plus`); in the app `PlayQueuePlaybackTests.plays`
+  passed 5 of 5 runs (it hung in 3 of 3 on the code before today and 3 of 3 before this change), the whole queue suite (5),
+  `PlaybackThroughAppTests` (3), `ControlsTests` (8) and `EndAndSystemMenuTests` (4) pass; the app built for macOS and the iOS
+  simulator. **Not covered:** the app's own layers (Mac) and `AVPlayerViewController` (iOS) still watch the film that is shown, as
+  they must; whether the same race can reach them on a device is not known (no test shows a view).
 - 2026-11-17 (night, very last) **Pieces read once again; the sound kept around the playhead** (the app's owner: "it plays a few
   seconds and then is stuck", "loads the sound as if it never loaded before", "10 November was better"). `buildWindow` takes a converted
   track's pre-roll from the window before when it is in memory and otherwise reads from a keyframe at most 1 s earlier

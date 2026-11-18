@@ -99,7 +99,22 @@ public final class AVPlayerController: PlaybackController {
     public let player: AVPlayer
     public let item: AVPlayerItem
     /// A layer showing the picture, for ``MediaVideoView`` (no controls); use ``player`` with `AVPlayerViewController` for the system controls.
-    public let videoLayer: AVPlayerLayer
+    ///
+    /// Made the first time it is asked for. An `AVPlayerLayer` watches its player from the moment it exists, also when nothing shows it,
+    /// and such a layer took part in a deadlock inside AVFoundation: the main thread, in the player's rate-change callback, held the
+    /// player's own queue and waited for its CoreMedia queue, while that queue told the layer about a new presentation size and the
+    /// layer waited for the player's queue (Eiga's review 2026-11-18, N1: a film shown just as the next one was asked for). Eiga draws
+    /// AVPlayer films with its own layer or `AVPlayerViewController`, so this one is made only for ``MediaVideoView``.
+    public var videoLayer: AVPlayerLayer {
+        if let madeVideoLayer { return madeVideoLayer }
+        let layer = AVPlayerLayer(player: player)
+        layer.videoGravity = .resizeAspect
+        madeVideoLayer = layer
+        return layer
+    }
+    @ObservationIgnored private var madeVideoLayer: AVPlayerLayer?
+    /// Whether ``videoLayer`` has been made (tests).
+    var hasVideoLayer: Bool { madeVideoLayer != nil }
     public private(set) var state: PlaybackState = .loading
     public private(set) var error: MediaError?
     public private(set) var currentTime: TimeInterval = 0
@@ -128,8 +143,6 @@ public final class AVPlayerController: PlaybackController {
         self.item = item
         self.path = path
         player = AVPlayer(playerItem: item)
-        videoLayer = AVPlayerLayer(player: player)
-        videoLayer.videoGravity = .resizeAspect
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled, let controller = self {
                 controller.refresh()

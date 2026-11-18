@@ -68,4 +68,10 @@ final class KeyframeIndexStore: Sendable {
             try? FileManager.default.removeItem(at: url)
         }
     }
+
+    /// Forgets everything kept, in memory and on disk (Settings > Storage in the app: ``MediaEngine/clearCache()``).
+    func removeAll() {
+        memory.withLock { $0 = [:] }
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+    }
 }

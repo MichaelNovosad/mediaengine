@@ -71,4 +71,10 @@ final class ProbeStore: Sendable {
         // "apple1": probes made before the Apple-first check (2026-11-12) lack `Codec.appleDecodes` and are probed again.
         return "\(current.hardwareAV1)-\(current.availableProfiles.rawValue)-\(current.dolbyVision)-apple1"
     }
+
+    /// Forgets everything kept, in memory and on disk (Settings > Storage in the app: ``MediaEngine/clearCache()``).
+    func removeAll() {
+        memory.withLock { $0 = [:] }
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+    }
 }

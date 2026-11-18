@@ -147,6 +147,11 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-18 **`MediaEngine.cacheSize()` and `clearCache()`** (for the app's Settings > Storage, Jira EGA-113). What the engine keeps in
+  `Caches/MediaEngine` (descriptions of files read over a network, `ProbeStore`; keyframe maps, `KeyframeIndexStore`) can now be measured
+  and forgotten, in memory and on disk (`removeAll()` on both stores); files are probed and indexed again at their next opening.
+  **Evidence:** `CacheTests` 2 (a kept keyframe map counted and forgotten; folder sizes) and `VideoLayerTests` pass; exported
+  (extended-plus); the app built for macOS and the iOS simulator against it.
 - 2026-11-18 **`AVPlayerController.videoLayer` is made on first use** (the app's review 2026-11-18, N1; the app's owner: "Fix N1
   first"). The app's queue test `PlayQueuePlaybackTests.plays` hung in a deadlock inside AVFoundation (sampled twice): the main
   thread, in AVPlayer's own rate-change callback, held `com.apple.avplayer.ivars` and waited for the CoreMedia player queue, while that

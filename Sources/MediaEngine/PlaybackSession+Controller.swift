@@ -33,6 +33,13 @@ extension PlaybackSession {
         guard !ServedTracks(info: info, externalAudio: externalAudio).audio.isEmpty else { return nil }
         let remux = try await startRemux()
         let server = try await startServer(for: remux)
-        return attach(AVPlayerItem(url: server.masterURL))
+        let item = AVPlayerItem(url: server.masterURL)
+        // Only a little ahead: every piece of sound it asks for makes the engine read the whole stream around it, picture included, and
+        // AVPlayer's own choice took it minutes ahead of the film (2026-11-19: Lost in Translation read at 3.6 times its own rate).
+        item.preferredForwardBufferDuration = Self.soundForwardBuffer
+        return attach(item)
     }
+
+    /// Seconds of sound the engine's own player buffers ahead of the playhead (a hint AVPlayer follows for streams like this one).
+    static let soundForwardBuffer: TimeInterval = 20
 }

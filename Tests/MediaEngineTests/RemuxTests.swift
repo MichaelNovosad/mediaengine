@@ -111,6 +111,18 @@ struct SegmentPlanTests {
         #expect(plan.segment(at: 0)?.index == 0 && plan.segment(at: 5.99)?.index == 0)
         #expect(plan.segment(at: 6)?.index == 1 && plan.segment(at: 100)?.index == 2 && plan.segment(at: -3)?.index == 0)
     }
+
+    @Test("sound only: the read-ahead goes about 30 s past the piece asked for, and never more than 30 s past the film (2026-11-19)")
+    func soundReadAhead() {
+        let pieces = (0..<200).map { SegmentPlan.Segment(index: $0, start: Double($0) * 5, end: Double($0 + 1) * 5) }   // 5 s each
+        #expect(RemuxSession.soundReadAheadEnd(after: 10, segments: pieces, playhead: nil) == 16, "30 s after piece 10 without a playhead")
+        #expect(RemuxSession.soundReadAheadEnd(after: 10, segments: pieces, playhead: 50) == 16, "the film at piece 10: the same")
+        // The sound player asked far ahead of the film (piece 40 while it plays at 52 s): at most up to 82 s, piece 16.
+        #expect(RemuxSession.soundReadAheadEnd(after: 40, segments: pieces, playhead: 52) == nil, "nothing more past the film's 30 s")
+        #expect(RemuxSession.soundReadAheadEnd(after: 14, segments: pieces, playhead: 52) == 16, "up to the piece that starts by 82 s")
+        #expect(RemuxSession.soundReadAheadEnd(after: 199, segments: pieces, playhead: 990) == nil, "the last piece")
+        #expect(RemuxSession.soundReadAheadEnd(after: 195, segments: pieces, playhead: nil) == 199, "not past the end")
+    }
 }
 
 @Suite("HLS remux")

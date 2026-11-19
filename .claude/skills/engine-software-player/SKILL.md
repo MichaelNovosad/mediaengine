@@ -67,7 +67,12 @@ Translation) that is about 10 MB/s at a jump, the owner's router's best. What he
 - The source packets of every converted sound track stay in memory under `soundPacketBudget` (48 MB), trimmed around where the player
   plays (`notePlayhead`, called by both controllers), so a switch converts from memory (25 ms) instead of reading again.
 
-Only one reading for both (the direct player, the app's `docs/OWN_PLAYER.md`) removes the double read.
+- The sound-only AVPlayer buffers far ahead on its own, and every sound piece means reading the whole stream around it: the read-ahead
+  stops 30 s past the film's playhead (`soundReadAheadEnd`) and the item asks for 20 s (`soundForwardBuffer`). Before (2026-11-19):
+  28 MB/s asked, 18 distinct, for a 5 MB/s film; after: 12.3 and 5.6.
+
+Only one reading for both (the direct player, the app's `docs/OWN_PLAYER.md`), or a shared cache of what was read, removes the double
+read.
 
 ## Where to look
 

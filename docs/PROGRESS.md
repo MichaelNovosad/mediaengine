@@ -151,6 +151,21 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **The engine's own player no longer reads minutes ahead; the subtitle fix checked on the film** (the app's owner mounted
+  the share: "add and use shared folder"). Measured with a temporary program (muted, normal priority, debug build, through a byte
+  source like Eiga's server connection that counts every byte asked for; Lost in Translation `00010.m2ts`, 30.8 GB, 5.0 MB/s on
+  average). **Read-ahead:** in 60 s of steady play the session asked for 28.1 MB/s, 18.0 MB/s of it distinct: the sound remux built
+  pieces about four minutes ahead of the film, as its read-ahead counted from AVPlayer's requests and the sound-only AVPlayer buffers far
+  ahead on its own, and every piece of sound means reading the whole transport stream around it. Now
+  `RemuxSession.soundReadAheadEnd(after:segments:playhead:)` stops 30 s past the film's playhead (`notePlayhead`), and the sound item
+  asks AVPlayer for 20 s (`preferredForwardBufferDuration`, `PlaybackSession.soundForwardBuffer`). Same stretch after: **12.3 MB/s
+  asked, 5.6 MB/s distinct**, 24 pictures a second, none dropped. Left: the double read (picture reader and sound remux, ratio about
+  2.2): over Eiga's SMB client without a system cache still above the owner's router's best (about 10 MB/s) — the shared read cache of
+  the app's `docs/PLAN_2026-11-18.md` section 2. **Subtitles (Done below):** three jumps made while a line showed, 0 of 232 samples
+  afterwards showed it; the lines seen after the jumps (none, 10, none) equal what the track holds there read straight from the file
+  (none, 10, none). **Evidence:** `SegmentPlanTests.soundReadAhead` (new), the remux, keyframe, buffer and picture-subtitle suites
+  (31 tests); exported; the app built for the iOS simulator and the Mac. **Not checked:** the iPad, Eiga's own SMB client, a release
+  build. Track names read "Subtitles 4" to "7": the `.m2ts` was opened alone, without its folder's clip information.
 - 2026-11-19 **A Blu-ray subtitle line no longer comes back after every jump** (the app's owner, testing on the iPad: Lost in
   Translation's subtitles "stuck and were present on every movie fragment after each switch; they disappeared only when I moved progress
   to the starting position"). Cause, read in FFmpeg 9.0.2's `pgssubdec.c` and reproduced with the fixture's own segments: the PGS

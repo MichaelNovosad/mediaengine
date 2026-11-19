@@ -151,7 +151,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// How far ahead of the player's request a session without video (the engine's own player, whose sound comes from here) reads and
     /// converts its sound. One piece was the whole margin: a piece that took longer than it plays (5 s for 4.8 s right after a jump,
     /// over the owner's share) left the sound player without data, and the sound stopped and came back (2026-11-17).
-    private static let soundLookahead = 30.0
+    static let soundLookahead = 30.0
     /// How far before the pre-roll a video keyframe may be for a piece to read from it when the window before is not in memory.
     private static let prerollReach = 1.0
     /// Keyframe times (seconds) of the video stream, for seeking a little before a segment.
@@ -757,11 +757,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         guard number + 1 < plan.segments.count else { return }
         var last = number + 1
         if videoIndex == nil {
-            var covered = plan.segments[last].duration
-            while last + 1 < plan.segments.count, covered < Self.soundLookahead, last - number < 16 {
-                last += 1
-                covered += plan.segments[last].duration
-            }
+            guard let end = Self.soundReadAheadEnd(after: number, segments: plan.segments, playhead: playhead.withLock({ $0 })) else { return }
+            last = end
         }
         let through = last
         queue.async { [self] in
@@ -784,6 +781,26 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                 }
             }
         }
+    }
+
+    /// The last piece a session of sound only reads ahead to after the player asked for piece `number`: about ``soundLookahead`` seconds
+    /// after it, at most 16 pieces, and never more than ``soundLookahead`` seconds past the film's `playhead` when the controller told it.
+    /// The sound player asks well ahead on its own, and every piece of sound means reading the whole stream around it, picture
+    /// included: counted from the requests alone, the read-ahead ran minutes ahead of the film (2026-11-19, Lost in Translation from
+    /// the share: 18 MB/s of distinct reads for a 5 MB/s film; on the iPad, over Eiga's own server connection, the picture then lagged).
+    /// `nil`: nothing to read ahead.
+    static func soundReadAheadEnd(after number: Int, segments: [SegmentPlan.Segment], playhead: Double?) -> Int? {
+        guard number + 1 < segments.count else { return nil }
+        var last = number + 1
+        var covered = segments[last].duration
+        while last + 1 < segments.count, covered < soundLookahead, last - number < 16 {
+            last += 1
+            covered += segments[last].duration
+        }
+        if let playhead, playhead.isFinite {
+            while last > number, segments[last].start > playhead + soundLookahead { last -= 1 }
+        }
+        return last > number ? last : nil
     }
 
     /// Logs how long a piece took to build: the first ones after the opening, the first after a jump, and any slow one

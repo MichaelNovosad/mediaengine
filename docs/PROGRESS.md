@@ -126,7 +126,7 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
 - 2026-11-19 (the app's owner) **"Do shared read cache, then EGA-121, EGA-120"** (then the app's tickets, one by one, a commit each).
   The read cache: one film's readers (the software player's picture reader, the remuxer's sound, picture-subtitle readers) share what
   was read from a network source, so the film is read once (the app's `docs/PLAN_2026-11-18.md` section 2). Status: the read cache
-  done (Done 2026-11-19); EGA-121 and EGA-120 next.
+  done (Done 2026-11-19, Jira EGA-125); EGA-121 done (Done 2026-11-19); EGA-120 next.
 
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
@@ -156,6 +156,26 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **Blu-ray keyframes from the clip file** (the app's Jira EGA-121). `DiscInfo.entryPoints(blurayClipInfo:)` reads a clip
+  information file's entry-point map (layout as libbluray reads it, recalled, then checked: below); `DiscInfo.Facts` (languages and
+  entry points), `DiscInfo.facts(blurayClipInfo:)`, `facts(forStream:read:)`; `PlaybackSession(url:disc:)` and `(source:disc:)` (the
+  `trackLanguages:` ones stay). The session checks the map at eight entries spread over the film, one 192-byte packet each read straight
+  from the source (`DiscInfo.agrees`: a PES start of the video PID whose time, rounded down to 512 ticks, is the entry's), and only then
+  keeps it for the file (`KeyframeIndexStore.rememberEntryPoints`, memory only); every `PacketReader` of that file adopts it into
+  FFmpeg's index (times never before the file's start, 33-bit wrap) and jumps by byte straight to the keyframe at or before the time;
+  the remuxer then finds a complete index and cuts its pieces at the real keyframes instead of a time grid. **Evidence:** the layout
+  checked with a scratch script on six Blu-ray folders of the owner's share: on five, 80 of 80 entries looked at (45 of 45 on short
+  clips) start a picture of PID 0x1011 whose time rounded down to 512 ticks is the entry's (the map keeps only the time's upper bits);
+  on the sixth (a re-released Wizard of Oz) the map no longer fits its stream after entry 10, which is why the check exists.
+  `BlurayEntryPointTests` 4 (round trip of a written map with grouped coarse entries and a 33-bit time; a stream made from `fixture-ts`
+  with its own map: adopted, three keyframes in the reader's index at their offsets, a jump lands on the keyframe at or before the time;
+  a map one packet off is left out; the packet check) and the disc, probe, keyframe and read cache suites (34). From the share through the
+  engine (temporary program, muted, debug build): Labyrinth "Disc: 7954 keyframes from the clip file, checked at 8 of them", "Index: 7956
+  keyframes from the file … 0 gaps over a minute", pieces at real keyframes (without the clip file: "No complete index … time grid");
+  the Wizard of Oz "do not fit the stream (entry 917): not used", then plays as before. **Not faster jumps by themselves:** the jumps took
+  2.6 to 4.6 s with the map and 2.9 to 4.1 s without, almost all of it the first piece after the jump (25 MB of a part never read, at the
+  router's speed through the mount; the pieces were 5.9 s long because the link was measured from macOS's cache). Exported; the app
+  passes the facts and built for the Mac and the iOS simulator.
 - 2026-11-19 **A network film is read once for all of its readers** (the app's owner: "Do shared read cache"; the app's
   `docs/PLAN_2026-11-18.md` section 2). `SharedReadCache` (internal, `IO/`): `PlaybackSession` puts it between a network source (not a
   `FileByteSource` or `DataByteSource`) and everything that reads it, the probe included; each FFmpeg opening (`AVIOBridge`) is a reader
@@ -175,7 +195,7 @@ toolchain; none blocks the release.
   normal priority, debug build, a source like Eiga's server connection counting what it is asked, 60 s from 72 min, a part not read
   before): **5.34 MB/s asked, 5.34 distinct, film 5.29 MB/s** (12.3 asked before today's work), the film moved 60.5 s without a stall,
   one sound join (the start after the jump). Exported; the app built for the Mac and the iOS simulator. **Not checked:** Eiga's own SMB
-  client, the iPad and iPhone, a release build, by ear. The Jira ticket for it could not be created (the app's PROGRESS).
+  client, the iPad and iPhone, a release build, by ear. The app's Jira EGA-125 (in Testing).
 - 2026-11-19 **The engine's own player no longer reads minutes ahead; the subtitle fix checked on the film** (the app's owner mounted
   the share: "add and use shared folder"). Measured with a temporary program (muted, normal priority, debug build, through a byte
   source like Eiga's server connection that counts every byte asked for; Lost in Translation `00010.m2ts`, 30.8 GB, 5.0 MB/s on

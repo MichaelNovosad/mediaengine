@@ -26,6 +26,27 @@ final class KeyframeIndexStore: Sendable {
     private let directory: URL?
     private let memory = Mutex<[String: Entry]>([:])
 
+    /// A Blu-ray stream's keyframes from its clip information file (Jira EGA-121), for every reader of the file while the app runs: the
+    /// stream's PID, the times (90 kHz ticks, rounded down to 512) and the byte offsets, in order.
+    struct EntryPoints: Sendable, Equatable {
+        var pid: Int
+        var times: [Int64]
+        var offsets: [Int64]
+    }
+
+    private let discPoints = Mutex<[String: EntryPoints]>([:])
+
+    /// Whether any file has entry points: a reader of a transport stream looks them up (which costs it the file's key) only then.
+    var hasEntryPoints: Bool { discPoints.withLock { !$0.isEmpty } }
+
+    func rememberEntryPoints(_ points: EntryPoints, for key: String) {
+        discPoints.withLock { $0[key] = points }
+    }
+
+    func entryPoints(for key: String) -> EntryPoints? {
+        discPoints.withLock { $0[key] }
+    }
+
     init(directory: URL?) {
         self.directory = directory
     }
@@ -72,6 +93,7 @@ final class KeyframeIndexStore: Sendable {
     /// Forgets everything kept, in memory and on disk (Settings > Storage in the app: ``MediaEngine/clearCache()``).
     func removeAll() {
         memory.withLock { $0 = [:] }
+        discPoints.withLock { $0 = [:] }
         if let directory { try? FileManager.default.removeItem(at: directory) }
     }
 }

@@ -182,11 +182,57 @@ final class PacketReader: PacketSource {
         av_add_index_entry(stream(index), spot.position, base.ticks(seconds: spot.time), 0, 0, Int32(AVINDEX_KEYFRAME))
     }
 
-    /// A Matroska file whose keyframes the engine worked out at an earlier opening (``KeyframeIndexStore``): every reader of
-    /// it (the remuxer, the subtitle overlay, the software player) seeks with that list.
+    /// A Matroska file whose keyframes the engine worked out at an earlier opening (``KeyframeIndexStore``), or a Blu-ray stream whose
+    /// clip information file lists its keyframes (``DiscInfo/entryPoints(blurayClipInfo:)``): every reader of it (the remuxer, the
+    /// subtitle overlay, the software player) seeks with that list.
     private func adoptRememberedIndex() {
-        guard isMatroska, let key = KeyframeIndexStore.key(for: source), let entry = KeyframeIndexStore.shared.lookup(key) else { return }
-        addKeyframes(stream: entry.stream, seconds: entry.keyframes, positions: entry.positions)
+        if isMatroska {
+            guard let key = KeyframeIndexStore.key(for: source), let entry = KeyframeIndexStore.shared.lookup(key) else { return }
+            addKeyframes(stream: entry.stream, seconds: entry.keyframes, positions: entry.positions)
+            return
+        }
+        guard dvd == nil, KeyframeIndexStore.shared.hasEntryPoints, let key = KeyframeIndexStore.key(for: source),
+              let points = KeyframeIndexStore.shared.entryPoints(for: key) else { return }
+        adoptEntryPoints(points)
+    }
+
+    /// A Blu-ray stream's keyframes from its clip information file (Jira EGA-121): by stream, the times in that stream's ticks and the
+    /// byte offsets of the packets that start them, in order. A jump goes straight to the last one at or before its time.
+    private var discKeyframes: (stream: Int, times: [Int64], offsets: [Int64])?
+
+    private func adoptEntryPoints(_ points: KeyframeIndexStore.EntryPoints) {
+        guard let index = (0..<streamCount).first(where: { hasStream($0) && Int(stream($0).pointee.id) == points.pid }) else { return }
+        let st = stream(index), base = timeBase(index)
+        let start = originTicks(index)
+        let round = base.ticks(seconds: Double(Int64(1) << 33) / 90_000)
+        var times: [Int64] = []
+        var offsets: [Int64] = []
+        times.reserveCapacity(points.times.count)
+        offsets.reserveCapacity(points.times.count)
+        for (time, offset) in zip(points.times, points.offsets) {
+            var ticks = base.ticks(seconds: Double(time) / 90_000)
+            if start - ticks > round / 2 { ticks += round }        // a 33-bit time that went round after the file's start
+            ticks = max(ticks, start)                                // rounded down by up to 5.7 ms: never before the file's start
+            if let last = times.last, ticks <= last { continue }
+            av_add_index_entry(st, offset, ticks, 0, 0, Int32(AVINDEX_KEYFRAME))
+            times.append(ticks)
+            offsets.append(offset)
+        }
+        guard times.count >= 2 else { return }
+        discKeyframes = (index, times, offsets)
+    }
+
+    /// The byte offset of the disc's keyframe at or before a time of a stream (its ticks, the file's start not taken off).
+    private func discOffset(stream index: Int, atOrBefore timestamp: Int64) -> Int64? {
+        guard let disc = discKeyframes else { return nil }
+        let target = disc.stream == index ? timestamp : timeBase(disc.stream).ticks(seconds: timeBase(index).seconds(timestamp))
+        var low = 0, high = disc.times.count - 1
+        guard target >= disc.times[0] else { return disc.offsets[0] }
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if disc.times[middle] <= target { low = middle } else { high = middle - 1 }
+        }
+        return disc.offsets[low]
     }
 
     deinit {
@@ -290,6 +336,12 @@ final class PacketReader: PacketSource {
             return
         }
         if untimedStreams.contains(index) { return try seekUntimed(stream: index, to: timestamp) }
+        if let offset = discOffset(stream: index, atOrBefore: timestamp + originTicks(index)) {
+            // A Blu-ray stream whose clip file lists its keyframes: straight to the packet that starts the one at or before the time.
+            let result = av_seek_frame(format, -1, offset, AVSEEK_FLAG_BYTE)
+            if result < 0 { throw FormatContext.openError(result, context.bridge) }
+            return
+        }
         if indexesKeyframes {
             // No keyframe the reader knows within 20 s before the time: a jump by byte position, from the file's average byte rate.
             let seconds = timeBase(index).seconds(timestamp)

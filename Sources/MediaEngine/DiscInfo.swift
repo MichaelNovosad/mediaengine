@@ -124,6 +124,122 @@ public enum DiscInfo {
         return [:]
     }
 
+    /// What a disc's description says about one stream file: the languages of its tracks and, for a Blu-ray stream, where its
+    /// keyframes are. Hand it to ``PlaybackSession/init(source:disc:)``.
+    public struct Facts: Sendable, Equatable {
+        /// By the stream's number in its container (``Track/containerID``).
+        public var languages: [Int: Locale.Language]
+        /// A Blu-ray stream's keyframes from its clip information file (``DiscInfo/entryPoints(blurayClipInfo:)``).
+        public var entryPoints: [EntryPoint]
+
+        public init(languages: [Int: Locale.Language] = [:], entryPoints: [EntryPoint] = []) {
+            self.languages = languages
+            self.entryPoints = entryPoints
+        }
+
+        public static let none = Facts()
+    }
+
+    /// A keyframe of a Blu-ray stream as its clip information file lists it (Jira EGA-121): where a picture a player can start from
+    /// begins in the stream file, and its time.
+    public struct EntryPoint: Sendable, Equatable {
+        /// The stream it belongs to (the video's PID, ``Track/containerID``).
+        public let pid: Int
+        /// The picture's presentation time in 90 kHz ticks (33 bits), rounded down to a multiple of 512 ticks (5.7 ms): the map keeps
+        /// only the time's upper bits.
+        public let time: Int64
+        /// The byte offset of the transport packet that starts the picture (its source packet number times 192).
+        public let offset: Int64
+
+        public init(pid: Int, time: Int64, offset: Int64) {
+            self.pid = pid
+            self.time = time
+            self.offset = offset
+        }
+    }
+
+    /// The keyframes a Blu-ray clip information file lists (its entry-point map), in order, for every stream it maps (usually the video
+    /// alone). Empty when the data is not a clip information file or has no map.
+    ///
+    /// The layout is the clip information format as libbluray reads it: at byte 16 the start of the characteristic point information;
+    /// there its length, then the map type in the low four bits of the second byte after it, then the map: a reserved byte, the number of
+    /// streams, and per stream twelve bytes (PID 16 bits, 10 reserved, stream type 4, coarse entries 16, fine entries 18, the start of its
+    /// entries 32, counted from the map). There: the start of the fine entries (32 bits), the coarse entries (8 bytes: the first fine
+    /// entry it covers 18 bits, time 14 bits, source packet number 32 bits), the fine entries (4 bytes: angle change 1 bit, end position 3,
+    /// time 11, source packet number 17). A keyframe's time is the coarse time without its lowest bit, shifted 19, plus the fine time
+    /// shifted 9; its packet number the coarse number without its lowest 17 bits plus the fine one. Checked on 2026-11-19 against six
+    /// Blu-ray folders on the owner's share: every entry looked at (80 per disc) starts a picture of the video PID whose time, rounded
+    /// down to 512 ticks, is the entry's; one re-released disc's map no longer fits its stream after its tenth entry, so a player checks a
+    /// map against the stream before it trusts it (``PlaybackSession`` does).
+    public static func entryPoints(blurayClipInfo data: Data) -> [EntryPoint] {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 20, bytes[0..<4].elementsEqual("HDMV".utf8) else { return [] }
+        func value(_ at: Int, _ count: Int) -> UInt64? {
+            guard at >= 0, at + count <= bytes.count else { return nil }
+            return (0..<count).reduce(UInt64(0)) { $0 << 8 | UInt64(bytes[at + $1]) }
+        }
+        guard let cpi = value(16, 4).map(Int.init), cpi > 0, let length = value(cpi, 4), length > 0,
+              let type = value(cpi + 5, 1), type & 0x0F == 1, let streams = value(cpi + 7, 1) else { return [] }
+        let map = cpi + 6
+        var result: [EntryPoint] = []
+        for stream in 0..<Int(streams) {
+            let header = map + 2 + 12 * stream
+            guard let first = value(header, 4), let second = value(header + 4, 4), let third = value(header + 8, 4) else { break }
+            let pid = Int(first >> 16)
+            let coarseCount = Int(((first & 0x3) << 14) | (second >> 18))
+            let fineCount = Int(second & 0x3FFFF)
+            let start = map + Int(third)
+            guard coarseCount > 0, fineCount > 0, let fineStart = value(start, 4) else { continue }
+            var coarse: [(fine: Int, time: UInt64, packet: UInt64)] = []
+            coarse.reserveCapacity(coarseCount)
+            for entry in 0..<coarseCount {
+                guard let raw = value(start + 4 + 8 * entry, 8) else { break }
+                coarse.append((Int(raw >> 46), (raw >> 32) & 0x3FFF, raw & 0xFFFF_FFFF))
+            }
+            guard !coarse.isEmpty else { continue }
+            let fineBase = start + Int(fineStart)
+            var current = 0
+            for entry in 0..<fineCount {
+                guard let raw = value(fineBase + 4 * entry, 4) else { break }
+                while current + 1 < coarse.count, coarse[current + 1].fine <= entry { current += 1 }
+                let time = (((coarse[current].time & ~1) << 19) + (((raw >> 17) & 0x7FF) << 9)) & ((1 << 33) - 1)
+                let packet = (coarse[current].packet & ~0x1FFFF) + (raw & 0x1FFFF)
+                result.append(EntryPoint(pid: pid, time: Int64(time), offset: Int64(packet) * 192))
+            }
+        }
+        return result
+    }
+
+    /// Languages and keyframes from a Blu-ray clip information file.
+    public static func facts(blurayClipInfo data: Data) -> Facts {
+        Facts(languages: languages(blurayClipInfo: data), entryPoints: entryPoints(blurayClipInfo: data))
+    }
+
+    /// What a disc's description gives a stream file, read with `read` (a file next to it, from a folder or a server): from a Blu-ray
+    /// clip information file its languages and keyframes, from a DVD title set's information file its languages. Nothing for any other
+    /// file.
+    public static func facts(forStream url: URL, read: @Sendable (URL) async -> Data?) async -> Facts {
+        if let clipInfo = clipInfoLocation(forStream: url), let data = await read(clipInfo) { return facts(blurayClipInfo: data) }
+        if let titleInfo = titleInfoLocation(forStream: url), let data = await read(titleInfo) { return Facts(languages: languages(dvdTitleInfo: data)) }
+        return .none
+    }
+
+    /// Whether a transport packet (192 bytes of an `.m2ts` file: a 4-byte header, then the 188-byte packet) starts a picture of the
+    /// entry point's stream at its time: the check a map passes before it is trusted.
+    static func agrees(_ point: EntryPoint, packet: [UInt8]) -> Bool {
+        guard packet.count >= 192, packet[4] == 0x47 else { return false }
+        let ts = Array(packet[4...])
+        let pid = Int(ts[1] & 0x1F) << 8 | Int(ts[2])
+        guard pid == point.pid, ts[1] & 0x40 != 0 else { return false }
+        var at = 4
+        let adaptation = (ts[3] >> 4) & 0x3
+        if adaptation == 2 || adaptation == 3 { at += 1 + Int(ts[4]) }
+        guard adaptation != 2, at + 14 <= ts.count, ts[at] == 0, ts[at + 1] == 0, ts[at + 2] == 1, ts[at + 7] & 0x80 != 0 else { return false }
+        let b = ts[(at + 9)..<(at + 14)].map(Int64.init)
+        let pts = ((b[0] >> 1) & 0x7) << 30 | b[1] << 22 | (b[2] >> 1) << 15 | b[3] << 7 | b[4] >> 1
+        return pts & ~0x1FF == point.time
+    }
+
     /// Where the clip information file of a Blu-ray stream file lies: `…/BDMV/CLIPINF/00000.clpi` for `…/BDMV/STREAM/00000.m2ts`,
     /// or `nil` for a file outside a `BDMV/STREAM` folder.
     public static func clipInfoLocation(forStream url: URL) -> URL? {

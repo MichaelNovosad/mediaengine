@@ -2,6 +2,7 @@ import AVFoundation
 import AVKit
 import Foundation
 import ObjectiveC
+import os
 import Synchronization
 
 /// Plays a file that AVFoundation cannot open on its own (MKV, WebM, ...) through AVPlayer, so the system
@@ -42,7 +43,23 @@ public final class PlaybackSession: @unchecked Sendable {
     ///
     /// - Parameter trackLanguages: as for ``init(source:trackLanguages:)``.
     public convenience init(url: URL, trackLanguages: [Int: Locale.Language] = [:]) async throws {
-        try await self.init(source: MediaSource(url: url), fileURL: url.isFileURL ? url : nil, trackLanguages: trackLanguages)
+        try await self.init(source: MediaSource(url: url), fileURL: url.isFileURL ? url : nil, disc: DiscInfo.Facts(languages: trackLanguages))
+    }
+
+    /// Opens a local file or an HTTP(S) address with what its disc's description says about it (``DiscInfo/facts(forStream:read:)``).
+    ///
+    /// - Parameter disc: as for ``init(source:disc:)``.
+    public convenience init(url: URL, disc: DiscInfo.Facts) async throws {
+        try await self.init(source: MediaSource(url: url), fileURL: url.isFileURL ? url : nil, disc: disc)
+    }
+
+    /// Opens any ``MediaSource`` with what its disc's description says about it.
+    ///
+    /// - Parameter disc: languages for tracks the stream leaves without one (as for ``init(source:trackLanguages:)``), and for a Blu-ray
+    ///   stream the keyframes its clip information file lists: checked against the stream at a few of them, and if they agree every
+    ///   reader of the stream jumps straight to them and the pieces follow them (Jira EGA-121); if not, the stream plays as without them.
+    public convenience init(source: MediaSource, disc: DiscInfo.Facts) async throws {
+        try await self.init(source: source, fileURL: nil, disc: disc)
     }
 
     /// Opens any ``MediaSource``, for example one backed by a network share.
@@ -51,18 +68,48 @@ public final class PlaybackSession: @unchecked Sendable {
     ///   folder keeps its languages next to the stream (``DiscInfo/languages(blurayClipInfo:)``), not in it. A language the file
     ///   states is kept.
     public convenience init(source: MediaSource, trackLanguages: [Int: Locale.Language] = [:]) async throws {
-        try await self.init(source: source, fileURL: nil, trackLanguages: trackLanguages)
+        try await self.init(source: source, fileURL: nil, disc: DiscInfo.Facts(languages: trackLanguages))
     }
 
-    private init(source: MediaSource, fileURL: URL?, trackLanguages: [Int: Locale.Language] = [:]) async throws {
+    private init(source: MediaSource, fileURL: URL?, disc: DiscInfo.Facts) async throws {
         let source = Self.sharingReads(source)
         self.source = source
         self.fileURL = fileURL
         var info = try await source.probe()
         for index in info.tracks.indices where info.tracks[index].language == nil {
-            if let id = info.tracks[index].containerID, let language = trackLanguages[id] { info.tracks[index].language = language }
+            if let id = info.tracks[index].containerID, let language = disc.languages[id] { info.tracks[index].language = language }
         }
         self.info = info
+        if !disc.entryPoints.isEmpty, let pid = info.videoTracks.first?.containerID {
+            let bytes = source.byteSource
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    Self.adoptEntryPoints(disc.entryPoints.filter { $0.pid == pid }, of: bytes)
+                    done.resume()
+                }
+            }
+        }
+    }
+
+    /// Checks a Blu-ray stream's keyframe list against the stream (eight of them, spread over the film, each one packet read straight from
+    /// the source) and hands it to every reader of the stream when they all agree. A list that does not fit (a stream remade without
+    /// its clip file: one of the owner's discs) is left out. Blocking: run off the cooperative pool.
+    private static let logger = Logger(subsystem: "dev.mediaengine", category: "index")
+
+    static func adoptEntryPoints(_ points: [DiscInfo.EntryPoint], of source: any ByteSource) {
+        let sorted = points.sorted { $0.time < $1.time }
+        guard sorted.count >= 2, let key = KeyframeIndexStore.key(for: source) else { return }
+        let samples = Set((0..<8).map { $0 * (sorted.count - 1) / 7 })
+        for sample in samples.sorted() {
+            var packet = [UInt8](repeating: 0, count: 192)
+            let read = (try? packet.withUnsafeMutableBytes { try source.readSparse(at: sorted[sample].offset, into: $0) }) ?? 0
+            guard read == 192, DiscInfo.agrees(sorted[sample], packet: packet) else {
+                logger.notice("Disc: the clip file's \(sorted.count, privacy: .public) keyframes do not fit the stream (entry \(sample, privacy: .public)): not used")
+                return
+            }
+        }
+        KeyframeIndexStore.shared.rememberEntryPoints(.init(pid: sorted[0].pid, times: sorted.map(\.time), offsets: sorted.map(\.offset)), for: key)
+        logger.notice("Disc: \(sorted.count, privacy: .public) keyframes from the clip file, checked at \(samples.count, privacy: .public) of them")
     }
 
     deinit { close() }

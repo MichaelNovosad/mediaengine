@@ -152,6 +152,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// converts its sound. One piece was the whole margin: a piece that took longer than it plays (5 s for 4.8 s right after a jump,
     /// over the owner's share) left the sound player without data, and the sound stopped and came back (2026-11-17).
     static let soundLookahead = 30.0
+    /// The shortest read-ahead of sound, whatever the film's byte rate.
+    static let shortestSoundLead = 6.0
+    /// How far ahead this session reads sound when it has no video: ``soundLookahead``, or less for a source shared through a
+    /// ``SharedReadCache`` whose room would not hold the film's bytes for that time (the picture reader behind would fetch them again).
+    let soundLead: Double
     /// How far before the pre-roll a video keyframe may be for a piece to read from it when the window before is not in memory.
     private static let prerollReach = 1.0
     /// Keyframe times (seconds) of the video stream, for seeking a little before a segment.
@@ -201,6 +206,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
         remote = !(source is FileByteSource || source is DataByteSource)
+        if let shared = source as? SharedReadCache, let length = source.length, let duration = info.duration, duration > 0 {
+            soundLead = Self.soundLead(byteRate: Double(length) / duration, room: shared.leadBytes)
+        } else {
+            soundLead = Self.soundLookahead
+        }
         let opening = ContinuousClock.now
         if let packetSource {
             reader = packetSource
@@ -750,14 +760,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// Builds the next windows while the player consumes this one, until a newer request arrives, and converts the asked track in them,
     /// so that the player's next requests find their fragments ready. A session with video reads one piece ahead (its pieces are big,
-    /// and the picture's budget holds a few); a session of sound only (the engine's own player) reads about ``soundLookahead`` seconds
-    /// ahead. A build gives way as soon as the player asks for a piece that is not built (a jump), so that the jump does not wait for a
+    /// and the picture's budget holds a few); a session of sound only (the engine's own player) reads about `soundLead` seconds
+    /// ahead (``soundLookahead`` unless a shared read cache sets less). A build gives way as soon as the player asks for a piece that is not built (a jump), so that the jump does not wait for a
     /// piece nobody wants.
     private func readAhead(after number: Int, stream: Int, epoch: Int) {
         guard number + 1 < plan.segments.count else { return }
         var last = number + 1
         if videoIndex == nil {
-            guard let end = Self.soundReadAheadEnd(after: number, segments: plan.segments, playhead: playhead.withLock({ $0 })) else { return }
+            guard let end = Self.soundReadAheadEnd(after: number, segments: plan.segments, playhead: playhead.withLock({ $0 }),
+                                                   lookahead: soundLead) else { return }
             last = end
         }
         let through = last
@@ -789,18 +800,27 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// included: counted from the requests alone, the read-ahead ran minutes ahead of the film (2026-11-19, Lost in Translation from
     /// the share: 18 MB/s of distinct reads for a 5 MB/s film; on the iPad, over Eiga's own server connection, the picture then lagged).
     /// `nil`: nothing to read ahead.
-    static func soundReadAheadEnd(after number: Int, segments: [SegmentPlan.Segment], playhead: Double?) -> Int? {
+    static func soundReadAheadEnd(after number: Int, segments: [SegmentPlan.Segment], playhead: Double?,
+                                  lookahead: Double = soundLookahead) -> Int? {
         guard number + 1 < segments.count else { return nil }
         var last = number + 1
         var covered = segments[last].duration
-        while last + 1 < segments.count, covered < soundLookahead, last - number < 16 {
+        while last + 1 < segments.count, covered < lookahead, last - number < 16 {
             last += 1
             covered += segments[last].duration
         }
         if let playhead, playhead.isFinite {
-            while last > number, segments[last].start > playhead + soundLookahead { last -= 1 }
+            while last > number, segments[last].start > playhead + lookahead { last -= 1 }
         }
         return last > number ? last : nil
+    }
+
+    /// The sound's read-ahead for a film of `byteRate` bytes a second whose readers share `room` bytes: the time those bytes last,
+    /// less one piece (the sound reads whole pieces, the picture a little ahead of the playhead), between ``shortestSoundLead`` and
+    /// ``soundLookahead``. Lost in Translation (5.6 MB/s) in 72 MB: about 7 s; a DVD (1 MB/s): 30 s.
+    static func soundLead(byteRate: Double, room: Int64, piece: Double = 6) -> Double {
+        guard byteRate > 0, byteRate.isFinite else { return soundLookahead }
+        return min(soundLookahead, max(shortestSoundLead, Double(room) / byteRate - piece))
     }
 
     /// Logs how long a piece took to build: the first ones after the opening, the first after a jump, and any slow one

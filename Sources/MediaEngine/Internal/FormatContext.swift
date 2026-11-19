@@ -58,7 +58,7 @@ final class FormatContext {
         }
         let context = FormatContext(bridge: bridge, format: format, io: io)
 
-        if let layout = (source as? DVDTitleByteSource)?.layout { prepareDVDSubtitles(format, layout: layout) }
+        if let layout = (SharedReadCache.underlying(source) as? DVDTitleByteSource)?.layout { prepareDVDSubtitles(format, layout: layout) }
         measureAttachedPictures(format)
         let infoResult = avformat_find_stream_info(format, nil)
         if bridge.cancellation.isCancelled { throw MediaError.cancelled }

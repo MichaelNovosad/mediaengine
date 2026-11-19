@@ -123,6 +123,11 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
   fragment after each switch; they disappeared only when I moved progress to the starting position."** Status: the subtitles fixed (see
   Done 2026-11-19); the lag not addressed (the app's `docs/PLAN_2026-11-18.md` section 2 is the plan; the owner decides).
 
+- 2026-11-19 (the app's owner) **"Do shared read cache, then EGA-121, EGA-120"** (then the app's tickets, one by one, a commit each).
+  The read cache: one film's readers (the software player's picture reader, the remuxer's sound, picture-subtitle readers) share what
+  was read from a network source, so the film is read once (the app's `docs/PLAN_2026-11-18.md` section 2). Status: the read cache
+  done (Done 2026-11-19); EGA-121 and EGA-120 next.
+
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
 ### Deferred after v1 (decided while working; revisit after the release)
@@ -151,6 +156,26 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **A network film is read once for all of its readers** (the app's owner: "Do shared read cache"; the app's
+  `docs/PLAN_2026-11-18.md` section 2). `SharedReadCache` (internal, `IO/`): `PlaybackSession` puts it between a network source (not a
+  `FileByteSource` or `DataByteSource`) and everything that reads it, the probe included; each FFmpeg opening (`AVIOBridge`) is a reader
+  (`register`, `unregister`, its last read's end is its place); chunks of 1 MB, 96 MB while two or more readers read in the last 20 s, 16 MB
+  otherwise; what every active reader is past goes first, then the least recently used; one fetch per chunk however many readers miss it;
+  `readSparse` goes straight to the source; `close` frees it. A DVD title behind the cache is still found
+  (`SharedReadCache.underlying`, three places). The sound must not run further ahead than the cache holds: `RemuxSession.soundLead`
+  (the shared room's three quarters as time at the film's byte rate, less one piece, 6 to 30 s) limits the read-ahead and the sound
+  item's forward buffer (`min(soundForwardBuffer, soundLead)`); the first measurement showed why: with only the read-ahead capped,
+  AVPlayer's own 20 s buffer kept the sound about 137 MB ahead and the picture reader still fetched everything again (10.9 MB/s asked).
+  **Evidence:** `SharedReadCacheTests` 8 (two readers 3 MB apart fetch every byte once in 4 MB, where plain LRU would need 6; one reader
+  keeps little; a stale or gone reader holds nothing back; concurrent misses fetch once; chunk ends, end of file, sparse reads; the
+  sound's lead; the session wraps a network source and not a file; the software player reads a network film once: under 1.15 times the
+  file, against 3.3 times with the cache switched off (2,487,472 bytes for 748,620)), the segment plan and byte source suites (28 on
+  core), the hardening, probe, session, subtitle renderer, picture subtitle, disc and external audio suites (89, 3 known issues), the
+  software player suite on `extended-plus` (18 with the cache tests); **Lost in Translation from the share** (temporary program, muted,
+  normal priority, debug build, a source like Eiga's server connection counting what it is asked, 60 s from 72 min, a part not read
+  before): **5.34 MB/s asked, 5.34 distinct, film 5.29 MB/s** (12.3 asked before today's work), the film moved 60.5 s without a stall,
+  one sound join (the start after the jump). Exported; the app built for the Mac and the iOS simulator. **Not checked:** Eiga's own SMB
+  client, the iPad and iPhone, a release build, by ear. The Jira ticket for it could not be created (the app's PROGRESS).
 - 2026-11-19 **The engine's own player no longer reads minutes ahead; the subtitle fix checked on the film** (the app's owner mounted
   the share: "add and use shared folder"). Measured with a temporary program (muted, normal priority, debug build, through a byte
   source like Eiga's server connection that counts every byte asked for; Lost in Translation `00010.m2ts`, 30.8 GB, 5.0 MB/s on

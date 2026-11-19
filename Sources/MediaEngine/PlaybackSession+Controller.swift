@@ -35,8 +35,10 @@ extension PlaybackSession {
         let server = try await startServer(for: remux)
         let item = AVPlayerItem(url: server.masterURL)
         // Only a little ahead: every piece of sound it asks for makes the engine read the whole stream around it, picture included, and
-        // AVPlayer's own choice took it minutes ahead of the film (2026-11-19: Lost in Translation read at 3.6 times its own rate).
-        item.preferredForwardBufferDuration = Self.soundForwardBuffer
+        // AVPlayer's own choice took it minutes ahead of the film (2026-11-19: Lost in Translation read at 3.6 times its own rate). From a
+        // network source no further than the picture reader can follow from the shared read cache: 20 s of a 5 MB/s film did not fit,
+        // and the picture reader fetched every byte again (2026-11-19).
+        item.preferredForwardBufferDuration = min(Self.soundForwardBuffer, remux.soundLead)
         return attach(item)
     }
 

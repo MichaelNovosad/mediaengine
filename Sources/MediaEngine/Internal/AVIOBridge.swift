@@ -32,16 +32,23 @@ final class AVIOBridge: @unchecked Sendable {
     /// The first error the byte source threw, so it can be reported instead of a generic I/O error.
     let failure = Mutex<(any Error)?>(nil)
     private var position: Int64 = 0
+    /// This opening as one of the readers of a film's shared cache (a network source), so that the cache knows where it reads.
+    private let shared: (cache: SharedReadCache, reader: Int)?
 
     init(source: any ByteSource, cancellation: CancellationFlag) {
         self.source = source
         self.cancellation = cancellation
+        shared = (source as? SharedReadCache).map { ($0, $0.register()) }
+    }
+
+    deinit {
+        if let shared { shared.cache.unregister(shared.reader) }
     }
 
     func read(into buffer: UnsafeMutableRawBufferPointer) -> Int32 {
         if cancellation.isCancelled { return AVError.exit }
         do {
-            let count = try source.read(at: position, into: buffer)
+            let count = try shared.map { try $0.cache.read(at: position, into: buffer, reader: $0.reader) } ?? source.read(at: position, into: buffer)
             if cancellation.isCancelled { return AVError.exit }
             if count <= 0 { return AVError.eof }
             position += Int64(count)

@@ -95,7 +95,7 @@ final class PacketReader: PacketSource {
         self.cancellation = cancellation
         self.quick = quick
         self.durationHint = durationHint
-        dvd = (source as? DVDTitleByteSource)?.layout
+        dvd = (SharedReadCache.underlying(source) as? DVDTitleByteSource)?.layout
         context = try FormatContext.open(source: source, cancellation: cancellation, quick: quick)
         guard let packet = av_packet_alloc() else { throw MediaError.engine(detail: "could not allocate packet") }
         self.packet = packet

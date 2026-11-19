@@ -55,6 +55,7 @@ public final class PlaybackSession: @unchecked Sendable {
     }
 
     private init(source: MediaSource, fileURL: URL?, trackLanguages: [Int: Locale.Language] = [:]) async throws {
+        let source = Self.sharingReads(source)
         self.source = source
         self.fileURL = fileURL
         var info = try await source.probe()
@@ -65,6 +66,14 @@ public final class PlaybackSession: @unchecked Sendable {
     }
 
     deinit { close() }
+
+    /// A source on a network goes through one cache for all of the session's readers (picture, sound, subtitles), so that the film is
+    /// fetched once (``SharedReadCache``). A local file is read by the system, which caches it itself.
+    static func sharingReads(_ source: MediaSource) -> MediaSource {
+        let bytes = source.byteSource
+        if bytes is FileByteSource || bytes is DataByteSource || bytes is SharedReadCache { return source }
+        return MediaSource(byteSource: SharedReadCache(source: bytes))
+    }
 
     /// Creates the item to give to `AVPlayer`. Starts a local server for files the system cannot read itself.
     @MainActor

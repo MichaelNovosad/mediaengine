@@ -92,7 +92,7 @@ enum Prober {
 
         var duration = format.pointee.duration != Int64.min && format.pointee.duration > 0
             ? Double(format.pointee.duration) / Double(AV_TIME_BASE) : nil
-        if let title = (source as? DVDTitleByteSource)?.layout {
+        if let title = (SharedReadCache.underlying(source) as? DVDTitleByteSource)?.layout {
             // A DVD title: FFmpeg measures the first and last timestamps of the stream, which restart and jump between cells
             // (Häxan's film came out as 14 hours); the disc's information files have the length and the chapters, put on the
             // title's timeline as the reader makes it (each cell's navigation pack is read once).

@@ -71,8 +71,10 @@ Translation) that is about 10 MB/s at a jump, the owner's router's best. What he
   stops 30 s past the film's playhead (`soundReadAheadEnd`) and the item asks for 20 s (`soundForwardBuffer`). Before (2026-11-19):
   28 MB/s asked, 18 distinct, for a 5 MB/s film; after: 12.3 and 5.6.
 
-Only one reading for both (the direct player, the app's `docs/OWN_PLAYER.md`), or a shared cache of what was read, removes the double
-read.
+Since 2026-11-19 a network source sits behind a `SharedReadCache` (one per session): the picture reader and the remuxer are readers of
+it, what one fetched stays until the other has passed it, and the sound's lead (`RemuxSession.soundLead`, also the sound item's forward
+buffer) is kept within what the cache holds, so the film is fetched once (Lost in Translation: 5.34 MB/s asked for a 5.29 MB/s film).
+Raise the sound's lead only together with the cache's room.
 
 ## Where to look
 

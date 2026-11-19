@@ -156,6 +156,13 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **`SoftwareController.setPictureSuspended(_:)`** (the app's Jira EGA-112): the picture is neither decoded nor drawn, the
+  sound and the clock go on, a jump moves only the sound and the clock; turned off, the picture starts again where the clock stands
+  (`pipeline.start(at:)`). For a host that keeps the sound playing off screen: the picture layer the system stops in the background
+  otherwise ended the picture for good (the pipeline stops on a failed renderer). **Evidence:** `SoftwareControllerPlaybackTests.
+  pictureSuspended` (the clock goes on, nothing decoded while suspended, pictures again after) and the suite (11, with
+  `MEDIAENGINE_TEST_PATIENCE=4` at background priority: without it the speed checks of three other tests fail at that priority, as
+  the handoff notes say). Exported.
 - 2026-11-19 **`ByteSource.notePlaying()`** (the app's Jira EGA-120): called again and again while a film plays, never while paused
   (`AVPlayerController.refresh` when the rate is not 0, `SoftwareController.tick` while playing, through `PlaybackSession.notePlaying`
   and the shared read cache); the default does nothing. The app's SMB source keeps its connection while the calls come. **Evidence:**

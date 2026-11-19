@@ -259,6 +259,22 @@ public final class SoftwareController: PlaybackController {
         if state == .playing, !seeking { startClocks() }
     }
 
+    /// The picture is neither decoded nor drawn while this is on; the sound and the clock go on, and so does a jump (it moves the sound
+    /// and the clock). For a host that keeps the sound playing while it is not on screen (the app's Jira EGA-112): a picture layer the
+    /// system stops in the background would otherwise end the picture for good, and decoding nobody sees costs battery. Turned off, the
+    /// picture starts again where the clock stands.
+    public private(set) var isPictureSuspended = false
+
+    public func setPictureSuspended(_ suspended: Bool) async {
+        guard suspended != isPictureSuspended, state != .failed, state != .loading, !closed else { return }
+        isPictureSuspended = suspended
+        if suspended {
+            await pipeline.stop()
+        } else {
+            await pipeline.start(at: max(pipeline.synchronizer.currentTime().seconds, 0))
+        }
+    }
+
     public func seek(to time: TimeInterval) async {
         guard state != .failed, state != .loading else { return }
         let target = min(max(time, 0), duration ?? .greatestFiniteMagnitude)
@@ -274,7 +290,7 @@ public final class SoftwareController: PlaybackController {
         audioFinished = false
         currentTime = target
         pipeline.synchronizer.setRate(0, time: CMTime(seconds: target, preferredTimescale: 90_000))
-        await pipeline.start(at: target)
+        if !isPictureSuspended { await pipeline.start(at: target) }
         if let audio { await audio.player.seek(to: CMTime(seconds: target, preferredTimescale: 90_000), toleranceBefore: .zero, toleranceAfter: .zero) }
         guard generation == seekGeneration, !closed else { return }              // a later jump took over
         seeking = false

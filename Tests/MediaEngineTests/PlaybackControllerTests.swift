@@ -97,6 +97,24 @@ struct SoftwareControllerPlaybackTests {
         #expect(await waitUntil(6) { player.state == .playing && player.currentTime > 0.3 && player.currentTime < 2.5 }, "\(player.state) at \(player.currentTime)")
     }
 
+    @Test("with the picture suspended the clock goes on and nothing is decoded; resumed, pictures come again (the app's EGA-112)",
+          .enabled(if: isExtendedBuild))
+    func pictureSuspended() async throws {
+        let player = try await controller("fixture-avi-xvid")
+        defer { player.close() }
+        player.play()
+        #expect(await waitUntil(8) { player.currentTime > 0.3 })
+        await player.setPictureSuspended(true)
+        #expect(player.isPictureSuspended)
+        try await Task.sleep(for: .milliseconds(200))
+        let decoded = player.statistics.decodedFrames, time = player.currentTime
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(player.currentTime > time + 0.3, "the clock goes on: \(time) then \(player.currentTime)")
+        #expect(player.statistics.decodedFrames <= decoded + 1, "nothing is decoded: \(decoded) then \(player.statistics.decodedFrames)")
+        await player.setPictureSuspended(false)
+        #expect(await waitUntil(4) { player.statistics.decodedFrames > decoded + 3 }, "\(player.statistics)")
+    }
+
     @Test("seeking while playing keeps playing from the new place; a seek back repeats pictures", .enabled(if: isExtendedBuild))
     func seekWhilePlaying() async throws {
         let player = try await controller("fixture-flv")

@@ -36,8 +36,34 @@ public final class PlaybackSession: @unchecked Sendable {
         var preparation: (@Sendable (Double) -> Void)?
         /// The fonts attached to the file, read once (`startReadingFonts()`).
         var fonts: Task<[(name: String, data: Data)], Never>?
+        /// Changes the sound before it is served (``soundProcessor``).
+        var soundProcessor: (any SoundProcessor)?
     }
     let state = Mutex(State())
+
+    /// Changes the sound of the tracks the engine serves (an equalizer, a volume boost): see ``SoundProcessor`` for which tracks it
+    /// reaches. Set it before the first player item or controller is made: the pieces are built with it from then on, and a later change
+    /// does not reach a session that is already playing (make a new session for that). `nil`, the default, serves the sound as it is.
+    public var soundProcessor: (any SoundProcessor)? {
+        get { state.withLock { $0.soundProcessor } }
+        set { state.withLock { $0.soundProcessor = newValue } }
+    }
+
+    /// Whether ``soundProcessor`` reaches this sound track (only for tracks of ``audioChoices``): tracks the engine converts anyway,
+    /// AAC-LC with up to 5.1 channels, and AC-3 and E-AC-3 when the linked build has their decoders. The others play as they are.
+    public func soundProcessorReaches(_ choice: TrackChoice) -> Bool {
+        guard choice.kind == .audio else { return false }
+        if choice.isExternal {
+            let files = state.withLock { $0.externalAudio }
+            let index = choice.id - ServedTracks.externalAudioBase
+            guard files.indices.contains(index) else { return false }
+            return SoundProcessing.reaches(files[index].track, transcodes: files[index].transcodes)
+        }
+        guard let track = info.tracks.first(where: { $0.id == choice.id }) else { return false }
+        var transcodes = false
+        if case .transcodeAudio = info.playbackPlan.tracks.first(where: { $0.trackID == track.id })?.treatment { transcodes = true }
+        return SoundProcessing.reaches(track, transcodes: transcodes)
+    }
 
     /// Opens a local file (security-scoped URLs from the file picker included) or an HTTP(S) address.
     ///
@@ -336,19 +362,23 @@ public final class PlaybackSession: @unchecked Sendable {
         let byteSource = source.byteSource
         let info = info
         let cancellation = cancellation
-        let (external, externalAudio, linked, preparation) = state.withLock { ($0.externalSubtitles, $0.externalAudio, $0.linkedSources, $0.preparation) }
+        let (external, externalAudio, linked, preparation, processor) = state.withLock {
+            ($0.externalSubtitles, $0.externalAudio, $0.linkedSources, $0.preparation, $0.soundProcessor)
+        }
         let (remux, bad): (RemuxSession, Set<String>) = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(with: Result {
                     guard let ordered = info.orderedChapters else {
                         return (try RemuxSession(source: byteSource, info: info, cancellation: cancellation,
-                                                 externalSubtitles: external, externalAudio: externalAudio, progress: preparation), [])
+                                                 externalSubtitles: external, externalAudio: externalAudio, soundProcessor: processor,
+                                                 progress: preparation), [])
                     }
                     let built = try Self.makeTimeline(main: byteSource, info: info, ordered: ordered, linked: linked, cancellation: cancellation)
                     var playInfo = info
                     playInfo.duration = built.list.duration
                     return (try RemuxSession(source: byteSource, info: playInfo, cancellation: cancellation, externalSubtitles: external,
-                                             externalAudio: externalAudio, packetSource: built.reader), built.incompatible)
+                                             externalAudio: externalAudio, packetSource: built.reader, soundProcessor: processor),
+                            built.incompatible)
                 })
             }
         }

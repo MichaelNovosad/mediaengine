@@ -156,6 +156,27 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **A sound processor for the served sound: the equalizer for Matroska** (the app's Jira EGA-100). Public: `SoundProcessor`
+  (`makeStage(sampleRate:channels:)`), `SoundStage` (`process(_:frames:)`, planar float in place), `PlaybackSession.soundProcessor` (set
+  before the first item or controller; the remuxer is built with it) and `soundProcessorReaches(_:)`. With a processor, `RemuxSession`
+  converts to ALAC every audio output it reaches (`SoundProcessing.route`): tracks converted anyway (the processor between the decoder and
+  the encoder), AAC-LC with 1, 2 or 6 channels decoded by AudioToolbox (`SystemAACDecoder` in `AudioTranscoder`), AC-3 and E-AC-3 by the
+  build's own decoders (`audioFallback`); each piece gets a fresh stage and at least 0.2 s of warm-up (`SoundProcessing.warmUp`, run
+  through the stage and thrown away). **Measured before choosing** (temporary program in `build/eqprobe`, removed): AudioToolbox decodes
+  AAC in step with its packets (97 packets: 97 × 1024 samples, first sound where FFmpeg's decoder has it) and gives 5.1 as L R C LFE Ls Rs
+  (FFmpeg's order) whatever layout the input format names (a compressed format of more than two channels needs one to exist); for AC-3
+  and E-AC-3 it trims 256 samples at the start and gives 288 fewer at the end even after a flush, so pieces decoded one at a time would
+  leave a gap at every join: those go to FFmpeg's decoders (their patents are marked expired in `profiles/audioFallback.json`), not
+  Apple's: an exception to Apple first, only while a processor is set. HE-AAC (delay not measured), MP3 and AAC with more than six
+  channels are not reached (they play as they are). Also found: the speech extractor's `SystemDecoder` makes its compressed format
+  without a layout, which AVFoundation refuses for more than two channels: 5.1 AAC and AC-3 cannot be made into subtitles that way
+  (not changed here). **Evidence:** `SoundProcessorTests` 3 (AAC pieces with their warm-up join into the whole within one 16-bit step, one
+  millisecond apart at most as Matroska's times are; a gain of one half halves the FLAC samples, the warm-up adds no samples but runs
+  through the stage; which tracks are reached) and `SoundProcessorPlaybackTests` 1 (AVPlayer plays fixture-basic with its AAC served
+  through a processor; in the playback pass), the converter and session suites (30); core and `extended-plus` build without warnings;
+  `check-public-api.sh` passes; exported. **Not run:** DocC check, the whole verify. **Found, older:**
+  `ExternalAudioTests.refusing` fails on `extended-plus`: it expects `fixture-licensed-audio` (DTS and TrueHD) refused, and the DTS core
+  plays since 2026-11-12.
 - 2026-11-19 **`SoftwareController.setPictureSuspended(_:)`** (the app's Jira EGA-112): the picture is neither decoded nor drawn, the
   sound and the clock go on, a jump moves only the sound and the clock; turned off, the picture starts again where the clock stands
   (`pipeline.start(at:)`). For a host that keeps the sound playing off screen: the picture layer the system stops in the background

@@ -1,3 +1,4 @@
+import AVFoundation
 internal import FFmpegLGPL
 import Foundation
 
@@ -36,14 +37,30 @@ final class AudioTranscoder: @unchecked Sendable {
         canTranscodeStatelessly(codecName) || prerollSeconds(codecName) > 0
     }
 
+    /// AAC-LC with one, two or six channels (``SoundProcessing/Route/system``): Apple's AudioToolbox decodes it in step with its packets
+    /// (measured 2026-11-19: 97 packets give 97 × 1024 samples, the first one where FFmpeg's decoder has it) and in FFmpeg's channel
+    /// order (5.1 comes out as L R C LFE Ls Rs whatever layout the input format claims). HE-AAC is left out: its delay was not measured.
+    static func systemDecodes(_ parameters: UnsafePointer<AVCodecParameters>) -> Bool {
+        guard parameters.pointee.codec_id == AV_CODEC_ID_AAC, [1, 2, 6].contains(parameters.pointee.ch_layout.nb_channels),
+              parameters.pointee.sample_rate > 0, let extra = parameters.pointee.extradata, parameters.pointee.extradata_size >= 2 else { return false }
+        return extra[0] >> 3 == 2                                              // audio object type 2: AAC-LC
+    }
+
     let sampleRate: Int
     let channels: Int
     private let parameters: UnsafeMutablePointer<AVCodecParameters>      // our own copy
     private let sourceTimeBase: Rational
     private let outputFormat: AVSampleFormat
     private let bitDepth: Int32
+    /// Changes the decoded sound before it is encoded (``PlaybackSession/soundProcessor``).
+    private let processor: (any SoundProcessor)?
+    /// Decoded by AudioToolbox instead of FFmpeg (``systemDecodes(_:)``).
+    private let systemDecoding: Bool
 
-    init(parameters source: UnsafePointer<AVCodecParameters>, sourceTimeBase: Rational) throws {
+    init(parameters source: UnsafePointer<AVCodecParameters>, sourceTimeBase: Rational, processor: (any SoundProcessor)? = nil,
+         systemDecoding: Bool = false) throws {
+        self.processor = processor
+        self.systemDecoding = systemDecoding
         guard let copy = avcodec_parameters_alloc(), avcodec_parameters_copy(copy, source) >= 0 else {
             throw MediaError.engine(detail: "could not copy audio parameters")
         }
@@ -134,6 +151,7 @@ final class AudioTranscoder: @unchecked Sendable {
     /// (Opus, Vorbis) into the right state, and their audio is discarded.
     func transcode(_ packets: [MediaPacket], preroll: [MediaPacket] = [], stream: Int) throws -> [MediaPacket] {
         guard let first = packets.first else { return [] }
+        if systemDecoding { return try transcodeWithSystem(packets, preroll: preroll, stream: stream) }
         guard let codec = avcodec_find_decoder(parameters.pointee.codec_id),
               let decoder = avcodec_alloc_context3(codec) else { throw MediaError.engine(detail: "no decoder") }
         defer { var context: UnsafeMutablePointer<AVCodecContext>? = decoder; avcodec_free_context(&context) }
@@ -156,6 +174,9 @@ final class AudioTranscoder: @unchecked Sendable {
 
         var swr: OpaquePointer?
         defer { swr_free(&swr) }
+        // With a processor: decoded sound to planar float first (`swr`), through the stage, then to the encoder's format (`floats`).
+        let stage = processor?.makeStage(sampleRate: Double(sampleRate), channels: channels)
+        let floats = try stage.map { _ in try FloatToOutput(layout: encoder.pointee.ch_layout, format: outputFormat, sampleRate: sampleRate) }
         guard let frame = av_frame_alloc(), let encoded = av_packet_alloc(), let input = av_packet_alloc() else {
             throw MediaError.engine(detail: "allocation failed")
         }
@@ -207,20 +228,23 @@ final class AudioTranscoder: @unchecked Sendable {
             }
         }
 
-        func convert(_ decoded: UnsafeMutablePointer<AVFrame>) throws {
-            if !positioned {
+        /// `warmingUp`: a pre-roll frame, which only brings the stage into step (with no stage it is not converted at all).
+        func convert(_ decoded: UnsafeMutablePointer<AVFrame>, warmingUp: Bool = false) throws {
+            if !positioned, !warmingUp {
                 positioned = true
                 if decoded.pointee.pts != Int64.min { nextSample = sourceTimeBase.convert(decoded.pointee.pts, to: outputTimeBase) }
             }
             if swr == nil {
                 var inLayout = decoded.pointee.ch_layout
                 if inLayout.order == AV_CHANNEL_ORDER_UNSPEC { av_channel_layout_default(&inLayout, Int32(channels)) }
-                guard swr_alloc_set_opts2(&swr, &encoder.pointee.ch_layout, outputFormat, Int32(sampleRate), &inLayout,
-                                          AVSampleFormat(rawValue: decoded.pointee.format), decoded.pointee.sample_rate, 0, nil) >= 0,
+                guard swr_alloc_set_opts2(&swr, &encoder.pointee.ch_layout, stage == nil ? outputFormat : AV_SAMPLE_FMT_FLTP,
+                                          Int32(sampleRate), &inLayout, AVSampleFormat(rawValue: decoded.pointee.format),
+                                          decoded.pointee.sample_rate, 0, nil) >= 0,
                       swr_init(swr) >= 0 else { throw MediaError.engine(detail: "resampler failed to start") }
             }
             let capacity = Int(swr_get_out_samples(swr, decoded.pointee.nb_samples)) + 64
-            let planes = (0..<channels).map { _ in UnsafeMutablePointer<UInt8>.allocate(capacity: capacity * bytesPerSample) }
+            let width = stage == nil ? bytesPerSample : MemoryLayout<Float>.size
+            let planes = (0..<channels).map { _ in UnsafeMutablePointer<UInt8>.allocate(capacity: capacity * width) }
             defer { planes.forEach { $0.deallocate() } }
             var outputs: [UnsafeMutablePointer<UInt8>?] = planes
             let produced: Int32 = outputs.withUnsafeMutableBufferPointer { buffer in
@@ -228,7 +252,14 @@ final class AudioTranscoder: @unchecked Sendable {
                 return swr_convert(swr, buffer.baseAddress, Int32(capacity), inputPlanes, decoded.pointee.nb_samples)
             }
             guard produced >= 0 else { throw MediaError.engine(detail: "resample failed") }
-            for channel in 0..<channels { pending[channel].append(planes[channel], count: Int(produced) * bytesPerSample) }
+            if let stage, let floats {
+                let floatPlanes = planes.map { UnsafeMutableRawPointer($0).assumingMemoryBound(to: Float.self) }
+                try floats.run(floatPlanes, frames: Int(produced), through: stage, discard: warmingUp) { channel, bytes, count in
+                    pending[channel].append(bytes, count: count)
+                }
+            } else {
+                for channel in 0..<channels { pending[channel].append(planes[channel], count: Int(produced) * bytesPerSample) }
+            }
         }
 
         func send(_ packet: MediaPacket) throws {
@@ -245,10 +276,13 @@ final class AudioTranscoder: @unchecked Sendable {
             if sent < 0, sent != AVError.again { throw MediaError.corrupt(detail: "audio decode failed: \(AVError.describe(sent))") }
         }
 
-        // Pre-roll: run the decoder over the packets before the segment and throw their audio away.
+        // Pre-roll: run the decoder (and a processor's stage) over the packets before the segment and throw their audio away.
         for packet in preroll {
             try send(packet)
-            while avcodec_receive_frame(decoder, frame) >= 0 { av_frame_unref(frame) }
+            while avcodec_receive_frame(decoder, frame) >= 0 {
+                if stage != nil { try convert(frame, warmingUp: true) }
+                av_frame_unref(frame)
+            }
         }
         for packet in packets {
             try send(packet)
@@ -265,5 +299,213 @@ final class AudioTranscoder: @unchecked Sendable {
         }
         try encodeFrames(flush: true)
         return output
+    }
+
+    // MARK: AudioToolbox
+
+    /// AAC-LC through Apple's decoder: each packet gives its own samples at once (no delay to trim), so a fresh decoder per piece, with
+    /// the pre-roll before it, joins the pieces exactly. Only used with a processor (else the track is passed through untouched).
+    private func transcodeWithSystem(_ packets: [MediaPacket], preroll: [MediaPacket], stream: Int) throws -> [MediaPacket] {
+        guard let first = packets.first else { return [] }
+        let decoder = try SystemAACDecoder(parameters: parameters)
+        let encoder = try openEncoder()
+        defer { var context: UnsafeMutablePointer<AVCodecContext>? = encoder; avcodec_free_context(&context) }
+        let floats = try FloatToOutput(layout: encoder.pointee.ch_layout, format: outputFormat, sampleRate: sampleRate,
+                                       source: parameters.pointee.ch_layout)
+        let stage = processor?.makeStage(sampleRate: Double(sampleRate), channels: channels)
+        let bytesPerSample = outputFormat == AV_SAMPLE_FMT_S32P ? 4 : 2
+        let frameSize = max(Int(encoder.pointee.frame_size), 1)
+        var pending = [Data](repeating: Data(), count: channels)
+        var nextSample = sourceTimeBase.convert(first.pts, to: outputTimeBase) + Int64(first.skipStart)
+        var skip = first.skipStart                                             // samples of the first packet the file says to drop
+        var output: [MediaPacket] = []
+
+        func take(_ pcm: AVAudioPCMBuffer, warmingUp: Bool) throws {
+            guard let data = pcm.floatChannelData else { return }
+            var frames = Int(pcm.frameLength)
+            var start = 0
+            if !warmingUp, skip > 0 {
+                let dropped = min(skip, frames)
+                if let stage {                                                 // dropped samples still keep the stage in step
+                    var heads = (0..<channels).map { data[$0] }
+                    heads.withUnsafeMutableBufferPointer { stage.process($0, frames: dropped) }
+                }
+                skip -= dropped
+                start = dropped
+                frames -= dropped
+            }
+            guard frames > 0 else { return }
+            let planes = (0..<channels).map { data[$0] + start }
+            if let stage {
+                try floats.run(planes, frames: frames, through: stage, discard: warmingUp) { channel, bytes, count in
+                    pending[channel].append(bytes, count: count)
+                }
+            } else if !warmingUp {
+                try floats.convert(planes, frames: frames) { channel, bytes, count in pending[channel].append(bytes, count: count) }
+            }
+        }
+
+        func encode(flush: Bool) throws {
+            guard let frame = av_frame_alloc(), let encoded = av_packet_alloc() else { throw MediaError.engine(detail: "allocation failed") }
+            defer {
+                var f: UnsafeMutablePointer<AVFrame>? = frame; av_frame_free(&f)
+                var p: UnsafeMutablePointer<AVPacket>? = encoded; av_packet_free(&p)
+            }
+            func drain() throws {
+                while true {
+                    let result = avcodec_receive_packet(encoder, encoded)
+                    if result == AVError.again || result == AVError.eof { return }
+                    guard result >= 0 else { throw MediaError.engine(detail: "ALAC encode failed: \(AVError.describe(result))") }
+                    let duration = encoded.pointee.duration > 0 ? encoded.pointee.duration : Int64(frameSize)
+                    output.append(MediaPacket(stream: stream, data: Data(bytes: encoded.pointee.data, count: Int(encoded.pointee.size)),
+                                              pts: encoded.pointee.pts, dts: encoded.pointee.pts, duration: duration, isKeyframe: true))
+                    av_packet_unref(encoded)
+                }
+            }
+            while pending[0].count / bytesPerSample >= frameSize || (flush && !pending[0].isEmpty) {
+                let samples = min(frameSize, pending[0].count / bytesPerSample)
+                frame.pointee.nb_samples = Int32(samples)
+                frame.pointee.format = outputFormat.rawValue
+                frame.pointee.sample_rate = Int32(sampleRate)
+                av_channel_layout_copy(&frame.pointee.ch_layout, &encoder.pointee.ch_layout)
+                guard av_frame_get_buffer(frame, 0) >= 0 else { throw MediaError.engine(detail: "frame buffer failed") }
+                let byteCount = samples * bytesPerSample
+                for channel in 0..<channels {
+                    pending[channel].prefix(byteCount).copyBytes(to: frame.pointee.extended_data[channel]!, count: byteCount)
+                    pending[channel].removeFirst(byteCount)
+                }
+                frame.pointee.pts = nextSample
+                nextSample += Int64(samples)
+                let sent = avcodec_send_frame(encoder, frame)
+                av_frame_unref(frame)
+                guard sent >= 0 else { throw MediaError.engine(detail: "ALAC send failed: \(AVError.describe(sent))") }
+                try drain()
+            }
+            if flush {
+                avcodec_send_frame(encoder, nil)
+                try drain()
+            }
+        }
+
+        for packet in preroll { try decoder.decode(packet) { try take($0, warmingUp: true) } }
+        for packet in packets {
+            try decoder.decode(packet) { try take($0, warmingUp: false) }
+            try encode(flush: false)
+        }
+        try decoder.finish { try take($0, warmingUp: false) }
+        try encode(flush: true)
+        return output
+    }
+}
+
+/// Planar float sound to the encoder's planar integer format (FFmpeg clips what goes past full scale), after a processor's stage.
+private final class FloatToOutput {
+    private var swr: OpaquePointer?
+    private let bytesPerSample: Int
+    private let channels: Int
+
+    init(layout: AVChannelLayout, format: AVSampleFormat, sampleRate: Int, source: AVChannelLayout? = nil) throws {
+        var outLayout = layout
+        var inLayout = AVChannelLayout()
+        if let source, source.nb_channels == layout.nb_channels, source.order != AV_CHANNEL_ORDER_UNSPEC {
+            var copy = source
+            av_channel_layout_copy(&inLayout, &copy)
+        } else {
+            av_channel_layout_copy(&inLayout, &outLayout)
+        }
+        defer { av_channel_layout_uninit(&inLayout) }
+        channels = Int(layout.nb_channels)
+        bytesPerSample = format == AV_SAMPLE_FMT_S32P ? 4 : 2
+        guard swr_alloc_set_opts2(&swr, &outLayout, format, Int32(sampleRate), &inLayout, AV_SAMPLE_FMT_FLTP, Int32(sampleRate), 0, nil) >= 0,
+              swr_init(swr) >= 0 else { throw MediaError.engine(detail: "resampler failed to start") }
+    }
+
+    deinit { swr_free(&swr) }
+
+    /// The samples through `stage`, then converted and handed to `append` per channel, unless `discard` (a warm-up).
+    func run(_ planes: [UnsafeMutablePointer<Float>], frames: Int, through stage: any SoundStage, discard: Bool,
+             append: (Int, UnsafePointer<UInt8>, Int) throws -> Void) throws {
+        var heads = planes
+        heads.withUnsafeMutableBufferPointer { stage.process($0, frames: frames) }
+        if !discard { try convert(planes, frames: frames, append: append) }
+    }
+
+    func convert(_ planes: [UnsafeMutablePointer<Float>], frames: Int, append: (Int, UnsafePointer<UInt8>, Int) throws -> Void) throws {
+        guard frames > 0 else { return }
+        let capacity = frames + 64
+        let outputs = (0..<channels).map { _ in UnsafeMutablePointer<UInt8>.allocate(capacity: capacity * bytesPerSample) }
+        defer { outputs.forEach { $0.deallocate() } }
+        var outs: [UnsafeMutablePointer<UInt8>?] = outputs
+        var ins: [UnsafePointer<UInt8>?] = planes.map { UnsafePointer(UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self)) }
+        let produced = outs.withUnsafeMutableBufferPointer { out in
+            ins.withUnsafeMutableBufferPointer { input in swr_convert(swr, out.baseAddress, Int32(capacity), input.baseAddress, Int32(frames)) }
+        }
+        guard produced >= 0 else { throw MediaError.engine(detail: "resample failed") }
+        for channel in 0..<channels { try append(channel, outputs[channel], Int(produced) * bytesPerSample) }
+    }
+}
+
+/// AAC-LC packets to planar float through AudioToolbox (``AudioTranscoder/systemDecodes(_:)``).
+private final class SystemAACDecoder {
+    private let converter: AVAudioConverter
+    private let compressed: AVAudioFormat
+    private let decoded: AVAudioFormat
+
+    init(parameters: UnsafePointer<AVCodecParameters>) throws {
+        let channels = parameters.pointee.ch_layout.nb_channels
+        let tag = channels == 1 ? kAudioChannelLayoutTag_Mono : channels == 2 ? kAudioChannelLayoutTag_Stereo : kAudioChannelLayoutTag_WAVE_5_1_A
+        var description = AudioStreamBasicDescription()
+        description.mSampleRate = Double(parameters.pointee.sample_rate)
+        description.mChannelsPerFrame = UInt32(channels)
+        description.mFormatID = kAudioFormatMPEG4AAC
+        description.mFramesPerPacket = 1024
+        // A compressed format of more than two channels needs a layout to exist; the decoder takes its own from the stream and maps it
+        // to the output's (measured: the same levels per channel whichever 5.1 layout the input names).
+        guard let layout = AVAudioChannelLayout(layoutTag: tag),
+              let compressed = AVAudioFormat(streamDescription: &description, channelLayout: layout),
+              let extra = parameters.pointee.extradata, parameters.pointee.extradata_size > 0 else {
+            throw MediaError.unsupported(detail: "this AAC track has no usable format")
+        }
+        compressed.magicCookie = Data(bytes: extra, count: Int(parameters.pointee.extradata_size))
+        let decoded = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: description.mSampleRate, interleaved: false, channelLayout: layout)
+        guard let converter = AVAudioConverter(from: compressed, to: decoded) else {
+            throw MediaError.unsupported(detail: "the system cannot decode this AAC track")
+        }
+        self.compressed = compressed
+        self.decoded = decoded
+        self.converter = converter
+    }
+
+    func decode(_ packet: MediaPacket, into sink: (AVAudioPCMBuffer) throws -> Void) throws {
+        guard !packet.data.isEmpty else { return }
+        let buffer = AVAudioCompressedBuffer(format: compressed, packetCapacity: 1, maximumPacketSize: packet.data.count)
+        packet.data.copyBytes(to: buffer.data.assumingMemoryBound(to: UInt8.self), count: packet.data.count)
+        buffer.byteLength = UInt32(packet.data.count)
+        buffer.packetCount = 1
+        buffer.packetDescriptions?[0] = AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(packet.data.count))
+        var given = false
+        try pull(into: sink) { status in
+            if given { status.pointee = .noDataNow; return nil }
+            given = true
+            status.pointee = .haveData
+            return buffer
+        }
+    }
+
+    /// What the decoder still holds.
+    func finish(into sink: (AVAudioPCMBuffer) throws -> Void) throws {
+        try pull(into: sink) { status in status.pointee = .endOfStream; return nil }
+    }
+
+    private func pull(into sink: (AVAudioPCMBuffer) throws -> Void,
+                      input: @escaping (UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer?) throws {
+        while true {
+            guard let output = AVAudioPCMBuffer(pcmFormat: decoded, frameCapacity: 4096) else { return }
+            var error: NSError?
+            let status = converter.convert(to: output, error: &error) { _, inputStatus in input(inputStatus) }
+            if let error { throw MediaError.corrupt(detail: "audio decode failed: \(error.localizedDescription)") }
+            if output.frameLength > 0 { try sink(output) }
+            if status != .haveData || output.frameLength == 0 { return }
+        }
     }
 }

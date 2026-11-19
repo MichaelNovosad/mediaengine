@@ -9,7 +9,7 @@
 #   isolated  timing, memory and descriptor measurements (ExclusiveTests), which need the process to themselves
 # A suite that waits for AVPlayer belongs in PLAYBACK_SUITES (match the Swift type name).
 
-PLAYBACK_SUITES='AVPlayerEndToEndTests|SoftwareControllerPlaybackTests|SoftwarePipelineTests|InterlacedPlaybackTests|LegacyContainerPlaybackTests|ExternalAudioPlaybackTests|ExternalSubtitlePlayerTests|PlayListPlaybackTests|TrackSelectionTests'
+PLAYBACK_SUITES='AVPlayerEndToEndTests|SoftwareControllerPlaybackTests|SoftwarePipelineTests|InterlacedPlaybackTests|LegacyContainerPlaybackTests|ExternalAudioPlaybackTests|ExternalSubtitlePlayerTests|PlayListPlaybackTests|TrackSelectionTests|SoundProcessorPlaybackTests'
 
 # Warnings that come from Xcode's own tooling, not from our code.
 IGNORABLE_WARNINGS='Metadata extraction skipped'

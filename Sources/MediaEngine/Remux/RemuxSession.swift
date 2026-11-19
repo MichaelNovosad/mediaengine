@@ -201,7 +201,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// Blocking: reads the start of the file, builds the segment plan and the initialization segments.
     init(source: any ByteSource, info: MediaInfo, cancellation: CancellationFlag, cacheBudget: Int = 48 * 1024 * 1024,
          maxSegmentBytes: Int64 = SegmentPlan.defaultMaxSegmentBytes, externalSubtitles: [SubtitleTrack] = [], externalAudio audioFiles: [AudioTrack] = [], packetSource: (any PacketSource)? = nil,
-         progress: (@Sendable (Double) -> Void)? = nil) throws {
+         soundProcessor: (any SoundProcessor)? = nil, progress: (@Sendable (Double) -> Void)? = nil) throws {
         self.info = info
         self.cancellation = cancellation
         self.cacheBudget = cacheBudget
@@ -374,7 +374,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             var transcodes = false
             if case .transcodeAudio = treatments[stream] { transcodes = true }
             outputs[stream] = try Self.makeOutput(reader: reader, stream: stream, track: track, isVideo: stream == videoIndex,
-                                                  transcodes: transcodes, first: first[stream] ?? [], shiftSeconds: shiftSeconds)
+                                                  transcodes: transcodes, first: first[stream] ?? [], shiftSeconds: shiftSeconds,
+                                                  processor: soundProcessor)
         }
         for start in externalStarts {
             var track = start.file.track
@@ -382,7 +383,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             // The writer's shift carries the delay, so the file's own timestamps land where the viewer wants them.
             outputs[start.id] = try Self.makeOutput(reader: start.reader, stream: start.file.stream, track: track, isVideo: false,
                                                     transcodes: start.file.transcodes, first: start.first,
-                                                    shiftSeconds: shiftSeconds + start.file.delay)
+                                                    shiftSeconds: shiftSeconds + start.file.delay, processor: soundProcessor)
             let base = start.reader.timeBase(start.file.stream)
             let begin = start.first.first.map { base.seconds($0.pts) } ?? 0
             externalAudio[start.id] = ExternalAudioSource(reader: start.reader, stream: start.file.stream, delay: start.file.delay,
@@ -402,11 +403,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// The init segment, fragment writer and (for audio AVPlayer cannot decode) transcoder of one stream.
     private static func makeOutput(reader: any PacketSource, stream: Int, track: Track, isVideo: Bool, transcodes: Bool,
-                                   first: [MediaPacket], shiftSeconds: Double) throws -> Output {
+                                   first: [MediaPacket], shiftSeconds: Double, processor: (any SoundProcessor)? = nil) throws -> Output {
         let sourceBase = reader.timeBase(stream)
-        if transcodes {
+        // A sound processor (an equalizer) reaches the tracks it can: they are converted to ALAC too (``SoundProcessor``).
+        let route = processor == nil || isVideo ? SoundProcessing.Route.none
+            : SoundProcessing.route(codecName: track.codec.name, transcodes: transcodes, parameters: reader.parameters(stream))
+        if transcodes || route != .none {
             // Decoded and re-encoded to ALAC: the packets, the init segment and the fragments all use 1/sample-rate.
-            let transcoder = try AudioTranscoder(parameters: reader.parameters(stream), sourceTimeBase: sourceBase)
+            let transcoder = try AudioTranscoder(parameters: reader.parameters(stream), sourceTimeBase: sourceBase,
+                                                 processor: route == .none ? nil : processor, systemDecoding: route == .system)
             let timeBase = transcoder.outputTimeBase
             let shift = timeBase.ticks(seconds: shiftSeconds)
             let encodedParameters = try transcoder.makeEncodedParameters()
@@ -419,7 +424,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                 streamIndex: stream, kind: .audio, track: track, initSegment: initSegment,
                 writer: FragmentWriter(trackID: initSegment.trackID, timescale: initSegment.timescale, timeBase: timeBase,
                                        hasCompositionOffsets: false, shift: shift),
-                codecs: "alac", transcoder: transcoder, prerollSeconds: AudioTranscoder.prerollSeconds(track.codec.name))
+                codecs: "alac", transcoder: transcoder,
+                prerollSeconds: max(AudioTranscoder.prerollSeconds(track.codec.name), route == .none ? 0 : SoundProcessing.warmUp))
         }
 
         let shift = sourceBase.ticks(seconds: shiftSeconds)

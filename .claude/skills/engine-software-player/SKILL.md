@@ -33,6 +33,10 @@ description: Work on MediaEngine's own player (the software path - SoftwareContr
    picture froze because every late picture was dropped.
 5. **A new subtitle renderer's first frame counts as changed** (`SubtitleRenderer.frame`): hosts redraw only on `changed`, and the old
    track's line stayed on screen after a switch.
+6. **Blu-ray subtitles (PGS) begin with their composition** (`BitmapBackend`, 2026-11-19): FFmpeg's PGS decoder has no flush and keeps
+   its last composition; in a transport stream every segment is a block, so after an end segment or a jump the segments before the next
+   composition are passed over. A line without an end is drawn only across stretches that were read (`render(at:size:loaded:)`). Before:
+   the line on screen before a jump came back after every jump.
 
 ## Speed in debug builds
 

@@ -119,6 +119,10 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
   (just create a separate branch that will hold changes related to it but do not update it until I tell you to). We will continue to
   work in main branch on iOS, iPadOS and macOS."** Status: see Done 2026-11-17 (visionOS out).
 
+- 2026-11-19 (the app's owner, testing on the iPad) **Lost in Translation: "laggy, and subtitles stuck and were present on every movie
+  fragment after each switch; they disappeared only when I moved progress to the starting position."** Status: the subtitles fixed (see
+  Done 2026-11-19); the lag not addressed (the app's `docs/PLAN_2026-11-18.md` section 2 is the plan; the owner decides).
+
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
 ### Deferred after v1 (decided while working; revisit after the release)
@@ -147,6 +151,23 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **A Blu-ray subtitle line no longer comes back after every jump** (the app's owner, testing on the iPad: Lost in
+  Translation's subtitles "stuck and were present on every movie fragment after each switch; they disappeared only when I moved progress
+  to the starting position"). Cause, read in FFmpeg 9.0.2's `pgssubdec.c` and reproduced with the fixture's own segments: the PGS
+  decoder has no flush, so its last composition, palettes and pictures survive `avcodec_flush_buffers`; in a Blu-ray transport stream
+  every segment is a block of its own, and a window after a jump begins in the middle of a display set, whose end segment then drew the
+  composition remembered from before the jump at the new time (and, keyed by that time, kept the real subtitle there out). A jump to the
+  start reads from the file's beginning, which begins cleanly. Also: a PGS line has no end of its own and lasted until the next display
+  even when the clear that ended it lay in a stretch never read (a jump away from it). `BitmapBackend`: for PGS, after an end segment
+  and after a break of more than 3 s (`setSpread`; the decoder is then opened afresh from a copy of the parameters), segments are passed
+  over until a display set begins with its composition segment; a display's time is the decoder's (the composition's) instead of the
+  block's; `OverlayBackend.render(at:size:loaded:)` gets the renderer's coverage, and a picture without an end is drawn only while the
+  stretch from its start to now has been read. DVD and DVB are unchanged except for that last rule. **Evidence:**
+  `BitmapSubtitleTests` (new: `jumpIntoTheMiddleOfADisplaySet` (with the first, incomplete attempt it failed exactly as the film did:
+  the old picture at the new time), `openEndedOnlyOverWhatWasRead`, `segmentBySegment`) and the overlay, renderer, libass and golden
+  suites pass (47 tests); exported (`extended-plus`); the app built for the iOS simulator and the Mac. **Not checked:** Lost in
+  Translation itself (the share was not mounted), a device. **Not addressed:** the lag on the iPad (the app's `docs/PLAN_2026-11-18.md`
+  section 2: the double read over Eiga's own SMB client, and VC-1 on one core).
 - 2026-11-18 **`MediaEngine.cacheSize()` and `clearCache()`** (for the app's Settings > Storage, Jira EGA-113). What the engine keeps in
   `Caches/MediaEngine` (descriptions of files read over a network, `ProbeStore`; keyframe maps, `KeyframeIndexStore`) can now be measured
   and forgotten, in memory and on disk (`removeAll()` on both stores); files are probed and indexed again at their next opening.

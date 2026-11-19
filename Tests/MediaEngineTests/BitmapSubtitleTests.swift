@@ -81,6 +81,71 @@ struct BitmapSubtitleTests {
         #expect(backend.render(at: 2.5, size: size).images.isEmpty && backend.render(at: 3.5, size: size).images.count == 1)
     }
 
+    /// The segments of `Fixtures/src/bitmap.sup` one by one, each with its own time, as a Blu-ray transport stream carries them:
+    /// the number of the display set (0 and 2 are the pictures, 1 and 3 their clears), the segment's type and the block.
+    private func segments() throws -> [(set: Int, kind: UInt8, event: OverlayEvent)] {
+        let sup = try Data(contentsOf: Fixture.root.appendingPathComponent("Fixtures/src/bitmap.sup"))
+        var result: [(set: Int, kind: UInt8, event: OverlayEvent)] = []
+        var cursor = 0, set = 0
+        while cursor + 13 <= sup.count {
+            let pts = Double(sup[cursor + 2...cursor + 5].reduce(0) { $0 << 8 | UInt32($1) }) / 90_000
+            let kind = sup[cursor + 10], length = Int(sup[cursor + 11]) << 8 | Int(sup[cursor + 12])
+            result.append((set, kind, OverlayEvent(data: Data(sup[cursor + 10..<cursor + 13 + length]), start: pts, duration: 0)))
+            cursor += 13 + length
+            if kind == 0x80 { set += 1 }
+        }
+        return result
+    }
+
+    private func pgsBackend() throws -> BitmapBackend {
+        let reader = try PacketReader(source: FileByteSource(url: Fixture.url("fixture-bitmap")), cancellation: CancellationFlag())
+        return try #require(BitmapBackend(parameters: reader.parameters(2), videoSize: size))
+    }
+
+    @Test("after a jump, the rest of a display set whose start was not read does not bring back the picture shown before the jump")
+    func jumpIntoTheMiddleOfADisplaySet() throws {
+        let parts = try segments()
+        #expect(Set(parts.map(\.set)) == [0, 1, 2, 3], "two pictures and two clears")
+        let backend = try pgsBackend()
+        backend.add(parts.filter { $0.set == 0 }.map(\.event))                 // the first picture, on screen when the person jumps
+        var loaded = TimeRanges()
+        loaded.insert(0...1.2)
+        #expect(backend.render(at: 1.0, size: size, loaded: loaded).images.count == 1)
+
+        // The window after the jump begins in the middle of the second picture's display set: its composition was not read. Its end
+        // segment drew the first picture's composition again (the app's owner, 2026-11-19, Lost in Translation).
+        let second = parts.filter { $0.set == 2 }
+        #expect(second.first?.kind == 0x16, "a display set begins with its composition")
+        backend.add(second.dropFirst().map(\.event))
+        loaded.insert(2.9...6)
+        #expect(backend.render(at: 3.5, size: size, loaded: loaded).images.isEmpty, "nothing from before the jump")
+
+        // Read whole (the next window, or the stretch before it read from the file), the display set shows its own picture.
+        backend.add(second.map(\.event))
+        let shown = backend.render(at: 3.5, size: size, loaded: loaded)
+        #expect(shown.images.count == 1 && abs((shown.images.first?.frame.minX ?? 0) - 300) < 2, "\(shown.images.map(\.frame))")
+    }
+
+    @Test("a picture without an end of its own is not drawn across a stretch whose blocks were never read")
+    func openEndedOnlyOverWhatWasRead() throws {
+        let backend = try pgsBackend()
+        backend.add(try segments().filter { $0.set == 0 }.map(\.event))
+        var loaded = TimeRanges()
+        loaded.insert(0...1.5)
+        #expect(backend.render(at: 1.0, size: size, loaded: loaded).images.count == 1)
+        loaded.insert(9...11)
+        #expect(backend.render(at: 10, size: size, loaded: loaded).images.isEmpty, "its clear may lie in the stretch not read")
+        #expect(backend.render(at: 10, size: size, loaded: .everything).images.count == 1, "everything read and no clear: it stays")
+    }
+
+    @Test("segments of a Blu-ray stream given one by one, in the file's order, draw both pictures and their clears")
+    func segmentBySegment() throws {
+        let backend = try pgsBackend()
+        backend.add(try segments().map(\.event))
+        #expect(backend.render(at: 1.0, size: size).images.count == 1 && backend.render(at: 2.5, size: size).images.isEmpty)
+        #expect(backend.render(at: 3.5, size: size).images.count == 1 && backend.render(at: 5.0, size: size).images.isEmpty)
+    }
+
     @Test("damaged picture blocks do not crash the decoder", arguments: [2, 3, 4])
     func damaged(stream: Int) throws {
         // Many rounds with a fixed seed: the same damage every run, so a crash can be reproduced.

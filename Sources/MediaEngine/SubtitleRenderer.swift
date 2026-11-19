@@ -113,7 +113,7 @@ public final class SubtitleRenderer: @unchecked Sendable {
         let fileTime = playhead - delay
         scheduleLoad(forFileTime: fileTime, playhead: playhead)
         let result = state.withLock { state in
-            var result = state.backend?.render(at: fileTime, size: size) ?? (images: [], changed: false)
+            var result = state.backend?.render(at: fileTime, size: size, loaded: state.coverage) ?? (images: [], changed: false)
             // A new renderer (another track was chosen) cannot know what the screen shows: what the last renderer drew must go even
             // when this one has nothing to draw yet. Its backends compare with their own last frame only, so a first empty frame said
             // "unchanged", and a host that redraws on `changed` kept the old track's line until the new track showed one (the app's

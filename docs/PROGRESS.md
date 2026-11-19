@@ -126,7 +126,7 @@ Ground rules for the day: start with `CLAUDE.md`, this file and the skills in `.
 - 2026-11-19 (the app's owner) **"Do shared read cache, then EGA-121, EGA-120"** (then the app's tickets, one by one, a commit each).
   The read cache: one film's readers (the software player's picture reader, the remuxer's sound, picture-subtitle readers) share what
   was read from a network source, so the film is read once (the app's `docs/PLAN_2026-11-18.md` section 2). Status: the read cache
-  done (Done 2026-11-19, Jira EGA-125); EGA-121 done (Done 2026-11-19); EGA-120 next.
+  done (Done 2026-11-19, Jira EGA-125); EGA-121 and EGA-120 done (Done 2026-11-19); the rest is app work.
 
 - 2026-10-26 **v1 scope rule** (owner): "cover everything; if something requires too much effort for our case, ignore it, we need to release v1". Applied from E4.2 on: the remaining engine list runs without stopping between parts (the owner commits when they like); anything judged too costly for v1 is not built and is listed under "Deferred after v1" below with the reason.
 
@@ -156,6 +156,11 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-19 **`ByteSource.notePlaying()`** (the app's Jira EGA-120): called again and again while a film plays, never while paused
+  (`AVPlayerController.refresh` when the rate is not 0, `SoftwareController.tick` while playing, through `PlaybackSession.notePlaying`
+  and the shared read cache); the default does nothing. The app's SMB source keeps its connection while the calls come. **Evidence:**
+  `SharedReadCacheTests.playingIsNoted` (a film from a network source: notes while it plays, none once paused) and the cache and
+  software player suites (19). Exported.
 - 2026-11-19 **Blu-ray keyframes from the clip file** (the app's Jira EGA-121). `DiscInfo.entryPoints(blurayClipInfo:)` reads a clip
   information file's entry-point map (layout as libbluray reads it, recalled, then checked: below); `DiscInfo.Facts` (languages and
   entry points), `DiscInfo.facts(blurayClipInfo:)`, `facts(forStream:read:)`; `PlaybackSession(url:disc:)` and `(source:disc:)` (the

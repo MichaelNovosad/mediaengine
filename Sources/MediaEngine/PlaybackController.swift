@@ -170,6 +170,7 @@ public final class AVPlayerController: PlaybackController {
         currentTime = max(item.currentTime().seconds.isFinite ? item.currentTime().seconds : 0, 0)
         session.notePlayhead(currentTime)
         rate = player.rate
+        if rate != 0 { session.notePlaying() }
         switch item.status {
         case .failed:
             if state != .failed { error = MediaError.engine(detail: item.error.map { "\($0)" } ?? "the player failed"); state = .failed }

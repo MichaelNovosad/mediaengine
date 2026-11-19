@@ -195,6 +195,7 @@ public final class SoftwareController: PlaybackController {
         guard state == .playing, !seeking else { return }
         let picture = pipeline.synchronizer.currentTime().seconds
         session.notePlayhead(picture)
+        session.notePlaying()
         if let audio {
             let sound = audio.item
             if !audioFinished, let length = duration ?? Optional(sound.duration.seconds), sound.currentTime().seconds >= min(length, sound.duration.seconds) - 0.15 { audioFinished = true }

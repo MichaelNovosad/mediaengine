@@ -320,6 +320,12 @@ public final class PlaybackSession: @unchecked Sendable {
         state.withLock { $0.remux }?.notePlayhead(seconds)
     }
 
+    /// The film is playing (the controllers call this on every tick while it plays): its source keeps a network connection it would
+    /// otherwise let go while idle (the app's Jira EGA-120).
+    func notePlaying() {
+        source.byteSource.notePlaying()
+    }
+
     func startRemux() async throws -> RemuxSession {
         let existing = try state.withLock { state -> RemuxSession? in
             if state.isClosed { throw MediaError.cancelled }

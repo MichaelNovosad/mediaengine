@@ -47,12 +47,19 @@ public protocol ByteSource: Sendable {
     /// connection per file (SMB) should close it here rather than when its last reference goes, which can be late. The default does
     /// nothing.
     func close()
+
+    /// The film read from this source is playing: called again and again while it plays (several times a second), never while it is
+    /// paused. A source that lets an idle connection go should keep it while these calls come: the player often reads nothing for a
+    /// while (its buffer is full), and the next jump would wait for a new connection. The default does nothing.
+    func notePlaying()
 }
 
 extension ByteSource {
     public func cancelPendingReads() {}
 
     public func close() {}
+
+    public func notePlaying() {}
 
     public func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
         try read(at: offset, into: buffer)

@@ -74,6 +74,7 @@ final class SharedReadCache: ByteSource, @unchecked Sendable {
     var length: Int64? { source.length }
     var throughput: Double? { source.throughput }
     func cancelPendingReads() { source.cancelPendingReads() }
+    func notePlaying() { source.notePlaying() }
 
     /// Far from where playback reads (cluster headers for an index): straight to the source, nothing kept.
     func readSparse(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {

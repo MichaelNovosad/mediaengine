@@ -10,6 +10,7 @@ private final class CountingSource: ByteSource {
     let base: DataByteSource
     private let asked = Mutex<Int64>(0)
     private let sparse = Mutex<Int64>(0)
+    private let notes = Mutex(0)
     private let delay: Double
 
     init(_ data: Data, delay: Double = 0) {
@@ -20,6 +21,9 @@ private final class CountingSource: ByteSource {
     var length: Int64? { base.length }
     var askedBytes: Int64 { asked.withLock { $0 } }
     var sparseBytes: Int64 { sparse.withLock { $0 } }
+    var playingNotes: Int { notes.withLock { $0 } }
+
+    func notePlaying() { notes.withLock { $0 += 1 } }
 
     func read(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
@@ -165,6 +169,24 @@ struct SharedReadCacheTests {
         #expect(network.source.byteSource is SharedReadCache)
         let local = try await PlaybackSession(url: Fixture.url("fixture-basic"))
         #expect(!(local.source.byteSource is SharedReadCache))
+    }
+
+    @Test("a playing film tells its network source, through the cache, that it plays; a paused one does not (EGA-120)")
+    @MainActor
+    func playingIsNoted() async throws {
+        let source = CountingSource(try Fixture.data("fixture-basic"))
+        let session = try await PlaybackSession(source: MediaSource(byteSource: source))
+        let player = try await session.makeController()
+        player.isMuted = true
+        defer { player.close() }
+        #expect(source.playingNotes == 0)
+        player.play()
+        #expect(await waitUntil(8) { source.playingNotes > 3 }, "\(player.state) at \(player.currentTime)")
+        player.pause()
+        try await Task.sleep(for: .milliseconds(400))
+        let paused = source.playingNotes
+        try await Task.sleep(for: .seconds(1))
+        #expect(source.playingNotes == paused)
     }
 
     @Test("the engine's own player reads a film from a network source once, picture and sound together", .enabled(if: isExtendedBuild))

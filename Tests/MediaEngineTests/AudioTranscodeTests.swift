@@ -166,6 +166,33 @@ struct AudioTranscodeTests {
         #expect(coldDiffers, "without warm-up the segment should not match; if it does, the warm-up is unnecessary for this codec")
     }
 
+    @Test("ALAC level: sound that was lossy is stored as it is, lossless sound and streams over 1 MiB a second are compressed (EGA-123)")
+    func compressionLevels() {
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_DTS, channels: 6, sampleRate: 48_000, bitDepth: 24) == 0)
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_OPUS, channels: 2, sampleRate: 48_000, bitDepth: 16) == 0)
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_AC3, channels: 6, sampleRate: 48_000, bitDepth: 24) == 0)
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_DTS, channels: 6, sampleRate: 48_000, bitDepth: 32) == 0, "written with 24 bits")
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_EAC3, channels: 8, sampleRate: 48_000, bitDepth: 24) == 2, "7.1: 1.15 MB a second")
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_FLAC, channels: 2, sampleRate: 44_100, bitDepth: 16) == 2)
+        #expect(AudioTranscoder.compressionLevel(codec: AV_CODEC_ID_PCM_S24LE, channels: 2, sampleRate: 48_000, bitDepth: 24) == 2)
+    }
+
+    @Test("DTS stored as it is: the decoded DTS, sample for sample, in Apple Lossless", .enabled(if: MediaEngine.availableProfiles.contains(.dtsCore)))
+    func dtsStored() throws {
+        let (reader, packets) = try allPackets("fixture-licensed-audio", stream: 1)
+        let transcoder = try AudioTranscoder(parameters: reader.parameters(1), sourceTimeBase: reader.timeBase(1))
+        #expect(transcoder.compressionLevel == 0)
+        let encoded = try transcoder.transcode(packets, stream: 1)
+        let alac = try transcoder.makeEncodedParameters()
+        defer { var pointer: UnsafeMutablePointer<AVCodecParameters>? = alac; avcodec_parameters_free(&pointer) }
+        let stored = try decodeToS32(alac, packets: encoded).samples
+        let source = try decodeToS32(reader.parameters(1), packets: packets).samples
+        #expect(stored.count == source.count, "\(stored.count) samples, the DTS has \(source.count)")
+        let worst = zip(stored, source).map { abs(Int64($0) - Int64($1)) }.max() ?? 0
+        #expect(worst < 1 << 16, "worst difference \(worst), more than one 16-bit step")
+        #expect(source.contains { $0 != 0 }, "the fixture's DTS is not silent")
+    }
+
     @Test("a transcoded track is only processed when the player asks for it")
     func lazyTranscoding() async throws {
         let info = try await Fixture.probe("fixture-basic")

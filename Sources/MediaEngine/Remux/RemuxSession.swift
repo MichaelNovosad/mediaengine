@@ -1039,8 +1039,11 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let encoded = try transcoder.transcode(pending.packets, preroll: pending.preroll, stream: key.stream)
         transcodeCount += 1
         let took = Self.milliseconds(since: began)
+        let seconds = plan.segments[key.segment].duration
         if took > 300 {
-            Self.logger.notice("Sound of piece \(key.segment, privacy: .public), track \(key.stream, privacy: .public): converted in \(took, privacy: .public) ms")
+            Self.logger.notice("Sound of piece \(key.segment, privacy: .public), track \(key.stream, privacy: .public): \(seconds, format: .fixed(precision: 1), privacy: .public) s converted in \(took, privacy: .public) ms")
+        } else {
+            Self.logger.info("Sound of piece \(key.segment, privacy: .public), track \(key.stream, privacy: .public): \(seconds, format: .fixed(precision: 1), privacy: .public) s converted in \(took, privacy: .public) ms")
         }
         let data = output.writer.fragment(sequence: UInt32(key.segment + 1), packets: encoded)
             ?? output.writer.emptyFragment(sequence: UInt32(key.segment + 1), atSeconds: plan.segments[key.segment].start)

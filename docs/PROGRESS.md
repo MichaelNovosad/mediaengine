@@ -156,6 +156,24 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-20 **Converted sound three times faster where it was lossy anyway** (the app's Jira EGA-123). **The ticket's cause was not
+  the cause:** it blamed the converter's sample buffers (each encoded frame removed from their front), but `encodeFrames` runs after
+  every packet, so a buffer never holds more than one ALAC frame and a packet; a stack sample of 5.1 DTS being converted (temporary probe,
+  debug build, normal priority, M1 Max: 60 s of six-channel tones with noise made with the host `dca` encoder in `build/`, removed) put
+  four fifths of the time in FFmpeg's ALAC encoder (`write_element`, `encode_scalar`, `lpc_compute_autocorr_c`), a sixth in the DTS
+  decoder, the buffer copies at 1.5 % and the engine's own code under 3 %. Measured per 10 s piece: ALAC level 2 (FFmpeg's default) 125 ms
+  and 6.7 MB, level 1 116 ms and 6.9 MB, level 0 (samples stored as they are, still lossless) 39 ms and 8.4 MB. Now
+  `AudioTranscoder.compressionLevel(codec:channels:sampleRate:bitDepth:)`: level 0 for sound that was lossy to begin with (DTS, AC-3,
+  E-AC-3, AAC, Opus, Vorbis, MP2, MP3) up to 1 MiB a second (the encoder writes a sample deeper than 16 bits with 24: 5.1 at 48 kHz is
+  864 KB), level 2 for the rest (lossless sources, E-AC-3 7.1). The same piece: **42 ms** (was 125). Bigger sound pieces: the sound
+  cache (24 MB) holds fewer, and one that leaves it is converted again from the kept packets in about 40 ms. "Convert only the chosen
+  track" held already: a read-ahead converts only the track the player asked for, the others stay as packets until asked. Every
+  conversion is logged now (category `index`, info; notice above 300 ms): "Sound of piece N, track T: S s converted in M ms".
+  **Evidence:** `AudioTranscodeTests` (new: `compressionLevels`, `dtsStored`: the fixture's DTS converted at level 0 decodes to the same
+  samples as the DTS itself within one 16-bit step; Opus and Vorbis warm-up and FLAC bit-exact unchanged) with the external audio (Apple's
+  decoder reads converted Opus), AVPlayer end-to-end, sound processor, remux, legacy audio and software player suites: 73 tests one suite
+  after another, all passing except the known `ExternalAudioTests.refusing` (it still expects DTS refused). **Not measured:** Lawrence of
+  Arabia and Brazil from the share (not mounted on 2026-11-20), an iPhone.
 - 2026-11-20 **A still of the place a jump goes to** (the app's Jira EGA-122). Public: `PlaybackSession.previewPicture(at:)` returns a
   `PreviewPicture` (a `CGImage` in the stream's own pixels, at most 1920 on its longest side, and its time), `preparePreviews()` opens its
   reader in the background. `PreviewMaker` (internal): one `PacketReader` of its own, kept for the session (later jumps only seek), on a

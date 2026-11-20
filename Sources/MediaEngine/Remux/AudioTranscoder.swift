@@ -56,6 +56,8 @@ final class AudioTranscoder: @unchecked Sendable {
     private let processor: (any SoundProcessor)?
     /// Decoded by AudioToolbox instead of FFmpeg (``systemDecodes(_:)``).
     private let systemDecoding: Bool
+    /// FFmpeg's ALAC compression level for this source (``compressionLevel(codec:channels:sampleRate:bitDepth:)``).
+    let compressionLevel: Int32
 
     init(parameters source: UnsafePointer<AVCodecParameters>, sourceTimeBase: Rational, processor: (any SoundProcessor)? = nil,
          systemDecoding: Bool = false) throws {
@@ -72,6 +74,21 @@ final class AudioTranscoder: @unchecked Sendable {
         let depth = max(source.pointee.bits_per_raw_sample, source.pointee.bits_per_coded_sample)
         bitDepth = depth > 16 ? min(depth, 32) : 16
         outputFormat = depth > 16 ? AV_SAMPLE_FMT_S32P : AV_SAMPLE_FMT_S16P
+        compressionLevel = Self.compressionLevel(codec: source.pointee.codec_id, channels: channels, sampleRate: sampleRate, bitDepth: Int(bitDepth))
+    }
+
+    /// The ALAC encoder's level (the app's Jira EGA-123). At FFmpeg's default, 2, it looks for the best predictor in every frame: four
+    /// fifths of the time of a converted piece (measured 2026-11-20 with a stack sample on a 5.1 DTS track: 125 ms for 10 s, the DTS
+    /// decoder a sixth, the engine's own code under 3 %). Level 0 stores the samples as they are, still lossless: 39 ms for the same
+    /// piece, the piece about a quarter bigger (more for real film sound, which compresses better). It is used for sound that was lossy
+    /// to begin with (DTS, AC-3, E-AC-3, AAC, Opus, Vorbis, MP2, MP3) when it makes at most 1 MiB a second (5.1 at 48 kHz: 864 KB; the
+    /// encoder writes a sample deeper than 16 bits with 24); everything else, lossless sources up to 7.1 at 192 kHz among them, keeps
+    /// level 2.
+    static func compressionLevel(codec: AVCodecID, channels: Int, sampleRate: Int, bitDepth: Int) -> Int32 {
+        let lossy = [AV_CODEC_ID_DTS, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3, AV_CODEC_ID_AAC, AV_CODEC_ID_OPUS, AV_CODEC_ID_VORBIS,
+                     AV_CODEC_ID_MP2, AV_CODEC_ID_MP3]
+        let bytesPerSecond = channels * sampleRate * (bitDepth > 16 ? 3 : 2)
+        return lossy.contains(codec) && bytesPerSecond <= 1 << 20 ? 0 : 2
     }
 
     deinit {
@@ -108,6 +125,7 @@ final class AudioTranscoder: @unchecked Sendable {
         var layout = Self.encoderLayout(source: parameters.pointee.ch_layout, channels: channels, encoder: context, codec: codec)
         av_channel_layout_copy(&context.pointee.ch_layout, &layout)
         context.pointee.bits_per_raw_sample = bitDepth
+        context.pointee.compression_level = compressionLevel
         let result = avcodec_open2(context, codec, nil)
         guard result >= 0 else {
             var pointer: UnsafeMutablePointer<AVCodecContext>? = context

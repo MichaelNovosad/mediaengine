@@ -50,18 +50,61 @@ enum AppleDecoding {
     /// its `avcC`/`hvcC` record. Streams whose extradata is not such a record (Annex B parameter sets, as in MPEG-TS) are not asked.
     private static func decodesVideo(_ par: UnsafePointer<AVCodecParameters>, type: CMVideoCodecType, atom: String) -> Bool? {
         guard let pointer = par.pointee.extradata, par.pointee.extradata_size > 0, pointer[0] == 1,
-              par.pointee.width > 0, par.pointee.height > 0 else { return nil }
-        let record = Data(bytes: pointer, count: Int(par.pointee.extradata_size))
-        let extensions = [kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String: [atom: record]] as CFDictionary
-        var format: CMVideoFormatDescription?
-        guard CMVideoFormatDescriptionCreate(allocator: nil, codecType: type, width: par.pointee.width, height: par.pointee.height,
-                                             extensions: extensions, formatDescriptionOut: &format) == noErr,
-              let format else { return nil }
+              let format = formatDescription(par, type: type, atom: atom) else { return nil }
         var session: VTDecompressionSession?
         let status = VTDecompressionSessionCreate(allocator: nil, formatDescription: format, decoderSpecification: nil,
                                                   imageBufferAttributes: nil, outputCallback: nil, decompressionSessionOut: &session)
         if let session { VTDecompressionSessionInvalidate(session) }
         return status == noErr
+    }
+
+    /// The format description VideoToolbox decodes an H.264 or HEVC stream with: from its `avcC`/`hvcC` record (Matroska, MP4), or
+    /// from the parameter sets of Annex B extradata (MPEG-TS and the like, whose packets ``PacketReader`` hands out with four-byte
+    /// lengths). `nil` for other codecs or when a needed parameter set is missing.
+    static func formatDescription(_ par: UnsafePointer<AVCodecParameters>) -> CMVideoFormatDescription? {
+        switch par.pointee.codec_id {
+        case AV_CODEC_ID_H264: return formatDescription(par, type: kCMVideoCodecType_H264, atom: "avcC")
+        case AV_CODEC_ID_HEVC: return formatDescription(par, type: kCMVideoCodecType_HEVC, atom: "hvcC")
+        default: return nil
+        }
+    }
+
+    private static func formatDescription(_ par: UnsafePointer<AVCodecParameters>, type: CMVideoCodecType, atom: String) -> CMVideoFormatDescription? {
+        guard let pointer = par.pointee.extradata, par.pointee.extradata_size > 0, par.pointee.width > 0, par.pointee.height > 0 else { return nil }
+        var format: CMVideoFormatDescription?
+        if pointer[0] == 1 {
+            let record = Data(bytes: pointer, count: Int(par.pointee.extradata_size))
+            let extensions = [kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String: [atom: record]] as CFDictionary
+            guard CMVideoFormatDescriptionCreate(allocator: nil, codecType: type, width: par.pointee.width, height: par.pointee.height,
+                                                 extensions: extensions, formatDescriptionOut: &format) == noErr else { return nil }
+            return format
+        }
+        // Annex B: the parameter sets in the order the decoder wants them (H.264: SPS, PPS; HEVC: VPS, SPS, PPS).
+        let codec: AnnexB.Codec = type == kCMVideoCodecType_H264 ? .h264 : .hevc
+        let buffer = UnsafeBufferPointer(start: pointer, count: Int(par.pointee.extradata_size))
+        var sets: [Int: [[UInt8]]] = [:]
+        for range in AnnexB.units(in: buffer) {
+            let kind = AnnexB.nalType(buffer[range.lowerBound], codec)
+            if AnnexB.isParameterSet(kind, codec) { sets[kind, default: []].append(Array(buffer[range])) }
+        }
+        let order = codec == .h264 ? [7, 8] : [32, 33, 34]
+        guard order.allSatisfy({ !(sets[$0] ?? []).isEmpty }) else { return nil }
+        let units = order.flatMap { sets[$0] ?? [] }
+        let joined = units.flatMap { $0 }
+        let sizes = units.map(\.count)
+        let status = joined.withUnsafeBufferPointer { all -> OSStatus in
+            guard let base = all.baseAddress else { return -1 }
+            var offset = 0
+            let pointers = sizes.map { size -> UnsafePointer<UInt8> in defer { offset += size }; return base + offset }
+            if codec == .h264 {
+                return CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: units.count, parameterSetPointers: pointers,
+                                                                           parameterSetSizes: sizes, nalUnitHeaderLength: 4, formatDescriptionOut: &format)
+            }
+            return CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: units.count, parameterSetPointers: pointers,
+                                                                       parameterSetSizes: sizes, nalUnitHeaderLength: 4, extensions: nil,
+                                                                       formatDescriptionOut: &format)
+        }
+        return status == noErr ? format : nil
     }
 
     /// Whether AudioToolbox has a decoder for the format.

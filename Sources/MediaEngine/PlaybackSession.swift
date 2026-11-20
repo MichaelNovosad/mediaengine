@@ -38,6 +38,8 @@ public final class PlaybackSession: @unchecked Sendable {
         var fonts: Task<[(name: String, data: Data)], Never>?
         /// Changes the sound before it is served (``soundProcessor``).
         var soundProcessor: (any SoundProcessor)?
+        /// Makes the stills of ``previewPicture(at:)``: made at the first call.
+        var preview: PreviewMaker?
     }
     let state = Mutex(State())
 
@@ -203,14 +205,15 @@ public final class PlaybackSession: @unchecked Sendable {
 
     /// Stops the local server and releases the file. The player item stops working.
     public func close() {
-        let (server, remux, folders) = state.withLock { state -> (LoopbackServer?, RemuxSession?, [URL]) in
+        let (server, remux, folders, preview) = state.withLock { state -> (LoopbackServer?, RemuxSession?, [URL], PreviewMaker?) in
             state.isClosed = true
-            defer { state.server = nil; state.remux = nil; state.scopedFolders = [] }
-            return (state.server, state.remux, state.scopedFolders)
+            defer { state.server = nil; state.remux = nil; state.scopedFolders = []; state.preview = nil }
+            return (state.server, state.remux, state.scopedFolders, state.preview)
         }
         cancellation.cancel()
         server?.stop()
         remux?.close()
+        preview?.close()
         // The source this session was made from goes with it: its network connection closes now, and nothing that still reads
         // (a subtitle window, a frame for a picture) opens a new one for a movie that is gone (app owner, 2026-11-12).
         source.byteSource.close()

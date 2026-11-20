@@ -156,6 +156,25 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-20 **A still of the place a jump goes to** (the app's Jira EGA-122). Public: `PlaybackSession.previewPicture(at:)` returns a
+  `PreviewPicture` (a `CGImage` in the stream's own pixels, at most 1920 on its longest side, and its time), `preparePreviews()` opens its
+  reader in the background. `PreviewMaker` (internal): one `PacketReader` of its own, kept for the session (later jumps only seek), on a
+  serial queue; a newer call or a cancelled task makes the older one give up between packets; reads go through the session's source, so a
+  network film's shared read cache serves them. The keyframe: the first one met in files whose seeks land on the keyframe at or before the
+  time (Matroska, MP4); in MPEG transport and program streams (and DVD titles), which seek by decode time, the last one at or before the time
+  within a second of it, and when the seek landed past it (found on `fixture-ts`: a second jump found nothing) once more from three
+  seconds earlier; otherwise the first after the time within two seconds; at most 3000 packets or 24 MB. Decoded by VideoToolbox for H.264
+  and HEVC straight to scaled BGRA (`AppleDecoding.formatDescription`, now shared with the "does Apple decode it" check: from `avcC`/`hvcC`,
+  or from Annex B parameter sets with four-byte lengths as `PacketReader` hands them out), else by the build's own decoder (flushed, one
+  packet, drained) and a pixel transfer to BGRA; `VTCreateCGImageFromCVPixelBuffer`. Not for play lists of several files. One log line per
+  still (category `player`, info). **Evidence:** `PreviewPictureTests` 7 (Matroska H.264, HEVC and B-frames: the keyframe at or before each
+  of nine times, 640 × 360, not flat; MPEG-TS twice (Annex B parameter sets); MPEG-2 through the build's decoder; a network-like source
+  through the shared cache reads less than the file; prepared in advance; nothing after close; sizes); measured in those tests at
+  background priority beside other tests: the first still of a session 150 to 180 ms (opening its reader), later ones 10 to 50 ms, 1 to 3
+  packets read (26 and 73 in the transport stream); the core variant builds without warnings; exported. **Not measured:** a film on the
+  share (not mounted on 2026-11-20), an iPhone or iPad. **Found, older:** `PlaybackPlannerTests.hevcRext` and `audioFallback` (written
+  2026-11-12, never run until now) fail because the tests' `everything` capabilities lack `.hevcSoftware` and `.audioFallback`; the planner
+  itself is as intended. Not changed here.
 - 2026-11-20 **Enhanced Quality: Apple's super-resolution scaler in the engine's own player** (the app's Jira EGA-108).
   `PictureEnhancer` (internal): VideoToolbox's `VTFrameProcessor` with `VTLowLatencySuperResolutionScalerConfiguration` at the largest
   factor up to 2, a pool of output buffers, attachments carried over (`CVBufferPropagateAttachments`), a picture it cannot take shown as

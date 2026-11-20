@@ -19,6 +19,7 @@ struct SpeechAudioTests {
 
     @Test("every sound track the engine can read comes out as mono 16 kHz sound of the right length that is not silent", arguments: [
         "fixture-basic", "fixture-hevc", "fixture-opus-vorbis", "fixture-flac24",
+        "fixture-speech-51",                     // 5.1 AC-3, the voice only in the centre channel: refused, then silent, before 2026-11-20
     ])
     func decodes(_ name: String) async throws {
         let session = try await PlaybackSession(url: Fixture.url(name))

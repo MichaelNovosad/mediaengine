@@ -28,6 +28,9 @@ say -v Samantha -o "$speech_dir/speech.wav" --data-format=LEI16@22050 \
 "$FF" -v error -y -stream_loop -1 -i fixture-basic.mkv -i "$speech_dir/speech.wav" -map 0:v:0 -map 1:a:0 -c:v copy -c:a flac -shortest -f matroska fixture-speech.mkv
 rm -rf "$speech_dir"
 
+log "fixture-speech-51.mkv  (the same sentence as 5.1 AC-3 with the voice in the centre channel only, as in most films: Make Subtitles must mix the centre in)"
+"$FF" -v error -y -i fixture-speech.mkv -map 0:v:0 -map 0:a:0 -c:v copy -c:a ac3 -ar 48000 -ac 6 -b:a 384k -f matroska fixture-speech-51.mkv
+
 log "fixture-native.mp4  (the same picture and AAC sound in an MP4, which the system plays by itself)"
 "$FF" -v error -y -i fixture-basic.mkv -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart fixture-native.mp4
 

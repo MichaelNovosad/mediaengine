@@ -156,6 +156,12 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-20 **Speech from 5.1 sound** (the app's owner: "if 5.1 is fixable, fix it"). The speech extractor's AudioToolbox path (AAC,
+  AC-3, E-AC-3) made its compressed format without a channel layout, which AVFoundation refuses for more than two channels ("this sound
+  has no usable format"), and converted to stereo, which drops the centre channel where films keep their dialogue. Now 5.1 and 7.1 get
+  a layout (`SystemDecoder.layoutTag`), every channel is decoded and mixed to mono at 1/√n each. New fixture `fixture-speech-51.mkv`
+  (`make-fixtures.sh`: the speech sentence as 5.1 AC-3, the voice in the centre only; 663 KB). **Evidence:** `SpeechAudioTests.decodes`
+  with it failed before ("no usable format") and passes now (mono 16 kHz, the right length, not silent), with the suite's other tests.
 - 2026-11-20 **A jump prepared while the finger rests on the progress bar** (the app's Jira EGA-124). Public:
   `PlaybackSession.prepareJump(to:)`. `RemuxSession.prepare(at:)` builds the piece that holds the time on its own serial queue with its
   own reader (no other reading of the file, no other connection), so the player's request after the release finds it built: one place

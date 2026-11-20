@@ -159,7 +159,9 @@ private final class FFmpegDecoder: SpeechDecoder {
     }
 }
 
-/// AAC, AC-3 and E-AC-3 through AudioToolbox: packets to float sound (stereo at most), mixed to mono and brought to 16 kHz.
+/// AAC, AC-3 and E-AC-3 through AudioToolbox: packets to float sound, every channel mixed to mono and brought to 16 kHz. Sound of more
+/// than two channels needs a channel layout on its compressed format (AVFoundation refuses one without), and every channel is mixed in:
+/// a film's dialogue is in the centre channel, which a plain conversion to stereo left out (owner, 2026-11-20: Make Subtitles with 5.1).
 private final class SystemDecoder: SpeechDecoder {
     private let converter: AVAudioConverter
     private let compressed: AVAudioFormat
@@ -177,14 +179,18 @@ private final class SystemDecoder: SpeechDecoder {
         case "ac3": description.mFormatID = kAudioFormatAC3; description.mFramesPerPacket = 1536
         default: description.mFormatID = kAudioFormatEnhancedAC3; description.mFramesPerPacket = 1536
         }
-        guard description.mSampleRate > 0, let compressed = AVAudioFormat(streamDescription: &description) else {
+        let channels = AVAudioChannelCount(description.mChannelsPerFrame)
+        let layout = channels > 2 ? AVAudioChannelLayout(layoutTag: Self.layoutTag(channels: channels)) : nil
+        let made = layout.map { AVAudioFormat(streamDescription: &description, channelLayout: $0) } ?? AVAudioFormat(streamDescription: &description)
+        guard description.mSampleRate > 0, let compressed = made else {
             throw MediaError.unsupported(detail: "this sound has no usable format")
         }
         if codecName == "aac", let extra = parameters.pointee.extradata, parameters.pointee.extradata_size > 0 {
             compressed.magicCookie = Data(bytes: extra, count: Int(parameters.pointee.extradata_size))
         }
-        guard let decoded = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: description.mSampleRate,
-                                          channels: min(AVAudioChannelCount(description.mChannelsPerFrame), 2), interleaved: false),
+        let pcm = layout.map { AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: description.mSampleRate, interleaved: false, channelLayout: $0) }
+            ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: description.mSampleRate, channels: channels, interleaved: false)
+        guard let decoded = pcm,
               let converter = AVAudioConverter(from: compressed, to: decoded),
               let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: description.mSampleRate, channels: 1, interleaved: false),
               let speech = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: SpeechAudioExtractor.outputRate, channels: 1, interleaved: true) else {
@@ -222,12 +228,32 @@ private final class SystemDecoder: SpeechDecoder {
 
     func finish(into sink: PCMSink) throws {}
 
-    /// Stereo or mono float sound to mono 16 kHz 16-bit samples.
+    /// A layout for the compressed format: the one the decoder gives 5.1 and 7.1 in (measured for AAC on 2026-11-19: the same levels per
+    /// channel whichever layout the input names), else the channels in order. The mix below weighs every channel the same, so the order
+    /// does not matter for it.
+    static func layoutTag(channels: AVAudioChannelCount) -> AudioChannelLayoutTag {
+        switch channels {
+        case 6: kAudioChannelLayoutTag_WAVE_5_1_A
+        case 8: kAudioChannelLayoutTag_WAVE_7_1
+        default: kAudioChannelLayoutTag_DiscreteInOrder | channels
+        }
+    }
+
+    /// Float sound of any number of channels to mono 16 kHz 16-bit samples: stereo as the mean of its two, more channels added together
+    /// at 1/√n each (the centre's dialogue at the level a downmix gives it), clipped to full scale.
     private func write(_ pcm: AVAudioPCMBuffer, into sink: PCMSink) throws {
         guard let toSpeech, let channels = pcm.floatChannelData, let monoBuffer = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: pcm.frameLength),
               let target = monoBuffer.floatChannelData?[0] else { return }
         let frames = Int(pcm.frameLength)
-        if pcm.format.channelCount >= 2 {
+        let count = Int(pcm.format.channelCount)
+        if count > 2 {
+            let weight = 1 / Float(count).squareRoot()
+            for index in 0..<frames {
+                var sum: Float = 0
+                for channel in 0..<count { sum += channels[channel][index] }
+                target[index] = min(max(sum * weight, -1), 1)
+            }
+        } else if count == 2 {
             for index in 0..<frames { target[index] = (channels[0][index] + channels[1][index]) * 0.5 }
         } else {
             target.update(from: channels[0], count: frames)

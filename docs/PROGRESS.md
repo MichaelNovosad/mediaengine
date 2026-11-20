@@ -165,7 +165,8 @@ toolchain; none blocks the release.
   found by trying, now part of `PictureEnhancer.scale`); the temporal noise filter is not supported on that Mac. **Evidence:**
   `PictureEnhancerTests` (320 × 240 comes back 2× with its attachments; BGRA and 640 × 360 refused; 4K has no factor) and
   `SoftwarePipelineTests.enhanced` (every picture of `fixture-interlaced-tff` shown through the scaler, played to its end) with the
-  software player suites; exported. Not looked at by eye; no iPhone or iPad.
+  software player suites; exported. Not looked at by eye; no iPhone or iPad. The iOS Simulator SDK leaves the frame processors out
+  (`#if ! TARGET_OS_SIMULATOR`): there `PictureEnhancer` offers nothing (fixed in a second commit after the first broke the simulator build).
 - 2026-11-20 **`PlaybackController.allowedAudioSpatialization`** (the app's Jira EGA-106): which sound the system may render as spatial
   audio, set on the item that plays the sound: `AVPlayerController` forwards to its item, `SoftwareController` to its sound item (the
   picture has no sound of its own). Looked up in the iOS 27 SDK: on iPhone, iPad and Mac an app chooses only this

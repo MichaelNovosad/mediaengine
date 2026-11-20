@@ -11,6 +11,10 @@ import VideoToolbox
 /// none). Apple's temporal noise filter would need pictures from the future and is not supported on that Mac: not used.
 ///
 /// Used by one feeding task at a time (``SoftwareVideoPipeline``), hence `@unchecked Sendable`.
+///
+/// The iOS Simulator's SDK leaves the frame processors out (`#if ! TARGET_OS_SIMULATOR` in `VTFrameProcessor.h`): there the enhancer
+/// offers nothing (below).
+#if !targetEnvironment(simulator)
 final class PictureEnhancer: @unchecked Sendable {
     private static let logger = Logger(subsystem: "dev.mediaengine", category: "player")
 
@@ -93,3 +97,10 @@ final class PictureEnhancer: @unchecked Sendable {
 
     deinit { processor?.endSession() }
 }
+#else
+final class PictureEnhancer: @unchecked Sendable {
+    static func scale(width: Int, height: Int) -> Float? { nil }
+    func enhance(_ buffer: CVPixelBuffer, time: Double) async -> CVPixelBuffer? { nil }
+    func end() {}
+}
+#endif

@@ -91,6 +91,23 @@ struct BlurayEntryPointTests {
         #expect(DiscInfo.entryPoints(blurayClipInfo: Data(repeating: 0, count: 100)).isEmpty)
     }
 
+    @Test("a clip file cut at any length, or with random bytes in its map, is read without a crash and gives no entry it does not hold")
+    func truncated() {
+        let points = (0..<40).map { DiscInfo.EntryPoint(pid: 0x1011, time: Int64($0) * 90_112, offset: Int64($0) * 192 * 1_000) }
+        let whole = clipInfo(points)
+        #expect(DiscInfo.entryPoints(blurayClipInfo: whole) == points)
+        for length in 0..<whole.count {
+            let read = DiscInfo.entryPoints(blurayClipInfo: whole.prefix(length))
+            #expect(read.count <= points.count && Array(points.prefix(read.count)) == read, "cut at \(length)")
+        }
+        var generator = SplitMix64(state: 122)
+        for _ in 0..<500 {
+            var bytes = [UInt8](whole)
+            for _ in 0..<4 { bytes[Int(generator.next() % UInt64(bytes.count - 16)) + 16] = UInt8(truncatingIfNeeded: generator.next()) }
+            _ = DiscInfo.entryPoints(blurayClipInfo: Data(bytes))
+        }
+    }
+
     @Test("a map that fits its stream is taken: every reader jumps straight to the keyframe at or before a time")
     func fitsAndJumps() async throws {
         let m2ts = try bluRayStream()

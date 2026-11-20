@@ -156,6 +156,16 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-20 **Enhanced Quality: Apple's super-resolution scaler in the engine's own player** (the app's Jira EGA-108).
+  `PictureEnhancer` (internal): VideoToolbox's `VTFrameProcessor` with `VTLowLatencySuperResolutionScalerConfiguration` at the largest
+  factor up to 2, a pool of output buffers, attachments carried over (`CVBufferPropagateAttachments`), a picture it cannot take shown as
+  it is (logged); `SoftwareVideoPipeline.setEnhancing`, `Statistics.enhanced`; public `SoftwareController.enhancesPicture`,
+  `canEnhancePicture`, `Statistics.enhancedFrames`. Measured first (the app's RESEARCH 17): 1.4 to 3.3 ms a picture on the M1 Max;
+  8-bit 4:2:0 only, both sides multiples of 16 (640 × 360 fails every picture with -19730 although the scaler offers factors for it:
+  found by trying, now part of `PictureEnhancer.scale`); the temporal noise filter is not supported on that Mac. **Evidence:**
+  `PictureEnhancerTests` (320 × 240 comes back 2× with its attachments; BGRA and 640 × 360 refused; 4K has no factor) and
+  `SoftwarePipelineTests.enhanced` (every picture of `fixture-interlaced-tff` shown through the scaler, played to its end) with the
+  software player suites; exported. Not looked at by eye; no iPhone or iPad.
 - 2026-11-20 **`PlaybackController.allowedAudioSpatialization`** (the app's Jira EGA-106): which sound the system may render as spatial
   audio, set on the item that plays the sound: `AVPlayerController` forwards to its item, `SoftwareController` to its sound item (the
   picture has no sound of its own). Looked up in the iOS 27 SDK: on iPhone, iPad and Mac an app chooses only this

@@ -41,4 +41,49 @@ struct SoftwarePipelineTests {
         #expect(pipeline.currentStatistics.decoded >= 74, "\(pipeline.currentStatistics)")
         await pipeline.close()
     }
+
+    @Test("Enhanced Quality: every picture the scaler takes is shown larger, and the film still plays to its end",
+          .enabled(if: isExtendedBuild && PictureEnhancer.scale(width: 320, height: 240) != nil))
+    func enhanced() async throws {
+        let (pipeline, _, _) = try await pipeline("fixture-interlaced-tff")                // 320 × 240 MPEG-2, 8-bit 4:2:0
+        let ended = Mutex(false)
+        pipeline.onEnd { ended.withLock { $0 = true } }
+        pipeline.setEnhancing(true)
+        pipeline.synchronizer.setRate(1, time: .zero)
+        await pipeline.start(at: 0)
+        #expect(await waitUntil(20) { ended.withLock { $0 } }, "\(pipeline.currentStatistics)")
+        let stats = pipeline.currentStatistics
+        #expect(stats.queued > 0 && stats.enhanced == stats.queued, "\(stats)")
+        await pipeline.close()
+    }
+}
+
+/// Apple's scaler on its own (the app's Jira EGA-108).
+@Suite("Picture enhancer")
+struct PictureEnhancerTests {
+    private func picture(_ format: OSType, width: Int = 320, height: Int = 240) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:], kCVPixelBufferMetalCompatibilityKey as String: true]
+        CVPixelBufferCreate(nil, width, height, format, attributes as CFDictionary, &buffer)
+        let made = try #require(buffer)
+        CVBufferSetAttachment(made, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4, .shouldPropagate)
+        return made
+    }
+
+    @Test("a 4:2:0 picture comes back larger by the scaler's factor, with its attachments; another format is left alone",
+          .enabled(if: PictureEnhancer.scale(width: 320, height: 240) != nil))
+    func scales() async throws {
+        let factor = try #require(PictureEnhancer.scale(width: 320, height: 240))
+        #expect(factor > 1 && factor <= 2)
+        let enhancer = PictureEnhancer()
+        defer { enhancer.end() }
+        let output = try #require(await enhancer.enhance(try picture(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange), time: 0))
+        #expect(CVPixelBufferGetWidth(output) == Int(320 * factor) && CVPixelBufferGetHeight(output) == Int(240 * factor))
+        let matrix = CVBufferCopyAttachment(output, kCVImageBufferYCbCrMatrixKey, nil) as? String
+        #expect(matrix == kCVImageBufferYCbCrMatrix_ITU_R_601_4 as String, "attachments go with the picture")
+        #expect(await enhancer.enhance(try picture(kCVPixelFormatType_32BGRA), time: 0.04) == nil)
+        #expect(PictureEnhancer.scale(width: 3840, height: 2160) == nil, "a 4K picture has no factor")
+        #expect(PictureEnhancer.scale(width: 640, height: 360) == nil, "360 is no multiple of 16: the scaler would fail every picture")
+        #expect(await enhancer.enhance(try picture(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, width: 640, height: 360), time: 0.08) == nil)
+    }
 }

@@ -18,6 +18,8 @@ public final class SoftwareController: PlaybackController {
         public var displayedFrames = 0
         /// Pictures skipped because they were late when decoded: the machine could not keep up.
         public var droppedFrames = 0
+        /// Pictures shown larger and sharper by ``enhancesPicture``.
+        public var enhancedFrames = 0
     }
 
     public let session: PlaybackSession
@@ -32,6 +34,22 @@ public final class SoftwareController: PlaybackController {
     /// Shows the pictures. Give it to ``MediaVideoView`` or add it to your own layer tree.
     public let displayLayer: AVSampleBufferDisplayLayer
     /// What happens to interlaced pictures (a DVD or broadcast recording, for example). Takes effect from the next picture.
+    /// Enhanced Quality: Apple's low-latency super-resolution scaler makes each picture larger and sharper on the device before it is
+    /// shown (VideoToolbox's `VTFrameProcessor`), for films whose pictures it takes (``canEnhancePicture``); a picture it cannot take is
+    /// shown as it is. Off by default.
+    public var enhancesPicture = false {
+        didSet { pipeline.setEnhancing(enhancesPicture) }
+    }
+
+    /// Whether ``enhancesPicture`` can reach this film: the device has the scaler, and the picture is 8 bits, 4:2:0, of a size the
+    /// scaler takes (DVDs, 720p and the like; a full-HD picture has no factor).
+    public var canEnhancePicture: Bool {
+        guard let video = session.info.videoTracks.first?.video, (video.bitDepth ?? 8) <= 8, (video.chroma ?? .yuv420) == .yuv420 else {
+            return false
+        }
+        return PictureEnhancer.scale(width: video.width, height: video.height) != nil
+    }
+
     public var deinterlacing: Deinterlacing = .automatic {
         didSet { pipeline.setDeinterlacing(deinterlacing) }
     }
@@ -193,7 +211,8 @@ public final class SoftwareController: PlaybackController {
     private func tick() {
         guard !closed else { return }
         let stats = pipeline.currentStatistics
-        statistics = Statistics(decodedFrames: stats.decoded, displayedFrames: stats.queued, droppedFrames: stats.dropped)
+        statistics = Statistics(decodedFrames: stats.decoded, displayedFrames: stats.queued, droppedFrames: stats.dropped,
+                                enhancedFrames: stats.enhanced)
         // While a jump waits for its picture reader and its sound, the clocks are the jump's: the sound player is paused for it,
         // and the rejoin below took that for a sound that stopped by itself, started both clocks from the old place, and after a
         // jump that waited 53 s for its sound the picture clock stood 54 s past the target (2026-11-17, Lost in Translation).

@@ -19,6 +19,8 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
         var dropped = 0
         /// Presentation time of the last picture given to the layer.
         var lastQueuedTime = 0.0
+        /// Pictures shown larger and sharper (``PictureEnhancer``).
+        var enhanced = 0
     }
 
     /// Show this in a view (`MediaVideoView`); it must be created, put in a layer tree and changed on the main actor.
@@ -90,6 +92,9 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     private let hook = Mutex<(@Sendable (DecodedFrame) -> Void)?>(nil)
     private let endHandler = Mutex<(@Sendable () -> Void)?>(nil)
     private let task = Mutex<Task<Void, Never>?>(nil)
+    /// Enhanced Quality: wanted or not, and the scaler (made when first wanted; used only by the feeding task).
+    private let enhancing = Mutex(false)
+    private let enhancer = PictureEnhancer()
     private let lateTolerance = 0.12
     private static let logger = Logger(subsystem: "dev.mediaengine", category: "player")
     private static func milliseconds(_ duration: Duration) -> Int {
@@ -114,6 +119,9 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
 
     /// What to do with interlaced pictures; takes effect with the next decoded picture.
     func setDeinterlacing(_ mode: Deinterlacing) { decoder.setDeinterlacing(mode) }
+
+    /// Enhanced Quality (``PictureEnhancer``); takes effect with the next picture.
+    func setEnhancing(_ on: Bool) { enhancing.withLock { $0 = on } }
 
     /// Called for every picture handed to the layer (tests and diagnostics).
     func onFrame(_ handler: (@Sendable (DecodedFrame) -> Void)?) { hook.withLock { $0 = handler } }
@@ -146,6 +154,7 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
     func close() async {
         await stop()
         await sink.flush(removingDisplayedImage: true)
+        enhancer.end()
     }
 
     // MARK: The feeding task
@@ -183,7 +192,12 @@ final class SoftwareVideoPipeline: @unchecked Sendable {
                 if frame.wasDeinterlaced { decoder.skipDeinterlacing(next: 50) }
                 continue
             }
-            guard let sample = makeSample(frame, formatDescription: &formatDescription, immediately: first) else { continue }
+            var shown = frame
+            if enhancing.withLock({ $0 }), let better = await enhancer.enhance(frame.pixelBuffer, time: frame.time) {
+                shown.pixelBuffer = better
+                statistics.withLock { $0.enhanced += 1 }
+            }
+            guard let sample = makeSample(shown, formatDescription: &formatDescription, immediately: first) else { continue }
             if first {
                 let waited = ContinuousClock.now - began
                 Self.logger.notice("Software video from \(discardBefore, format: .fixed(precision: 1), privacy: .public) s: first picture at \(frame.time, format: .fixed(precision: 2), privacy: .public) s after \(Self.milliseconds(waited), privacy: .public) ms (reader positioned in \(Self.milliseconds(positioned), privacy: .public) ms, \(packetsBeforeFirst, privacy: .public) packets read on the way)")

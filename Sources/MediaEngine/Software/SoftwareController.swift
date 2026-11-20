@@ -42,6 +42,11 @@ public final class SoftwareController: PlaybackController {
     @ObservationIgnored private var overlay: SubtitleRenderer?
     public var subtitleAppearance = SubtitleAppearance.standard { didSet { overlay?.appearance = subtitleAppearance } }
     public var subtitleDelay: TimeInterval = 0 { didSet { overlay?.delay = subtitleDelay } }
+    /// For the sound, which an `AVPlayer` of its own plays (``PlaybackController/allowedAudioSpatialization``).
+    public var allowedAudioSpatialization: AVAudioSpatializationFormats {
+        get { audio?.item.allowedAudioSpatializationFormats ?? .monoStereoAndMultichannel }
+        set { audio?.item.allowedAudioSpatializationFormats = newValue }
+    }
     @ObservationIgnored private var wantedRate: Float = 1
     @ObservationIgnored private let videoEnded = LockedFlag()
     @ObservationIgnored private var audioFinished = false

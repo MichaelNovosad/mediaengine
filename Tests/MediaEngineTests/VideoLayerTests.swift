@@ -23,3 +23,25 @@ struct VideoLayerTests {
         #expect(controller.videoLayer.videoGravity == .resizeAspect)
     }
 }
+
+/// Which sound the system may spatialize (the app's Jira EGA-106): set on the item that plays the sound.
+@Suite("Spatial audio permission")
+@MainActor
+struct SpatializationTests {
+    @Test("the AVPlayer path sets it on its item; the engine's own player on its sound item", arguments: ["fixture-basic", "fixture-mpeg2"])
+    func reachesTheItem(name: String) async throws {
+        let session = try await PlaybackSession(url: Fixture.url(name))
+        guard session.info.playbackPlan.path != .unsupported else { return }                  // the software path needs the extended build
+        let controller = try await session.makeController()
+        controller.isMuted = true
+        defer { controller.close() }
+        controller.allowedAudioSpatialization = []
+        #expect(controller.allowedAudioSpatialization == [])
+        controller.allowedAudioSpatialization = .multichannel
+        if let native = controller as? AVPlayerController {
+            #expect(native.item.allowedAudioSpatializationFormats == .multichannel)
+        } else {
+            #expect(controller.allowedAudioSpatialization == .multichannel, "\(controller.path)")
+        }
+    }
+}

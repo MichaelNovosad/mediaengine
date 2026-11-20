@@ -69,6 +69,10 @@ public protocol PlaybackController: AnyObject, Observable {
     /// Seconds by which the viewer wants the subtitles that the engine draws later (negative: earlier); it holds for every track that is
     /// chosen later too. Subtitles that the system player draws itself (a plain MP4's own) are not moved.
     var subtitleDelay: TimeInterval { get set }
+    /// Which sound the system may render as spatial audio on headphones that support it (`AVPlayerItem.allowedAudioSpatializationFormats`
+    /// of the item that plays the sound). On iOS and macOS an app chooses only this; fixed or head-tracked is the person's choice in
+    /// Control Center. The default leaves the system's own (video: mono, stereo and multichannel).
+    var allowedAudioSpatialization: AVAudioSpatializationFormats { get set }
 
     /// Stops playback and releases the file.
     func close()
@@ -126,6 +130,10 @@ public final class AVPlayerController: PlaybackController {
     public var drawsASSItself = false
     public var subtitleAppearance = SubtitleAppearance.standard { didSet { overlay?.appearance = subtitleAppearance } }
     public var subtitleDelay: TimeInterval = 0 { didSet { overlay?.delay = subtitleDelay } }
+    public var allowedAudioSpatialization: AVAudioSpatializationFormats {
+        get { item.allowedAudioSpatializationFormats }
+        set { item.allowedAudioSpatializationFormats = newValue }
+    }
 
     @ObservationIgnored private var ticker: Task<Void, Never>?
     /// Writes the item's own error log (`AVPlayerItemErrorLog`: documented status codes, domains and comments) to the system log, so

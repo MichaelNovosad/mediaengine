@@ -156,6 +156,13 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-20 **`PlaybackController.allowedAudioSpatialization`** (the app's Jira EGA-106): which sound the system may render as spatial
+  audio, set on the item that plays the sound: `AVPlayerController` forwards to its item, `SoftwareController` to its sound item (the
+  picture has no sound of its own). Looked up in the iOS 27 SDK: on iPhone, iPad and Mac an app chooses only this
+  (`AVPlayerItem.allowedAudioSpatializationFormats`); fixed or head-tracked (`AVAudioSession.setIntendedSpatialExperience`) is
+  `API_UNAVAILABLE(ios, macos)`, visionOS only. **Evidence:** `SpatializationTests` (fixture-basic through AVPlayer, fixture-mpeg2
+  through the engine's own player: none, then multichannel, read back from the item) and `VideoLayerTests`; exported. Not heard: needs
+  AirPods.
 - 2026-11-19 **A sound processor for the served sound: the equalizer for Matroska** (the app's Jira EGA-100). Public: `SoundProcessor`
   (`makeStage(sampleRate:channels:)`), `SoundStage` (`process(_:frames:)`, planar float in place), `PlaybackSession.soundProcessor` (set
   before the first item or controller; the remuxer is built with it) and `soundProcessorReaches(_:)`. With a processor, `RemuxSession`

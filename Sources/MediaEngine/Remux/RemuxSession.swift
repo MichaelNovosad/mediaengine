@@ -56,6 +56,9 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var bytes: Int { videoBytes + audioBytes }
         /// The piece the player asked for last (any track).
         var focus = 0
+        /// A piece built for a jump the host expects (``RemuxSession/prepare(at:)``): kept until the player asks for it or another
+        /// place is prepared.
+        var held: Int?
         /// The video stream (its fragments count against the picture's budget; everything else is sound).
         var videoStream: Int?
 
@@ -81,13 +84,13 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             order.append(key)
             if isVideo(key) {
                 while videoBytes > budget {
-                    let candidates = order.filter { isVideo($0) && $0.segment != key.segment && $0.segment != focus }
+                    let candidates = order.filter { isVideo($0) && $0.segment != key.segment && $0.segment != focus && $0.segment != held }
                     guard let victim = candidates.first(where: { $0.segment < focus - 1 || $0.segment > focus + 2 }) ?? candidates.first else { break }
                     remove(victim)
                 }
             } else {
                 while audioBytes > audioBudget {
-                    guard let victim = order.first(where: { !isVideo($0) && $0.segment != key.segment }) else { break }
+                    guard let victim = order.first(where: { !isVideo($0) && $0.segment != key.segment && $0.segment != held }) else { break }
                     remove(victim)
                 }
             }
@@ -193,6 +196,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// Where the player is playing (seconds on the plan's timeline), told by the controller. The player asks for pieces well ahead
     /// of it, so "the piece asked for last" is not where it plays: the sound kept for a switch is kept around this.
     private let playhead = Mutex<Double?>(nil)
+    /// The newest place a host asked to have ready (``prepare(at:)``): an older build for it stops, and so does a read-ahead.
+    private let preparing = Mutex(0)
+    /// The sound track the player asked for last: its piece is converted when a place is prepared.
+    private let lastSoundAsked = Mutex<Int?>(nil)
     /// Test hook: rewrites the master playlist before it is served.
     nonisolated(unsafe) var masterTransform: ((String) -> String)?
 
@@ -452,7 +459,12 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     /// The piece that contains the playhead, if the controller told it.
     private func playheadPiece() -> Int? {
-        guard let time = playhead.withLock({ $0 }), !plan.segments.isEmpty else { return nil }
+        playhead.withLock({ $0 }).flatMap(piece(containing:))
+    }
+
+    /// The piece that holds a time on the plan's timeline.
+    func piece(containing time: Double) -> Int? {
+        guard time.isFinite, !plan.segments.isEmpty else { return nil }
         var low = 0, high = plan.segments.count
         while low < high {
             let middle = (low + high) / 2
@@ -460,6 +472,42 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         }
         return max(low - 1, 0)
     }
+
+    /// Builds the piece that holds `seconds` (on the plan's timeline, as the controller's time) before the player asks for it: the app
+    /// calls it while the person rests a finger on the progress bar (the app's Jira EGA-124), so that the jump there finds the piece
+    /// built. One place at a time, through the session's own reader: a newer call stops an older build within a few packets, a
+    /// read-ahead for the place being played gives way to it, and a request of the player for a piece that is not built stops it. The
+    /// piece is kept until the player asks for it or another place is prepared, and its sound is converted for the track the player
+    /// asked for last. Nothing is read when the piece is built already.
+    func prepare(at seconds: Double) {
+        guard let number = piece(containing: seconds) else { return }
+        let ticket = preparing.withLock { value -> Int in value += 1; return value }
+        queue.async { [self] in
+            guard preparing.withLock({ $0 }) == ticket, !cancellation.isCancelled else { return }
+            let sound = lastSoundAsked.withLock { $0 }
+            guard let stream = videoIndex ?? sound ?? audioIndices.first else { return }
+            fragments.withLock { $0.held = number }
+            let key = CacheKey(stream: stream, segment: number)
+            let began = DispatchTime.now()
+            do {
+                if fragments.withLock({ $0.entries[key] == nil }), pendingTranscodes[key] == nil {
+                    try buildWindow(number, ahead: true, superseded: { [self] in preparing.withLock { $0 } != ticket })
+                    noteBuilt(number, since: began, asked: false, why: " for a jump")
+                }
+                if let sound, outputs[sound]?.transcoder != nil { _ = try fragment(for: CacheKey(stream: sound, segment: number)) }
+            } catch let gaveWay as GaveWay {
+                Self.logger.info("Piece \(number, privacy: .public) for a jump stopped after \(Self.milliseconds(since: began), privacy: .public) ms: \(gaveWay.wanted.map { "the player asked for piece \($0)" } ?? "another place", privacy: .public)")
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Whether a fragment is built and kept (tests and diagnostics).
+    func isBuilt(stream: Int, segment: Int) -> Bool { fragments.withLock { $0.entries[CacheKey(stream: stream, segment: segment)] != nil } }
+    /// How many pieces have been built (tests and diagnostics).
+    var buildCount: Int { queue.sync { builtCount } }
+
     /// Which windows have been read for subtitle cues so far (diagnostics and tests).
     var scannedSubtitleWindows: Set<Int> { queue.sync { subtitleWindows } }
     /// Bytes of finished fragments held in the cache right now (diagnostics and tests).
@@ -720,6 +768,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
 
     private func segment(stream: Int, number: Int, isAbandoned: @escaping @Sendable () -> Bool) throws -> Resource? {
         guard plan.segments.indices.contains(number), let output = outputs[stream] else { return nil }
+        if output.kind == .audio { lastSoundAsked.withLock { $0 = stream } }
         if let source = externalAudio[stream] {
             let data = try queue.sync { () throws -> Data in
                 if cancellation.isCancelled { throw MediaError.cancelled }
@@ -734,6 +783,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         // A fragment that is built already goes out at once, even while the queue builds another piece.
         var data = fragments.withLock { cache -> Data? in
             cache.focus = number
+            if cache.held == number { cache.held = nil }
             return cache.fetch(key)
         }
         if data == nil {
@@ -778,20 +828,21 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             last = end
         }
         let through = last
+        let prepared = preparing.withLock { $0 }
         queue.async { [self] in
             for next in (number + 1)...through {
-                guard requestEpoch.withLock({ $0 }) == epoch, !cancellation.isCancelled else { return }
+                guard requestEpoch.withLock({ $0 }) == epoch, preparing.withLock({ $0 }) == prepared, !cancellation.isCancelled else { return }
                 let key = CacheKey(stream: stream, segment: next)
                 if fragments.withLock({ $0.entries[key] != nil }) { continue }
                 let began = DispatchTime.now()
                 do {
                     if pendingTranscodes[key] == nil {
-                        try buildWindow(next, ahead: true)
+                        try buildWindow(next, ahead: true, superseded: { [self] in preparing.withLock { $0 } != prepared })
                         noteBuilt(next, since: began, asked: false)
                     }
                     _ = try fragment(for: key)                  // a transcoded track: converted now, not when the player asks
                 } catch let gaveWay as GaveWay {
-                    Self.logger.notice("Piece \(next, privacy: .public) read ahead stopped after \(Self.milliseconds(since: began), privacy: .public) ms: the player asked for piece \(gaveWay.wanted ?? -1, privacy: .public)")
+                    Self.logger.notice("Piece \(next, privacy: .public) read ahead stopped after \(Self.milliseconds(since: began), privacy: .public) ms: \(gaveWay.wanted.map { "the player asked for piece \($0)" } ?? "a jump is being prepared", privacy: .public)")
                     return
                 } catch {
                     return
@@ -889,7 +940,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// Reads the packets of one segment for every output and stores the finished fragments. A build `ahead` of the player
     /// throws ``GaveWay`` when a request waits for another piece that is not built and none for this one; a build for a request
     /// (`abandoned` given) throws it when that request's client hung up and no other request wants this piece. Call on `queue`.
-    private func buildWindow(_ number: Int, ahead: Bool = false, abandoned: (@Sendable () -> Bool)? = nil) throws {
+    private func buildWindow(_ number: Int, ahead: Bool = false, abandoned: (@Sendable () -> Bool)? = nil,
+                             superseded: (@Sendable () -> Bool)? = nil) throws {
         let segment = plan.segments[number]
         let seekStream = videoIndex ?? audioIndices[0]
         let seekBase = reader.timeBase(seekStream)
@@ -951,6 +1003,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             if read % 16 == 0 {
                 if ahead, let wanted = requestWaiting(besides: number) { throw GaveWay(wanted: wanted) }
                 if let abandoned, abandoned(), let wanted = pieceWantedInstead(of: number) { throw GaveWay(wanted: wanted) }
+                if let superseded, superseded() { throw GaveWay(wanted: nil) }
             }
             read += 1
             guard let packet = try reader.next() else { break }

@@ -345,6 +345,15 @@ public final class PlaybackSession: @unchecked Sendable {
 
     /// Tells the remuxer where the player plays (seconds), so that what it keeps in memory stays around there. Controllers call it
     /// as their time moves.
+    /// Starts reading the film at `seconds` for a jump the host expects: while the person rests a finger on the progress bar (Jira
+    /// EGA-124), the piece there is built before the player asks for it, through the session's own reader (no other connection), one
+    /// place at a time with the newest winning, and a read-ahead of the place being played gives way to it. Cheap to call often. It does
+    /// nothing for a file the system plays by itself; for the engine's own player it prepares the sound (its picture reads from the
+    /// place it jumps to, and ``previewPicture(at:)`` reads the keyframe there).
+    public func prepareJump(to seconds: TimeInterval) {
+        state.withLock { $0.remux }?.prepare(at: seconds)
+    }
+
     func notePlayhead(_ seconds: Double) {
         state.withLock { $0.remux }?.notePlayhead(seconds)
     }

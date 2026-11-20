@@ -156,6 +156,19 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-20 **A jump prepared while the finger rests on the progress bar** (the app's Jira EGA-124). Public:
+  `PlaybackSession.prepareJump(to:)`. `RemuxSession.prepare(at:)` builds the piece that holds the time on its own serial queue with its
+  own reader (no other reading of the file, no other connection), so the player's request after the release finds it built: one place
+  at a time, a newer call stopping an older build within 16 packets (`buildWindow(…superseded:)`), a read-ahead of the place being played
+  giving way to it (it would hold up the queue for seconds over a network), the player's request for a piece that is not built stopping
+  it; the prepared piece is kept in the fragment cache until the player asks for it or another place is prepared
+  (`FragmentCache.held`), and its sound converted for the track the player asked for last (`lastSoundAsked`). Nothing is read for a
+  piece built already. For a file the system plays itself there is no remuxer and nothing happens; for the engine's own player it
+  prepares the sound (the picture reader starts where it jumps; the still's read of the keyframe warms the shared cache there).
+  **Evidence:** `JumpPreparationTests` (a prepared piece is built before the request, which then builds nothing; with reads slowed
+  once the session is open, a newer place stops the older build and only the newer piece is built) with the remux, AVPlayer
+  end-to-end, segment plan, shared read cache, software player and preview suites. **Not measured:** a jump after resting against a
+  tapped jump on a film over the server (the share was not mounted on 2026-11-20).
 - 2026-11-20 **Converted sound three times faster where it was lossy anyway** (the app's Jira EGA-123). **The ticket's cause was not
   the cause:** it blamed the converter's sample buffers (each encoded frame removed from their front), but `encodeFrames` runs after
   every packet, so a buffer never holds more than one ALAC frame and a packet; a stack sample of 5.1 DTS being converted (temporary probe,

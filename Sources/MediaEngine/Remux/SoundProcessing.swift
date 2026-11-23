@@ -2,8 +2,11 @@ internal import FFmpegLGPL
 import Foundation
 
 /// Changes the sound of a film before it plays: an equalizer, a volume boost. Give one to ``PlaybackSession/soundProcessor`` before the
-/// first player item or controller is made. The engine then decodes the sound tracks it serves, passes the samples through the processor
-/// and serves them as Apple Lossless (ALAC) instead of the original format.
+/// first player item or controller is made. The engine then serves every sound track the processor reaches twice more: decoded, passed
+/// through the processor and served as Apple Lossless (ALAC), beside the track as the file has it. ``PlaybackSession/processesSound``
+/// and ``PlaybackSession/applySoundProcessing(_:on:)`` choose which plays; a change of the processor's settings is heard through the copy
+/// not playing, built afresh, as a switch of the sound track that leaves the picture alone (the app's owner, 2026-11-23: before, a change
+/// needed a new session, which froze sound and picture).
 ///
 /// Which tracks it reaches: every track the engine converts anyway (FLAC, Opus, Vorbis, PCM, the DTS core and the like), AAC-LC with up
 /// to 5.1 channels (decoded by Apple's own AudioToolbox, as AVPlayer would), and AC-3 and E-AC-3 when the linked build has their

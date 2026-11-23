@@ -17,13 +17,46 @@ extension PlaybackSession {
     ///
     /// The system menu cannot tell tracks of one language apart, so this matches the choice to the player's option
     /// by the track's name (which is unique, see ``TrackChoice/title``).
+    ///
+    /// While ``processesSound``, a sound track the processor reaches plays as its processed copy.
     @MainActor
     public func select(_ choice: TrackChoice, on item: AVPlayerItem) async throws {
         let group = try await mediaGroup(for: choice.kind, of: item)
+        if choice.kind == .audio, let name = processedName(of: choice) {
+            for option in group.options where await Self.title(of: option) == name {
+                item.select(option, in: group)
+                return
+            }
+        }
         guard let option = await option(for: choice, in: group, of: item) else {
             throw MediaError.unsupported(detail: "the player does not offer the track \"\(choice.title)\"")
         }
         item.select(option, in: group)
+    }
+
+    /// Makes the sound go through ``soundProcessor`` (or, `processing` false, play as the file has it) from where `item` plays,
+    /// without touching the picture: a switch to the playing track's processed copy, built afresh with the processor's settings of now.
+    /// Call it after the processor's settings changed. The player takes a moment to fetch the copy's first piece (the sound may pause
+    /// briefly); the picture goes on. Nothing happens for a file the system plays by itself, or a track the processor does not reach.
+    @MainActor
+    public func applySoundProcessing(_ processing: Bool, on item: AVPlayerItem) async throws {
+        guard let remux = state.withLock({ $0.remux }) else {
+            processesSound = processing
+            return
+        }
+        let playing = await selectedChoice(of: .audio, on: item)
+        let slot: Int? = processing ? ((state.withLock { $0.soundCopySlot } ?? -1) + 1) % RemuxSession.soundCopySlots : nil
+        if let slot { remux.forgetCopies(slot: slot) }
+        state.withLock { $0.soundCopySlot = slot }
+        remux.setDefaultCopySlot(slot)
+        if let playing { try await select(playing, on: item) }
+    }
+
+    /// The name of the processed copy that plays for this track now, when the sound goes through the processor and it reaches the track.
+    private func processedName(of choice: TrackChoice) -> String? {
+        let (slot, remux) = state.withLock { ($0.soundCopySlot, $0.remux) }
+        guard let slot, let remux, remux.soundCopy(of: choice.id, slot: slot) != nil else { return nil }
+        return HLSPlaylists.soundCopyName(choice.title, slot: slot)
     }
 
     /// Turns the subtitles off.
@@ -41,7 +74,12 @@ extension PlaybackSession {
               let selected = item.currentMediaSelection.selectedMediaOption(in: group) else { return nil }
         let title = await Self.title(of: selected)
         let choices = kind == .audio ? audioChoices : subtitleChoices
-        return choices.first { $0.title == title }
+        if let choice = choices.first(where: { $0.title == title }) { return choice }
+        // A processed copy stands for the track it copies.
+        guard kind == .audio, let title else { return nil }
+        return choices.first { choice in
+            (0..<RemuxSession.soundCopySlots).contains { HLSPlaylists.soundCopyName(choice.title, slot: $0) == title }
+        }
     }
 
     /// Selects the tracks that `preferences` ask for ("Japanese audio, English subtitles"). The player picks tracks on

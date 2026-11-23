@@ -324,6 +324,12 @@ public final class SoftwareController: PlaybackController {
     public var audioChoices: [TrackChoice] { session.audioChoices }
     public var subtitleChoices: [TrackChoice] { session.overlayChoices }
 
+    /// The sound player switches to the processed copy; the picture goes on, and the sound joins it as after a switch of track.
+    public func applySoundProcessing(_ processing: Bool) async throws {
+        guard let audio else { return }
+        try await session.applySoundProcessing(processing, on: audio.item)
+    }
+
     public func select(_ choice: TrackChoice) async throws {
         if choice.kind == .audio {
             guard let audio else { throw MediaError.unsupported(detail: "the file has no sound to switch") }

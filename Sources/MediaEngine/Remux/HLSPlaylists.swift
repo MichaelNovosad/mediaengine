@@ -21,7 +21,12 @@ enum HLSPlaylists {
         var channels: Int
         var codecs: String
         var isDefault: Bool
+        /// Whether the player may choose it by itself (the copies through the sound processor: only the host chooses them).
+        var autoselect = true
     }
+
+    /// The name of a sound track's copy through the sound processor (unique, as rendition names must be; never shown by the app).
+    static func soundCopyName(_ name: String, slot: Int) -> String { "\(name) · processed \(slot + 1)" }
 
     struct SubtitleRendition {
         var id: Int
@@ -39,7 +44,7 @@ enum HLSPlaylists {
             var attributes = ["TYPE=AUDIO", "GROUP-ID=\"audio\"", "NAME=\(quoted(rendition.name))"]
             if let language = rendition.language { attributes.append("LANGUAGE=\(quoted(language))") }
             attributes.append("DEFAULT=\(rendition.isDefault ? "YES" : "NO")")
-            attributes.append("AUTOSELECT=YES")
+            attributes.append("AUTOSELECT=\(rendition.autoselect || rendition.isDefault ? "YES" : "NO")")
             attributes.append("CHANNELS=\"\(rendition.channels)\"")
             attributes.append("URI=\(quoted(audioPlaylist(rendition.id)))")
             lines.append("#EXT-X-MEDIA:" + attributes.joined(separator: ","))

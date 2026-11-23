@@ -74,6 +74,11 @@ public protocol PlaybackController: AnyObject, Observable {
     /// Control Center. The default leaves the system's own (video: mono, stereo and multichannel).
     var allowedAudioSpatialization: AVAudioSpatializationFormats { get set }
 
+    /// Makes the sound go through the session's ``PlaybackSession/soundProcessor`` from where it plays (or, `processing` false, as
+    /// the file has it), without touching the picture: after a change of the processor's settings (an equalizer).
+    /// See ``PlaybackSession/applySoundProcessing(_:on:)``.
+    func applySoundProcessing(_ processing: Bool) async throws
+
     /// Stops playback and releases the file.
     func close()
 }
@@ -255,6 +260,11 @@ public final class AVPlayerController: PlaybackController {
     public func deselectSubtitles() async throws {
         overlay?.close(); overlay = nil
         try await session.deselectSubtitles(on: item)
+    }
+
+    public func applySoundProcessing(_ processing: Bool) async throws {
+        guard path != .native else { return }                     // the system plays it: no served sound to process
+        try await session.applySoundProcessing(processing, on: item)
     }
 
     public func subtitleFrame(size: CGSize) -> SubtitleFrame? {

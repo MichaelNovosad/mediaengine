@@ -156,6 +156,25 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-23 **Sound through the processor changes without a new session** (the app's owner: "the equalizer always freezes sound and
+  image when I change it… change the audio wave without this freeze and never affect the image"). Cause: a processor was fixed for a
+  session (the original tracks were converted through it), so the app made a new session for every change. Now `RemuxSession` serves
+  each sound track the processor reaches twice more (`addCopies`, ids from 1,000,000; `soundCopySlots` 2), through it, as ALAC, beside the
+  original as the file has it (the original no longer goes through the processor). The copies are in the master playlist with
+  `AUTOSELECT=NO` (`HLSPlaylists.AudioRendition.autoselect`, `soundCopyName`); the default track's copy is the default rendition when
+  the sound goes through the processor from the start (`setDefaultCopySlot`). A copy's fragments are converted from the packets kept for
+  its track (`pendingKey`; tracks with copies keep their packets even when the original is passed through; their warm-up counts in
+  `prerollWindows`); `forgetCopies(slot:)` drops a slot's fragments on the build queue. Public: `PlaybackSession.processesSound`,
+  `applySoundProcessing(_:on:)` (the next slot forgotten and selected: AVPlayer switches the sound rendition, the picture goes on),
+  `select(_:on:)` choosing the copy while processing, `selectedChoice(of:on:)` mapping a copy to its track, and
+  `PlaybackController.applySoundProcessing(_:)` (AVPlayer path: its item; the engine's own player: its sound item, which rejoins the
+  picture as after a switch of track). **Evidence:** `SoundProcessorTests.copies` (two copies per reached track, `AUTOSELECT=NO`; the
+  original as the file has it; a gain changed and its slot forgotten: the copy built afresh has it, the other slot keeps its own until
+  forgotten; the default copy in the master) and `SoundProcessorPlaybackTests` (`plays`: the copy plays from the start; `switchesLive`:
+  on, a change and off while AVPlayer plays fixture-subs-long, the item's time keeps moving and no error) with the remux, conversion,
+  track selection, added sound, jump and AVPlayer end-to-end suites (77 + 6 tests, the 3 known issues as before); exported
+  (`extended-plus`). **Not checked:** by ear; how long the sound pauses at a switch on a device or over a network (believed: about one
+  piece's fetch).
 - 2026-11-20 **Speech from 5.1 sound** (the app's owner: "if 5.1 is fixable, fix it"). The speech extractor's AudioToolbox path (AAC,
   AC-3, E-AC-3) made its compressed format without a channel layout, which AVFoundation refuses for more than two channels ("this sound
   has no usable format"), and converted to stereo, which drops the centre channel where films keep their dialogue. Now 5.1 and 7.1 get

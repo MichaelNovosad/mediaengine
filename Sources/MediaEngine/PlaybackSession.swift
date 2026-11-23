@@ -38,17 +38,36 @@ public final class PlaybackSession: @unchecked Sendable {
         var fonts: Task<[(name: String, data: Data)], Never>?
         /// Changes the sound before it is served (``soundProcessor``).
         var soundProcessor: (any SoundProcessor)?
+        /// Which copies through the processor play (``processesSound``): `nil` while the sound plays as the file has it.
+        var soundCopySlot: Int?
         /// Makes the stills of ``previewPicture(at:)``: made at the first call.
         var preview: PreviewMaker?
     }
     let state = Mutex(State())
 
     /// Changes the sound of the tracks the engine serves (an equalizer, a volume boost): see ``SoundProcessor`` for which tracks it
-    /// reaches. Set it before the first player item or controller is made: the pieces are built with it from then on, and a later change
-    /// does not reach a session that is already playing (make a new session for that). `nil`, the default, serves the sound as it is.
+    /// reaches. Set it before the first player item or controller is made. The engine then serves every track it reaches twice more,
+    /// through the processor, beside the track as the file has it: ``processesSound`` says which plays, and
+    /// ``applySoundProcessing(_:on:)`` switches the playing item, without touching the picture. A processor whose settings change
+    /// (an equalizer the person adjusts) hands out stages with the new settings; that call makes them heard. `nil`, the default,
+    /// serves the sound as it is.
     public var soundProcessor: (any SoundProcessor)? {
         get { state.withLock { $0.soundProcessor } }
         set { state.withLock { $0.soundProcessor = newValue } }
+    }
+
+    /// Whether the sound plays through ``soundProcessor``. Set before the first player item: the item starts with it (the default
+    /// track's processed copy is the playlist's default). Later, ``applySoundProcessing(_:on:)`` changes it on a playing item.
+    public var processesSound: Bool {
+        get { state.withLock { $0.soundCopySlot != nil } }
+        set {
+            let slot: Int? = newValue ? 0 : nil
+            let remux = state.withLock { state -> RemuxSession? in
+                state.soundCopySlot = slot
+                return state.remux
+            }
+            remux?.setDefaultCopySlot(slot)
+        }
     }
 
     /// Whether ``soundProcessor`` reaches this sound track (only for tracks of ``audioChoices``): tracks the engine converts anyway,
@@ -395,6 +414,7 @@ public final class PlaybackSession: @unchecked Sendable {
             }
         }
         if !bad.isEmpty { state.withLock { $0.incompatible = bad } }
+        remux.setDefaultCopySlot(state.withLock { $0.soundCopySlot })
         let outcome = try state.withLock { state -> (RemuxSession, lost: Bool) in
             if state.isClosed { throw MediaError.cancelled }
             if let existing = state.remux { return (existing, true) }               // a concurrent call won

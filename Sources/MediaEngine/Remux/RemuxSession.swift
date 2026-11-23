@@ -26,6 +26,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         var transcoder: AudioTranscoder?
         /// Seconds of audio before a segment that the transcoder's decoder needs as warm-up.
         var prerollSeconds: Double = 0
+        /// The output whose packets this one serves: itself, or, for a copy through the sound processor, the track it copies.
+        var source: Int = 0
+        /// For a copy of a sound track through the sound processor (``RemuxSession/soundCopy(of:slot:)``): which of the copies.
+        var copySlot: Int?
     }
 
     /// Source packets of a transcoded track, kept so that its fragment can be made (again) without reading the file: when the
@@ -102,6 +106,10 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             videoBytes = 0
             audioBytes = 0
         }
+
+        mutating func removeAll(where condition: (CacheKey) -> Bool) {
+            for key in entries.keys where condition(key) { remove(key) }
+        }
     }
 
     /// A build stopped: a read-ahead because the player asked for another piece that is not built (`wanted`), or a build the
@@ -123,6 +131,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private let cancellation: CancellationFlag
     private let queue = DispatchQueue(label: "dev.mediaengine.remux", qos: .userInitiated)
     private var outputs: [Int: Output] = [:]
+    /// Copies of the sound tracks a sound processor reaches, by the track they copy: an id per slot (``soundCopySlots``). The
+    /// original is served as the file has it; a copy through the processor. A change of the processor's settings goes to the
+    /// player as a switch to the next slot's copy, built afresh, so the picture is not touched (the app's owner, 2026-11-23: the
+    /// equalizer froze sound and picture, as a change built the whole film again).
+    private var copies: [Int: [Int]] = [:]
+    /// Seconds of sound before a piece that a track's decoders need, its copies' included (its warm-up).
+    private var prerollWindows: [Int: Double] = [:]
+    /// The slot whose copies the master playlist makes the default: sound through the processor from the start (`nil`: the originals).
+    private let defaultCopySlot = Mutex<Int?>(nil)
     private let videoIndex: Int?
     private let audioIndices: [Int]
     /// Audio from separate files: ids, and for each the reader on its file.
@@ -380,17 +397,28 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             guard let track = info.tracks.first(where: { $0.id == stream }) else { continue }
             var transcodes = false
             if case .transcodeAudio = treatments[stream] { transcodes = true }
-            outputs[stream] = try Self.makeOutput(reader: reader, stream: stream, track: track, isVideo: stream == videoIndex,
-                                                  transcodes: transcodes, first: first[stream] ?? [], shiftSeconds: shiftSeconds,
-                                                  processor: soundProcessor)
+            var output = try Self.makeOutput(reader: reader, stream: stream, track: track, isVideo: stream == videoIndex,
+                                             transcodes: transcodes, first: first[stream] ?? [], shiftSeconds: shiftSeconds)
+            output.source = stream
+            outputs[stream] = output
+            if let soundProcessor, stream != videoIndex {
+                try addCopies(of: stream, reader: reader, track: track, transcodes: transcodes, first: first[stream] ?? [],
+                              shiftSeconds: shiftSeconds, processor: soundProcessor)
+            }
         }
         for start in externalStarts {
             var track = start.file.track
             track.id = start.id
             // The writer's shift carries the delay, so the file's own timestamps land where the viewer wants them.
-            outputs[start.id] = try Self.makeOutput(reader: start.reader, stream: start.file.stream, track: track, isVideo: false,
-                                                    transcodes: start.file.transcodes, first: start.first,
-                                                    shiftSeconds: shiftSeconds + start.file.delay, processor: soundProcessor)
+            var output = try Self.makeOutput(reader: start.reader, stream: start.file.stream, track: track, isVideo: false,
+                                             transcodes: start.file.transcodes, first: start.first,
+                                             shiftSeconds: shiftSeconds + start.file.delay)
+            output.source = start.id
+            outputs[start.id] = output
+            if let soundProcessor {
+                try addCopies(of: start.id, reader: start.reader, track: track, transcodes: start.file.transcodes, first: start.first,
+                              shiftSeconds: shiftSeconds + start.file.delay, processor: soundProcessor)
+            }
             let base = start.reader.timeBase(start.file.stream)
             let begin = start.first.first.map { base.seconds($0.pts) } ?? 0
             externalAudio[start.id] = ExternalAudioSource(reader: start.reader, stream: start.file.stream, delay: start.file.delay,
@@ -448,6 +476,65 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             codecs: HLSPlaylists.codecString(for: reader.parameters(stream)))
     }
 
+    // MARK: Sound through the processor
+
+    /// How many copies of each sound track the processor reaches: a change goes to the slot not playing, built afresh.
+    static let soundCopySlots = 2
+
+    /// The id of a copy: above every file stream and every added file (10,000 and 20,000 up).
+    private static func copyID(source: Int, slot: Int) -> Int { 1_000_000 + slot * 100_000 + source }
+
+    /// The copies of one sound track through the processor, when the processor reaches it (``SoundProcessor``); none otherwise.
+    private func addCopies(of source: Int, reader: any PacketSource, track: Track, transcodes: Bool, first: [MediaPacket],
+                           shiftSeconds: Double, processor: any SoundProcessor) throws {
+        let stream = outputs[source]?.streamIndex ?? source
+        guard SoundProcessing.route(codecName: track.codec.name, transcodes: transcodes, parameters: reader.parameters(stream)) != .none
+        else {
+            prerollWindows[source] = outputs[source]?.prerollSeconds ?? 0
+            return
+        }
+        var ids: [Int] = []
+        var window = outputs[source]?.prerollSeconds ?? 0
+        for slot in 0..<Self.soundCopySlots {
+            var copy = try Self.makeOutput(reader: reader, stream: stream, track: track, isVideo: false, transcodes: transcodes,
+                                           first: first, shiftSeconds: shiftSeconds, processor: processor)
+            copy.source = source
+            copy.copySlot = slot
+            let id = Self.copyID(source: source, slot: slot)
+            outputs[id] = copy
+            ids.append(id)
+            window = max(window, copy.prerollSeconds)
+        }
+        copies[source] = ids
+        prerollWindows[source] = window
+    }
+
+    /// The copy of sound track `source` through the processor at `slot`, when there is one.
+    func soundCopy(of source: Int, slot: Int) -> Int? {
+        guard let ids = copies[source], ids.indices.contains(slot) else { return nil }
+        return ids[slot]
+    }
+
+    /// Makes the copies at `slot` the default of the master playlist (`nil`: the originals): set before the player asks for it.
+    func setDefaultCopySlot(_ slot: Int?) {
+        defaultCopySlot.withLock { $0 = slot }
+    }
+
+    /// Forgets every fragment built for the copies at `slot`: the processor's settings changed, and the player is about to switch to
+    /// them. On the build queue, after a conversion under way, so that nothing made with the old settings stays.
+    func forgetCopies(slot: Int) {
+        let ids = Set(copies.values.compactMap { $0.indices.contains(slot) ? $0[slot] : nil })
+        guard !ids.isEmpty else { return }
+        queue.sync { [self] in
+            fragments.withLock { $0.removeAll { ids.contains($0.stream) } }
+        }
+    }
+
+    /// The stored packets that serve the fragment `key`: a copy's are its track's.
+    private func pendingKey(_ key: CacheKey) -> CacheKey {
+        CacheKey(stream: outputs[key.stream]?.source ?? key.stream, segment: key.segment)
+    }
+
     /// Whether the session serves this stream (used by tests and the player item builder).
     func hasOutput(_ stream: Int) -> Bool { outputs[stream] != nil }
 
@@ -490,7 +577,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             let key = CacheKey(stream: stream, segment: number)
             let began = DispatchTime.now()
             do {
-                if fragments.withLock({ $0.entries[key] == nil }), pendingTranscodes[key] == nil {
+                if fragments.withLock({ $0.entries[key] == nil }), pendingTranscodes[pendingKey(key)] == nil {
                     try buildWindow(number, ahead: true, superseded: { [self] in preparing.withLock { $0 } != ticket })
                     noteBuilt(number, since: began, asked: false, why: " for a jump")
                 }
@@ -769,7 +856,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private func segment(stream: Int, number: Int, isAbandoned: @escaping @Sendable () -> Bool) throws -> Resource? {
         guard plan.segments.indices.contains(number), let output = outputs[stream] else { return nil }
         if output.kind == .audio { lastSoundAsked.withLock { $0 = stream } }
-        if let source = externalAudio[stream] {
+        if let source = externalAudio[output.source] {
             let data = try queue.sync { () throws -> Data in
                 if cancellation.isCancelled { throw MediaError.cancelled }
                 let key = CacheKey(stream: stream, segment: number)
@@ -836,7 +923,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                 if fragments.withLock({ $0.entries[key] != nil }) { continue }
                 let began = DispatchTime.now()
                 do {
-                    if pendingTranscodes[key] == nil {
+                    if pendingTranscodes[pendingKey(key)] == nil {
                         try buildWindow(next, ahead: true, superseded: { [self] in preparing.withLock { $0 } != prepared })
                         noteBuilt(next, since: began, asked: false)
                     }
@@ -946,16 +1033,19 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         let seekStream = videoIndex ?? audioIndices[0]
         let seekBase = reader.timeBase(seekStream)
         // Audio from separate files has its own reader and is built when asked for; a window of this file is not its business.
-        let mainOutputs = outputs.filter { externalAudio[$0.key] == nil }
-        let maxPreroll = mainOutputs.values.map(\.prerollSeconds).max() ?? 0
+        // Copies through the sound processor take their packets from the track they copy (below).
+        let mainOutputs = outputs.filter { externalAudio[$0.key] == nil && $0.value.copySlot == nil }
+        func prerollWindow(_ stream: Int) -> Double { prerollWindows[stream] ?? outputs[stream]?.prerollSeconds ?? 0 }
+        let maxPreroll = mainOutputs.keys.map(prerollWindow).max() ?? 0
         // The pre-roll of every stateful sound track from the window before, when all of them are in memory.
         var storedPreroll: [Int: [MediaPacket]]?
         if number > 0, maxPreroll > 0 {
             var found: [Int: [MediaPacket]] = [:]
-            for (stream, output) in mainOutputs where output.prerollSeconds > 0 {
+            for stream in mainOutputs.keys where prerollWindow(stream) > 0 {
                 guard let before = pendingTranscodes[CacheKey(stream: stream, segment: number - 1)] else { found = [:]; break }
                 let base = reader.timeBase(stream)
-                found[stream] = before.packets.filter { base.seconds($0.pts) >= segment.start - output.prerollSeconds }
+                let window = prerollWindow(stream)
+                found[stream] = before.packets.filter { base.seconds($0.pts) >= segment.start - window }
             }
             if !found.isEmpty { storedPreroll = found }
         }
@@ -1031,7 +1121,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             } else {
                 if seconds < segment.start && number > 0 {
                     // Warm-up audio for a stateful decoder: the packets just before the segment, in order (unless they are in memory).
-                    let window = outputs[packet.stream]?.prerollSeconds ?? 0
+                    let window = prerollWindow(packet.stream)
                     if storedPreroll == nil, window > 0, seconds >= segment.start - window { prerollPackets[packet.stream, default: []].append(packet) }
                     continue
                 }
@@ -1051,11 +1141,12 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
         for (stream, output) in mainOutputs {
             let list = packets[stream] ?? []
             let key = CacheKey(stream: stream, segment: number)
-            if output.transcoder != nil, !list.isEmpty {
+            // A converted track's packets, and those of a track with copies through the processor, stay to be converted when asked.
+            if output.transcoder != nil || copies[stream] != nil, !list.isEmpty {
                 let pending = PendingTranscode(packets: list, preroll: prerollPackets[stream] ?? [])
                 pendingBytes += pending.bytes - (pendingTranscodes[key]?.bytes ?? 0)
                 pendingTranscodes[key] = pending
-                continue
+                if output.transcoder != nil { continue }
             }
             let data = output.writer.fragment(sequence: UInt32(number + 1), packets: list)
                 ?? output.writer.emptyFragment(sequence: UInt32(number + 1), atSeconds: segment.start)
@@ -1086,8 +1177,8 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     /// later switch back or a fragment that left the cache).
     private func fragment(for key: CacheKey) throws -> Data? {
         if let hit = touch(key) { return hit }
-        guard let pending = pendingTranscodes[key], let output = outputs[key.stream],
-              let transcoder = output.transcoder else { return nil }
+        guard let output = outputs[key.stream], let transcoder = output.transcoder,
+              let pending = pendingTranscodes[pendingKey(key)] else { return nil }
         let began = DispatchTime.now()
         let encoded = try transcoder.transcode(pending.packets, preroll: pending.preroll, stream: key.stream)
         transcodeCount += 1
@@ -1136,7 +1227,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
     private func pieceWantedInstead(of number: Int) -> Int? {
         let waiters = waiting.withLock { Array($0.entries.values) }.filter { !$0.abandoned() }
         guard !waiters.isEmpty, !waiters.contains(where: { $0.key.segment == number }) else { return nil }
-        for waiter in waiters where pendingTranscodes[waiter.key] == nil {
+        for waiter in waiters where pendingTranscodes[pendingKey(waiter.key)] == nil {
             if fragments.withLock({ $0.entries[waiter.key] == nil }) { return waiter.key.segment }
         }
         return nil
@@ -1174,17 +1265,32 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
                                                supplementalCodecs: supplemental)
         }
         let defaultID = audioIndices.first { outputs[$0]?.track.isDefault == true } ?? audioIndices.first
+        // With the sound through the processor from the start, the default track's copy is the default rendition.
+        let copySlot = defaultCopySlot.withLock { $0 }
+        let defaultCopy = defaultID.flatMap { id in copySlot.flatMap { soundCopy(of: id, slot: $0) } }
         let audio = audioIndices.compactMap { id -> HLSPlaylists.AudioRendition? in
             guard let output = outputs[id] else { return nil }
             let language = output.track.language?.maximalIdentifier.split(separator: "-").first.map(String.init)
             let name = audioNames[id] ?? "Audio \(id)"
             return HLSPlaylists.AudioRendition(id: id, name: name, language: output.track.language?.minimalIdentifier ?? language,
-                                               channels: output.track.audio?.channels ?? 2, codecs: output.codecs, isDefault: id == defaultID)
+                                               channels: output.track.audio?.channels ?? 2, codecs: output.codecs,
+                                               isDefault: id == defaultID && defaultCopy == nil)
         }
         let externalRenditions = externalAudioIDs.compactMap { id -> HLSPlaylists.AudioRendition? in
             guard let output = outputs[id] else { return nil }
             return HLSPlaylists.AudioRendition(id: id, name: audioNames[id] ?? "Audio \(id)", language: output.track.language?.minimalIdentifier,
                                                channels: max(output.track.audio?.channels ?? 2, 1), codecs: output.codecs, isDefault: false)
+        }
+        // The copies through the processor: never chosen by the player itself, only by the host (``PlaybackSession``).
+        let copyRenditions = (audioIndices + externalAudioIDs).flatMap { source -> [HLSPlaylists.AudioRendition] in
+            guard let original = outputs[source], let ids = copies[source] else { return [] }
+            return ids.enumerated().compactMap { slot, id in
+                guard let output = outputs[id] else { return nil }
+                let name = HLSPlaylists.soundCopyName(audioNames[source] ?? "Audio \(source)", slot: slot)
+                return HLSPlaylists.AudioRendition(id: id, name: name, language: original.track.language?.minimalIdentifier,
+                                                   channels: max(original.track.audio?.channels ?? 2, 1), codecs: output.codecs,
+                                                   isDefault: id == defaultCopy, autoselect: id == defaultCopy)
+            }
         }
         let subtitles = subtitleTracks.map { track -> HLSPlaylists.SubtitleRendition in
             let language = track.language?.minimalIdentifier
@@ -1192,7 +1298,7 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return HLSPlaylists.SubtitleRendition(id: track.id, name: name, language: language, isDefault: track.isDefault,
                                                   isForced: track.isForced, isHearingImpaired: track.isHearingImpaired)
         }
-        return HLSPlaylists.master(video: video, audio: audio + externalRenditions, subtitles: subtitles, videoPlaylist: "video.m3u8",
+        return HLSPlaylists.master(video: video, audio: audio + externalRenditions + copyRenditions, subtitles: subtitles, videoPlaylist: "video.m3u8",
                                    audioPlaylist: { "audio-\($0).m3u8" }, subtitlePlaylist: { "subs-\($0).m3u8" })
     }
 
@@ -1201,14 +1307,15 @@ final class RemuxSession: @unchecked Sendable, ResourceProvider {
             return HLSPlaylists.media(plan: plan, initURI: "video-init.mp4", segmentURI: { "video-\($0).m4s" })
         }
         var gaps = Set<Int>()
-        if let timeline, stream != videoIndex, externalAudio[stream] == nil {
+        let source = outputs[stream]?.source ?? stream               // a copy has the gaps of the track it copies
+        if let timeline, stream != videoIndex, externalAudio[source] == nil {
             // A part of the play list from a file without this audio has no media for it: say so.
-            let covered = timeline.coverage(of: stream)
+            let covered = timeline.coverage(of: source)
             for segment in plan.segments where !covered.contains(where: { $0.lowerBound < segment.end - 0.001 && $0.upperBound > segment.start + 0.001 }) {
                 gaps.insert(segment.index)
             }
         }
-        if let external = externalAudio[stream] {
+        if let external = externalAudio[source] {
             // Segments the file does not reach hold no media; say so instead of serving empty fragments.
             let covered = (external.delay + external.start)...(external.delay + external.end)
             for segment in plan.segments where !(segment.start < covered.upperBound && segment.end > covered.lowerBound) { gaps.insert(segment.index) }

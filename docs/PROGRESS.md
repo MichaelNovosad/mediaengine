@@ -156,6 +156,16 @@ toolchain; none blocks the release.
   Picture in Picture on devices (E-S4, RMX-10, SWD-2), phone performance (RMX-6, SWD-3, E-S6), visionOS on a headset (PLT-3).
 
 ### Done (newest first; date, what, evidence)
+- 2026-11-25 **The local server listens again after the system took its socket** (the app's owner: "after about 30 minutes in the
+  background a film won't continue until it is restarted"). iOS may take the listening sockets of an app that stays suspended (Apple's
+  TN2277, "Networking and Multitasking"); AVPlayer then reaches nothing at the item's address. `LoopbackServer` now watches its listener
+  after the start: one that fails or is cancelled by anyone but `stop()` is made again on the same port (at most three times a minute,
+  logged in category `player`), so the item's address stays valid; `revive()` does the same on request, and the public
+  `PlaybackSession.reconnect()` lets the app ask for it when it comes back (`false` when it could not: the app sets the film up again).
+  **Evidence:** `LoopbackServerTests.listensAgain` (the listener taken away under the server: listening again by itself, the same address
+  answers; `revive()` when listening; a stopped server is not brought back) with the server and session suites (7 + 21 tests, the three
+  known issues as before); exported (`extended-plus`). **Not checked:** on an iPhone after a real suspension (the simulator does not take
+  sockets); whether iOS reports the loss to `NWListener` as a failure or a cancellation (both are handled) is believed, not seen.
 - 2026-11-23 **Sound through the processor changes without a new session** (the app's owner: "the equalizer always freezes sound and
   image when I change it… change the audio wave without this freeze and never affect the image"). Cause: a processor was fixed for a
   session (the original tracks were converted through it), so the app made a new session for every change. Now `RemuxSession` serves

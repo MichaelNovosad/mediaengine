@@ -425,6 +425,16 @@ public final class PlaybackSession: @unchecked Sendable {
         return outcome.0
     }
 
+    /// Call when the app comes back after a while in the background, or before playing on after one: iOS may take the listening socket
+    /// of the local server from a suspended app (Apple's TN2277), and AVPlayer then reaches nothing. The server listens again on the same
+    /// port, so the player's item goes on. Returns `false` when it could not (the film must be set up again), `true` otherwise, also when
+    /// the session plays without the server (a file the system plays by itself).
+    @discardableResult
+    public func reconnect() async -> Bool {
+        guard let server = state.withLock({ $0.server }) else { return true }
+        return await server.revive()
+    }
+
     func startServer(for remux: RemuxSession) async throws -> LoopbackServer {
         let existing = try state.withLock { state -> LoopbackServer? in
             if state.isClosed { throw MediaError.cancelled }

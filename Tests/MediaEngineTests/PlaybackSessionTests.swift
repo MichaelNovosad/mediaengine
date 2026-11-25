@@ -112,6 +112,22 @@ struct LoopbackServerTests {
         await #expect(throws: (any Error).self) { _ = try await fetch(url) }
     }
 
+    @Test("a listening socket the system takes away is made again on the same port, and a stopped server stays stopped")
+    func listensAgain() async throws {
+        let (server, _) = try await makeServer()
+        defer { server.stop() }
+        let url = server.masterURL
+        #expect(try await fetch(url).1.statusCode == 200)
+        // What iOS does to a suspended app's listening socket (TN2277): the listener goes away under the server.
+        server.simulateLoss()
+        #expect(await waitUntil(3) { server.isListening }, "the listener was not made again by itself")
+        #expect(try await fetch(url).1.statusCode == 200, "the player's address works again: same port, same token")
+        // Asked for explicitly (the app does this when it comes back): already listening, nothing to do.
+        #expect(await server.revive())
+        server.stop()
+        #expect(await server.revive() == false, "a stopped server is not brought back")
+    }
+
     @Test("byte range parsing")
     func ranges() {
         #expect(LoopbackServer.byteRange("bytes=0-9", length: 100) == 0..<10)

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import os
 import Security
 import Synchronization
 
@@ -57,7 +58,16 @@ private final class ConnectionWatch: Sendable {
 final class LoopbackServer: @unchecked Sendable {
     let token: String
     private(set) var port: UInt16 = 0
-    private let listener: NWListener
+    /// The listening socket. iOS may take it from an app that stays suspended (Apple's TN2277, "Networking and Multitasking"): it is then
+    /// made again on the same port, so the player's addresses stay valid (owner, 2026-11-25: a film did not go on after 30 minutes in the
+    /// background).
+    private let current: Mutex<NWListener>
+    private var listener: NWListener { current.withLock { $0 } }
+    /// `stop()` was called: a cancelled listener is not made again.
+    private let stopped = Mutex(false)
+    /// When the listener was last made again, to give up on a port that cannot be had back (at most three times a minute).
+    private let revivals = Mutex<[ContinuousClock.Instant]>([])
+    private static let log = Logger(subsystem: "dev.mediaengine", category: "player")
     private let provider: any ResourceProvider
     private let queue = DispatchQueue(label: "dev.mediaengine.server")
     private let work = DispatchQueue(label: "dev.mediaengine.server.work", qos: .userInitiated, attributes: .concurrent)
@@ -85,7 +95,8 @@ final class LoopbackServer: @unchecked Sendable {
         parameters.requiredInterfaceType = .loopback
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         parameters.allowLocalEndpointReuse = true
-        listener = try NWListener(using: parameters)
+        let listener = try NWListener(using: parameters)
+        current = Mutex(listener)
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
     }
 
@@ -102,6 +113,7 @@ final class LoopbackServer: @unchecked Sendable {
                 case .ready:
                     port = listener.port?.rawValue ?? 0
                     finish(port == 0 ? .failure(MediaError.engine(detail: "server has no port")) : .success(()))
+                    if port != 0 { watch(listener) }
                 case .failed(let error):
                     finish(.failure(MediaError.engine(detail: "server failed: \(error)")))
                 case .cancelled:
@@ -118,6 +130,7 @@ final class LoopbackServer: @unchecked Sendable {
     var masterURL: URL { URL(string: "http://127.0.0.1:\(port)/\(token)/master.m3u8")! }
 
     func stop() {
+        stopped.withLock { $0 = true }
         listener.cancel()
         let open = connections.withLock { state -> [NWConnection] in
             let all = Array(state.values)
@@ -125,6 +138,78 @@ final class LoopbackServer: @unchecked Sendable {
             return all
         }
         open.forEach { $0.cancel() }
+    }
+
+    // MARK: Listening again
+
+    /// Whether the listening socket is there (it is not after the system took it, until it is made again).
+    var isListening: Bool {
+        if case .ready = listener.state { return true }
+        return false
+    }
+
+    /// Makes the listener again on the same port when it is not ready (the app calls this when it comes back after a while, through
+    /// ``PlaybackSession/reconnect()``). Returns whether it listens.
+    @discardableResult
+    func revive() async -> Bool {
+        guard !stopped.withLock({ $0 }) else { return false }
+        if isListening { return true }
+        revivals.withLock { $0.removeAll() }
+        listenAgain()
+        for _ in 0..<40 {                                   // up to two seconds
+            if isListening { return true }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return isListening
+    }
+
+    /// Takes the listener away as the system does with a suspended app's sockets (for the tests).
+    func simulateLoss() { listener.cancel() }
+
+    /// After the start: a listener that fails or is cancelled by anyone but `stop()` is made again.
+    private func watch(_ watched: NWListener) {
+        watched.stateUpdateHandler = { [weak self] state in
+            guard let self, self.listener === watched, !self.stopped.withLock({ $0 }) else { return }
+            switch state {
+            case .failed, .cancelled:
+                Self.log.notice("Local server: its socket was lost; listening again on the same port")
+                self.listenAgain()
+            default:
+                break
+            }
+        }
+    }
+
+    private func listenAgain() {
+        guard !stopped.withLock({ $0 }), let endpointPort = NWEndpoint.Port(rawValue: port) else { return }
+        let now = ContinuousClock.now
+        let allowed = revivals.withLock { times -> Bool in
+            times.removeAll { now - $0 > .seconds(60) }
+            guard times.count < 3 else { return false }
+            times.append(now)
+            return true
+        }
+        guard allowed else {
+            Self.log.error("Local server: the port cannot be had back; the film has to be set up again")
+            return
+        }
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: endpointPort)
+        parameters.allowLocalEndpointReuse = true
+        guard let fresh = try? NWListener(using: parameters) else {
+            Self.log.error("Local server: no listener could be made on its port")
+            return
+        }
+        fresh.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+        let old = current.withLock { listener -> NWListener in
+            let old = listener
+            listener = fresh
+            return old
+        }
+        old.cancel()
+        watch(fresh)
+        fresh.start(queue: queue)
     }
 
     // MARK: Connections
